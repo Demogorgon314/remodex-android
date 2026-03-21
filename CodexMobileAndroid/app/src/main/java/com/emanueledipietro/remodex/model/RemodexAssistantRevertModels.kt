@@ -1,5 +1,8 @@
 package com.emanueledipietro.remodex.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 enum class RemodexAssistantChangeSetStatus {
     COLLECTING,
     READY,
@@ -8,11 +11,13 @@ enum class RemodexAssistantChangeSetStatus {
     NOT_REVERTABLE,
 }
 
+@Serializable
 enum class RemodexAssistantChangeSetSource {
     TURN_DIFF,
     FILE_CHANGE_FALLBACK,
 }
 
+@Serializable
 data class RemodexAssistantFileChange(
     val path: String,
     val additions: Int,
@@ -21,6 +26,7 @@ data class RemodexAssistantFileChange(
     val isRenameOrModeOnly: Boolean = false,
 )
 
+@Serializable
 data class RemodexAssistantChangeSet(
     val id: String,
     val repoRoot: String? = null,

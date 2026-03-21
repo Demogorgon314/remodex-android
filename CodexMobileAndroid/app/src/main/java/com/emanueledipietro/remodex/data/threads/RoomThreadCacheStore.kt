@@ -16,6 +16,7 @@ import androidx.room.withTransaction
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -53,6 +54,12 @@ data class CachedTimelineItemEntity(
     val turnId: String?,
     val itemId: String?,
     val isStreaming: Boolean,
+    val deliveryState: String,
+    val attachmentsJson: String,
+    val planStateJson: String?,
+    val subagentActionJson: String?,
+    val structuredUserInputRequestJson: String?,
+    val assistantChangeSetJson: String?,
     val orderIndex: Long,
 )
 
@@ -86,20 +93,20 @@ interface ThreadCacheDao {
 
 @Database(
     entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class RemodexThreadCacheDatabase : RoomDatabase() {
     abstract fun threadCacheDao(): ThreadCacheDao
 }
 
+private val threadCacheJson = Json {
+    ignoreUnknownKeys = true
+}
+
 class RoomThreadCacheStore(
     private val database: RemodexThreadCacheDatabase,
 ) : ThreadCacheStore {
-    private val json = Json {
-        ignoreUnknownKeys = true
-    }
-
     override val threads: Flow<List<CachedThreadRecord>> =
         database.threadCacheDao().observeThreadsWithTimeline().map { records ->
             records.map { record ->
@@ -115,7 +122,7 @@ class RoomThreadCacheStore(
                     parentThreadId = record.thread.parentThreadId,
                     agentNickname = record.thread.agentNickname,
                     agentRole = record.thread.agentRole,
-                    runtimeConfig = json.decodeFromString(record.thread.runtimeConfigJson),
+                    runtimeConfig = threadCacheJson.decodeFromString(record.thread.runtimeConfigJson),
                     timelineItems = record.timelineItems
                         .sortedBy(CachedTimelineItemEntity::orderIndex)
                         .map(CachedTimelineItemEntity::toModel),
@@ -152,7 +159,7 @@ private fun CachedThreadRecord.toEntity(): CachedThreadEntity {
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,
         agentRole = agentRole,
-        runtimeConfigJson = Json.encodeToString(runtimeConfig),
+        runtimeConfigJson = threadCacheJson.encodeToString(runtimeConfig),
     )
 }
 
@@ -167,6 +174,12 @@ private fun RemodexConversationItem.toEntity(threadId: String): CachedTimelineIt
         turnId = turnId,
         itemId = itemId,
         isStreaming = isStreaming,
+        deliveryState = deliveryState.name,
+        attachmentsJson = threadCacheJson.encodeToString(attachments),
+        planStateJson = planState?.let(threadCacheJson::encodeToString),
+        subagentActionJson = subagentAction?.let(threadCacheJson::encodeToString),
+        structuredUserInputRequestJson = structuredUserInputRequest?.let(threadCacheJson::encodeToString),
+        assistantChangeSetJson = assistantChangeSet?.let(threadCacheJson::encodeToString),
         orderIndex = orderIndex,
     )
 }
@@ -181,6 +194,12 @@ private fun CachedTimelineItemEntity.toModel(): RemodexConversationItem {
         turnId = turnId,
         itemId = itemId,
         isStreaming = isStreaming,
+        deliveryState = RemodexMessageDeliveryState.valueOf(deliveryState),
+        attachments = threadCacheJson.decodeFromString(attachmentsJson),
+        planState = planStateJson?.let(threadCacheJson::decodeFromString),
+        subagentAction = subagentActionJson?.let(threadCacheJson::decodeFromString),
+        structuredUserInputRequest = structuredUserInputRequestJson?.let(threadCacheJson::decodeFromString),
         orderIndex = orderIndex,
+        assistantChangeSet = assistantChangeSetJson?.let(threadCacheJson::decodeFromString),
     )
 }

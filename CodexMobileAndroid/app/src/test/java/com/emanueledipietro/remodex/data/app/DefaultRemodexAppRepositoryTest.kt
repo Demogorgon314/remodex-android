@@ -230,7 +230,7 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
-    fun `attachment only sends produce a local Android preview and supporting text`() = runTest {
+    fun `attachment only sends produce a local Android preview and attachment metadata`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
@@ -252,7 +252,7 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals("Shared 1 image from Android.", selectedThread?.preview)
         assertTrue(
             selectedThread?.messages.orEmpty().any { item ->
-                item.supportingText?.contains("screenshot.png") == true
+                item.attachments.any { attachment -> attachment.displayName == "screenshot.png" }
             },
         )
     }

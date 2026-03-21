@@ -10,12 +10,14 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexReasoningEffort
@@ -152,11 +154,15 @@ class FakeThreadSyncService(
                                     id = "user-${UUID.randomUUID()}",
                                     speaker = ConversationSpeaker.USER,
                                     text = normalizedPrompt,
-                                    supportingText = attachments.takeIf { it.isNotEmpty() }?.joinToString(
-                                        prefix = "Attachments: ",
-                                        separator = ", ",
-                                    ) { attachment -> attachment.displayName },
                                     turnId = turnId,
+                                    deliveryState = RemodexMessageDeliveryState.PENDING,
+                                    attachments = attachments.map { attachment ->
+                                        RemodexConversationAttachment(
+                                            id = attachment.id,
+                                            uriString = attachment.uriString,
+                                            displayName = attachment.displayName,
+                                        )
+                                    },
                                     orderIndex = nextOrderIndex,
                                 ),
                             ),
@@ -235,17 +241,17 @@ class FakeThreadSyncService(
             lastUpdatedEpochMs = now,
             isRunning = false,
             runtimeConfig = source.runtimeConfig,
-            timelineMutations = listOf(
-                TimelineMutation.Upsert(
-                    timelineItem(
-                        id = "fork-${UUID.randomUUID()}",
-                        speaker = ConversationSpeaker.SYSTEM,
-                        kind = ConversationItemKind.ACTIVITY,
-                        text = if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
-                            "Forked this thread into a new worktree based on ${baseBranch ?: "main"}."
-                        } else {
-                            "Forked this thread into a new local conversation."
-                        },
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "fork-${UUID.randomUUID()}",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
+                                    "Forked this thread into a new worktree based on ${baseBranch ?: "main"}."
+                                } else {
+                                    "Forked this thread into a new local conversation."
+                                },
                         orderIndex = 0,
                     ),
                 ),
@@ -525,7 +531,7 @@ class FakeThreadSyncService(
                             timelineItem(
                                 id = "activity-${UUID.randomUUID()}",
                                 speaker = ConversationSpeaker.SYSTEM,
-                                kind = ConversationItemKind.ACTIVITY,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
                                 text = "Stopped the active turn from Android. Any queued follow-ups stay saved locally.",
                                 orderIndex = nextOrderIndex,
                             ),
@@ -639,7 +645,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                     timelineItem(
                         id = "reconnect-system-1",
                         speaker = ConversationSpeaker.SYSTEM,
-                        kind = ConversationItemKind.ACTIVITY,
+                        kind = ConversationItemKind.COMMAND_EXECUTION,
                         text = "Saved pairing is available for this Mac.",
                         supportingText = "Recovery stays visible until trust is valid again.",
                         orderIndex = 0,

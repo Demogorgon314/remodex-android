@@ -56,7 +56,7 @@ class RemodexNotificationCoordinatorTest {
                         conversationItem(
                             id = "message-2",
                             text = "Needs attention from Android",
-                            kind = ConversationItemKind.ACTIVITY,
+                            kind = ConversationItemKind.COMMAND_EXECUTION,
                             speaker = ConversationSpeaker.SYSTEM,
                         ),
                     ),

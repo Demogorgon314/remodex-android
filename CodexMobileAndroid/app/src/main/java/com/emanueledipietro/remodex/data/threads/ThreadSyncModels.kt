@@ -6,14 +6,19 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.flow.StateFlow
 
@@ -175,6 +180,11 @@ fun timelineItem(
     turnId: String? = null,
     itemId: String? = null,
     isStreaming: Boolean = false,
+    deliveryState: RemodexMessageDeliveryState = RemodexMessageDeliveryState.CONFIRMED,
+    attachments: List<RemodexConversationAttachment> = emptyList(),
+    planState: RemodexPlanState? = null,
+    subagentAction: RemodexSubagentAction? = null,
+    structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
     orderIndex: Long,
     assistantChangeSet: RemodexAssistantChangeSet? = null,
 ): RemodexConversationItem {
@@ -187,6 +197,11 @@ fun timelineItem(
         turnId = turnId,
         itemId = itemId,
         isStreaming = isStreaming,
+        deliveryState = deliveryState,
+        attachments = attachments,
+        planState = planState,
+        subagentAction = subagentAction,
+        structuredUserInputRequest = structuredUserInputRequest,
         orderIndex = orderIndex,
         assistantChangeSet = assistantChangeSet,
     )

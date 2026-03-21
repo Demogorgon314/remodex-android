@@ -132,14 +132,14 @@ object TurnTimelineReducer {
             item.id == messageId || (
                 item.turnId == turnId &&
                     item.itemId == itemId &&
-                    item.kind == ConversationItemKind.REASONING
+                    item.kind == ConversationItemKind.COMMAND_EXECUTION
             )
         }
         val nextItem = if (existingIndex == -1) {
             RemodexConversationItem(
                 id = messageId,
                 speaker = ConversationSpeaker.SYSTEM,
-                kind = ConversationItemKind.REASONING,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
                 text = trimmedLine,
                 supportingText = "Activity",
                 turnId = turnId,

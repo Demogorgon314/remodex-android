@@ -21,6 +21,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
@@ -28,7 +29,11 @@ import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
+import com.emanueledipietro.remodex.model.RemodexPlanState
+import com.emanueledipietro.remodex.model.RemodexPlanStep
+import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertConflict
@@ -36,6 +41,12 @@ import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputOption
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexSubagentAction
+import com.emanueledipietro.remodex.model.RemodexSubagentRef
+import com.emanueledipietro.remodex.model.RemodexSubagentState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import kotlinx.coroutines.CoroutineScope
@@ -1104,18 +1115,59 @@ class BridgeThreadSyncService(
                 val kind = when (itemType) {
                     "reasoning" -> ConversationItemKind.REASONING
                     "plan" -> ConversationItemKind.PLAN
-                    "filechange", "toolcall", "diff", "commandexecution" -> ConversationItemKind.ACTIVITY
-                    else -> ConversationItemKind.CHAT
+                    "filechange", "diff" -> ConversationItemKind.FILE_CHANGE
+                    "toolcall", "commandexecution", "contextcompaction" -> ConversationItemKind.COMMAND_EXECUTION
+                    "userinputprompt", "requestuserinput" -> ConversationItemKind.USER_INPUT_PROMPT
+                    else -> if (isSubagentHistoryItemType(itemType)) {
+                        ConversationItemKind.SUBAGENT_ACTION
+                    } else {
+                        ConversationItemKind.CHAT
+                    }
                 }
-                if (text.isNotBlank() || itemType == "plan") {
+                val attachments = if (speaker == ConversationSpeaker.USER) {
+                    decodeImageAttachments(itemObject)
+                } else {
+                    emptyList()
+                }
+                val planState = if (kind == ConversationItemKind.PLAN) {
+                    decodeHistoryPlanState(itemObject)
+                } else {
+                    null
+                }
+                val structuredUserInputRequest = if (kind == ConversationItemKind.USER_INPUT_PROMPT) {
+                    decodeStructuredUserInputRequest(itemObject)
+                } else {
+                    null
+                }
+                val subagentAction = if (kind == ConversationItemKind.SUBAGENT_ACTION) {
+                    decodeSubagentAction(itemObject)
+                } else {
+                    null
+                }
+                val resolvedText = when {
+                    kind == ConversationItemKind.PLAN -> decodePlanItemText(itemObject)
+                    subagentAction != null -> subagentAction.summaryText
+                    else -> text
+                }
+                if (
+                    resolvedText.isNotBlank()
+                    || itemType == "plan"
+                    || attachments.isNotEmpty()
+                    || structuredUserInputRequest != null
+                    || subagentAction != null
+                ) {
                     mutations += TimelineMutation.Upsert(
                         timelineItem(
                             id = itemId ?: "$threadId-history-$orderIndex",
                             speaker = speaker,
-                            text = text.ifBlank { itemType.replaceFirstChar { char -> char.titlecase(Locale.ROOT) } },
+                            text = resolvedText.ifBlank { itemType.replaceFirstChar { char -> char.titlecase(Locale.ROOT) } },
                             kind = kind,
                             turnId = turnId,
                             itemId = itemId,
+                            attachments = attachments,
+                            planState = planState,
+                            subagentAction = subagentAction,
+                            structuredUserInputRequest = structuredUserInputRequest,
                             orderIndex = orderIndex,
                             assistantChangeSet = if (
                                 speaker == ConversationSpeaker.ASSISTANT &&
@@ -1134,6 +1186,213 @@ class BridgeThreadSyncService(
         }
 
         return mutations
+    }
+
+    private fun decodeImageAttachments(itemObject: JsonObject): List<RemodexConversationAttachment> {
+        val content = itemObject.firstArray("content").orEmpty()
+        return content.mapIndexedNotNull { index, value ->
+            val objectValue = value.jsonObjectOrNull ?: return@mapIndexedNotNull null
+            when (normalizeItemType(objectValue.firstString("type").orEmpty())) {
+                "image", "localimage" -> {
+                    val uri = objectValue.firstString("image_url", "url", "path").orEmpty().trim()
+                    if (uri.isEmpty()) {
+                        null
+                    } else {
+                        RemodexConversationAttachment(
+                            id = objectValue.firstString("id") ?: "${itemObject.firstString("id").orEmpty()}-attachment-$index",
+                            uriString = uri,
+                            displayName = objectValue.firstString("name", "fileName", "filename")
+                                ?: uri.substringAfterLast('/').ifBlank { "image-${index + 1}" },
+                        )
+                    }
+                }
+
+                else -> null
+            }
+        }
+    }
+
+    private fun decodePlanItemText(itemObject: JsonObject): String {
+        val planState = decodeHistoryPlanState(itemObject)
+        val explanation = planState?.explanation?.trim().orEmpty()
+        if (explanation.isNotEmpty()) {
+            return explanation
+        }
+        return planState?.steps?.firstOrNull()?.step.orEmpty()
+    }
+
+    private fun decodeHistoryPlanState(itemObject: JsonObject): RemodexPlanState? {
+        val explanation = itemObject.firstString("explanation", "text", "message", "summary")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        val steps = itemObject.firstArray("plan").orEmpty().mapIndexedNotNull { index, value ->
+            val stepObject = value.jsonObjectOrNull ?: return@mapIndexedNotNull null
+            val step = stepObject.firstString("step")?.trim().orEmpty()
+            if (step.isEmpty()) {
+                return@mapIndexedNotNull null
+            }
+            val status = when (stepObject.firstString("status")?.trim()?.lowercase(Locale.ROOT)) {
+                "completed" -> RemodexPlanStepStatus.COMPLETED
+                "in_progress", "inprogress" -> RemodexPlanStepStatus.IN_PROGRESS
+                else -> RemodexPlanStepStatus.PENDING
+            }
+            RemodexPlanStep(
+                id = stepObject.firstString("id") ?: "${itemObject.firstString("id").orEmpty()}-plan-$index",
+                step = step,
+                status = status,
+            )
+        }
+        if (explanation == null && steps.isEmpty()) {
+            return null
+        }
+        return RemodexPlanState(
+            explanation = explanation,
+            steps = steps,
+        )
+    }
+
+    private fun decodeStructuredUserInputRequest(itemObject: JsonObject): RemodexStructuredUserInputRequest? {
+        val questions = itemObject.firstArray("questions").orEmpty().mapIndexedNotNull { index, value ->
+            val questionObject = value.jsonObjectOrNull ?: return@mapIndexedNotNull null
+            val id = questionObject.firstString("id")?.trim().orEmpty()
+            val header = questionObject.firstString("header")?.trim().orEmpty()
+            val question = questionObject.firstString("question")?.trim().orEmpty()
+            if (id.isEmpty() || header.isEmpty() || question.isEmpty()) {
+                return@mapIndexedNotNull null
+            }
+            RemodexStructuredUserInputQuestion(
+                id = id,
+                header = header,
+                question = question,
+                isOther = questionObject.firstBoolean("isOther") ?: false,
+                isSecret = questionObject.firstBoolean("isSecret") ?: false,
+                options = questionObject.firstArray("options").orEmpty().mapIndexedNotNull { optionIndex, optionValue ->
+                    val optionObject = optionValue.jsonObjectOrNull ?: return@mapIndexedNotNull null
+                    val label = optionObject.firstString("label")?.trim().orEmpty()
+                    val description = optionObject.firstString("description")?.trim().orEmpty()
+                    if (label.isEmpty() || description.isEmpty()) {
+                        return@mapIndexedNotNull null
+                    }
+                    RemodexStructuredUserInputOption(
+                        id = optionObject.firstString("id") ?: "$id-option-$optionIndex",
+                        label = label,
+                        description = description,
+                    )
+                },
+            )
+        }
+        if (questions.isEmpty()) {
+            return null
+        }
+        val requestId = itemObject.firstString("requestId", "request_id", "id")?.trim().orEmpty()
+        if (requestId.isEmpty()) {
+            return null
+        }
+        return RemodexStructuredUserInputRequest(
+            requestId = requestId,
+            questions = questions,
+        )
+    }
+
+    private fun isSubagentHistoryItemType(itemType: String): Boolean {
+        return itemType == "collabagenttoolcall"
+            || itemType == "collabtoolcall"
+            || itemType.startsWith("collabagentspawn")
+            || itemType.startsWith("collabwaiting")
+            || itemType.startsWith("collabclose")
+            || itemType.startsWith("collabresume")
+            || itemType.startsWith("collabagentinteraction")
+    }
+
+    private fun decodeSubagentAction(itemObject: JsonObject): RemodexSubagentAction? {
+        val receiverThreadIds = decodeSubagentReceiverThreadIds(itemObject)
+        val receiverAgents = decodeSubagentReceiverAgents(itemObject, receiverThreadIds)
+        val agentStates = decodeSubagentAgentStates(itemObject)
+        val prompt = itemObject.firstString("prompt", "task", "message")?.trim()?.takeIf(String::isNotEmpty)
+        val model = itemObject.firstString("model", "modelName", "model_name", "requestedModel", "requested_model")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        if (
+            receiverThreadIds.isEmpty() &&
+            receiverAgents.isEmpty() &&
+            agentStates.isEmpty() &&
+            prompt == null &&
+            model == null
+        ) {
+            return null
+        }
+        return RemodexSubagentAction(
+            tool = itemObject.firstString("tool", "name") ?: "spawnAgent",
+            status = itemObject.firstString("status") ?: "in_progress",
+            prompt = prompt,
+            model = model,
+            receiverThreadIds = receiverThreadIds,
+            receiverAgents = receiverAgents,
+            agentStates = agentStates,
+        )
+    }
+
+    private fun decodeSubagentReceiverThreadIds(itemObject: JsonObject): List<String> {
+        val directIds = itemObject.firstArray("receiverThreadIds", "receiver_thread_ids").orEmpty()
+            .mapNotNull(JsonElement::stringOrNull)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        if (directIds.isNotEmpty()) {
+            return directIds.distinct()
+        }
+        return itemObject.firstArray("receiverThreads", "receivers").orEmpty()
+            .mapNotNull { value ->
+                value.jsonObjectOrNull?.firstString("threadId", "thread_id")?.trim()
+            }
+            .filter(String::isNotEmpty)
+            .distinct()
+    }
+
+    private fun decodeSubagentReceiverAgents(
+        itemObject: JsonObject,
+        fallbackThreadIds: List<String>,
+    ): List<RemodexSubagentRef> {
+        val rawAgents = itemObject.firstArray("receiverAgents", "receiver_agents", "receivers").orEmpty()
+        val decodedAgents = rawAgents.mapNotNull { value ->
+            val objectValue = value.jsonObjectOrNull ?: return@mapNotNull null
+            val threadId = objectValue.firstString("threadId", "thread_id")?.trim().orEmpty()
+            if (threadId.isEmpty()) {
+                return@mapNotNull null
+            }
+            RemodexSubagentRef(
+                threadId = threadId,
+                agentId = objectValue.firstString("agentId", "agent_id"),
+                nickname = objectValue.firstString("nickname", "name"),
+                role = objectValue.firstString("role"),
+                model = objectValue.firstString("model", "modelName", "model_name"),
+                prompt = objectValue.firstString("prompt", "task", "message"),
+            )
+        }
+        if (decodedAgents.isNotEmpty()) {
+            return decodedAgents
+        }
+        return fallbackThreadIds.map { threadId -> RemodexSubagentRef(threadId = threadId) }
+    }
+
+    private fun decodeSubagentAgentStates(itemObject: JsonObject): Map<String, RemodexSubagentState> {
+        val rawStates = itemObject.firstObject("agentStates", "agent_states") ?: return emptyMap()
+        return buildMap {
+            rawStates.forEach { (threadId, value) ->
+                val objectValue = value.jsonObjectOrNull ?: return@forEach
+                val status = objectValue.firstString("status")?.trim().orEmpty()
+                if (threadId.isBlank() || status.isEmpty()) {
+                    return@forEach
+                }
+                put(
+                    threadId,
+                    RemodexSubagentState(
+                        threadId = threadId,
+                        status = status,
+                        message = objectValue.firstString("message", "summary", "description"),
+                    ),
+                )
+            }
+        }
     }
 
     private fun decodeItemText(itemObject: JsonObject): String {
@@ -1461,10 +1720,14 @@ class BridgeThreadSyncService(
                                     else -> "Shared ${attachments.size} images from Android."
                                 }
                             },
-                            supportingText = attachments.takeIf { it.isNotEmpty() }?.joinToString(
-                                prefix = "Attachments: ",
-                                separator = ", ",
-                            ) { attachment -> attachment.displayName },
+                            deliveryState = RemodexMessageDeliveryState.PENDING,
+                            attachments = attachments.map { attachment ->
+                                RemodexConversationAttachment(
+                                    id = attachment.id,
+                                    uriString = attachment.uriString,
+                                    displayName = attachment.displayName,
+                                )
+                            },
                             orderIndex = orderIndex,
                         ),
                     ),

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -57,12 +59,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
@@ -76,16 +84,21 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexSubagentAction
 
 @Composable
 fun ConversationScreen(
@@ -133,8 +146,23 @@ fun ConversationScreen(
     }
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
     val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
+    val timelineState = rememberLazyListState()
+
+    LaunchedEffect(thread.id) {
+        if (timelineItems.isNotEmpty()) {
+            timelineState.scrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    LaunchedEffect(thread.id, timelineItems.lastOrNull()?.id, thread.isRunning) {
+        if (timelineItems.isNotEmpty() && thread.isRunning) {
+            timelineState.animateScrollToItem(timelineItems.lastIndex)
+        }
+    }
 
     Box(
         modifier = modifier
@@ -151,6 +179,7 @@ fun ConversationScreen(
             )
 
             LazyColumn(
+                state = timelineState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -187,7 +216,10 @@ fun ConversationScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 pinnedPlanItem?.let { planItem ->
-                    PlanAccessoryCard(planItem)
+                    PlanAccessoryCard(
+                        planItem = planItem,
+                        onClick = { planSheetExpanded = true },
+                    )
                 }
 
                 if (uiState.composer.queuedDrafts.isNotEmpty()) {
@@ -223,6 +255,9 @@ fun ConversationScreen(
                         onClearSubagentsSelection = onClearSubagentsSelection,
                         onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                         onForkThread = onForkThread,
+                        onComposerFocusChanged = { isFocused ->
+                            composerFocused = isFocused
+                        },
                     )
 
                     if (uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE) {
@@ -245,13 +280,15 @@ fun ConversationScreen(
                     }
                 }
 
-                ComposerSecondaryBar(
-                    gitState = uiState.composer.gitState,
-                    selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
-                    accessMode = uiState.composer.runtimeConfig.accessMode,
-                    onRefreshGitState = onRefreshGitState,
-                    onOpenGitSheet = { gitSheetExpanded = true },
-                )
+                if (!composerFocused) {
+                    ComposerSecondaryBar(
+                        gitState = uiState.composer.gitState,
+                        selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
+                        accessMode = uiState.composer.runtimeConfig.accessMode,
+                        onRefreshGitState = onRefreshGitState,
+                        onOpenGitSheet = { gitSheetExpanded = true },
+                    )
+                }
             }
         }
 
@@ -269,6 +306,13 @@ fun ConversationScreen(
                 onPull = onPullGitChanges,
                 onPush = onPushGitChanges,
                 onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+            )
+        }
+
+        if (planSheetExpanded && pinnedPlanItem != null) {
+            PlanDetailsSheet(
+                planItem = pinnedPlanItem,
+                onDismiss = { planSheetExpanded = false },
             )
         }
 
@@ -361,7 +405,14 @@ private fun BannerCard(text: String) {
 }
 
 @Composable
-private fun PlanAccessoryCard(planItem: RemodexConversationItem) {
+private fun PlanAccessoryCard(
+    planItem: RemodexConversationItem,
+    onClick: () -> Unit,
+) {
+    val planSummary = planItem.planState?.explanation
+        ?.takeIf(String::isNotBlank)
+        ?: planItem.planState?.steps?.firstOrNull()?.step
+        ?: planItem.text
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
         shape = RoundedCornerShape(20.dp),
@@ -369,6 +420,7 @@ private fun PlanAccessoryCard(planItem: RemodexConversationItem) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable(onClick = onClick)
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -396,7 +448,7 @@ private fun PlanAccessoryCard(planItem: RemodexConversationItem) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = planItem.text,
+                    text = planSummary,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
@@ -442,6 +494,69 @@ private fun EmptyThreadTimelineCard() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlanDetailsSheet(
+    planItem: RemodexConversationItem,
+    onDismiss: () -> Unit,
+) {
+    val planState = planItem.planState
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = "Active plan",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            planState?.explanation?.takeIf(String::isNotBlank)?.let { explanation ->
+                Text(
+                    text = explanation,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            if (!planState?.steps.isNullOrEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    planState?.steps.orEmpty().forEach { step ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.8f),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = step.step,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                MetaPill(
+                                    label = step.status.label,
+                                    backgroundColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text(
+                    text = planItem.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
     }
 }
 
@@ -690,7 +805,10 @@ private fun ComposerSecondaryBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         MetaPill("Local", backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f))
-        MetaPill(accessMode.label, backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f))
+        MetaPill(
+            accessMode.label,
+            backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
+        )
         gitState.branches.currentBranch?.takeIf(String::isNotBlank)?.let { branch ->
             MetaPill(branch, backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f))
         }
@@ -710,8 +828,18 @@ private fun SecondaryBarAction(
     label: String,
     onClick: () -> Unit,
 ) {
-    TextButton(onClick = onClick) {
-        Text(label)
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -772,8 +900,10 @@ private fun ComposerCard(
     onClearSubagentsSelection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
+    onComposerFocusChanged: (Boolean) -> Unit,
 ) {
     val composer = uiState.composer
+    val queuedCount = composer.queuedDrafts.size
     val selectedModelTitle = composer.runtimeConfig.availableModels
         .firstOrNull { option ->
             option.id == composer.runtimeConfig.selectedModelId || option.model == composer.runtimeConfig.selectedModelId
@@ -829,9 +959,13 @@ private fun ComposerCard(
                 BasicTextField(
                     value = composer.draftText,
                     onValueChange = onComposerInputChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 4,
-                    maxLines = 10,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focusState ->
+                            onComposerFocusChanged(focusState.isFocused)
+                        },
+                    minLines = 1,
+                    maxLines = 8,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
                         color = MaterialTheme.colorScheme.onSurface,
                     ),
@@ -918,6 +1052,13 @@ private fun ComposerCard(
                                 )
                             },
                         )
+                        DropdownMenuItem(
+                            text = { Text("Take a photo") },
+                            enabled = false,
+                            onClick = {
+                                plusMenuExpanded = false
+                            },
+                        )
                     }
                 }
                 CompactRuntimeSelector(
@@ -973,19 +1114,34 @@ private fun ComposerCard(
                     enabled = composer.canSend,
                     shape = CircleShape,
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.KeyboardArrowUp,
-                        contentDescription = composer.sendLabel,
-                    )
+                    Box {
+                        Icon(
+                            imageVector = Icons.Outlined.KeyboardArrowUp,
+                            contentDescription = composer.sendLabel,
+                        )
+                        if (queuedCount > 0) {
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 10.dp, y = (-8).dp),
+                                shape = CircleShape,
+                                color = if (uiState.selectedThread?.isRunning == true) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                            ) {
+                                Text(
+                                    text = queuedCount.toString(),
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                        }
+                    }
                 }
             }
-
-            Text(
-                text = composer.runtimeConfig.runtimeLabel,
-                modifier = Modifier.padding(horizontal = 16.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -1129,28 +1285,20 @@ private fun AutocompletePanel(
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp)
                 .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = when (autocomplete.panel) {
-                        RemodexComposerAutocompletePanel.FILES -> "Files"
-                        RemodexComposerAutocompletePanel.SKILLS -> "Skills"
-                        RemodexComposerAutocompletePanel.COMMANDS -> "Commands"
-                        RemodexComposerAutocompletePanel.REVIEW_TARGETS -> "Code Review"
-                        RemodexComposerAutocompletePanel.FORK_DESTINATIONS -> "Fork"
-                        RemodexComposerAutocompletePanel.NONE -> ""
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                TextButton(onClick = onCloseComposerAutocomplete) {
-                    Text("Close")
-                }
-            }
+            Text(
+                text = when (autocomplete.panel) {
+                    RemodexComposerAutocompletePanel.FILES -> "Files"
+                    RemodexComposerAutocompletePanel.SKILLS -> "Skills"
+                    RemodexComposerAutocompletePanel.COMMANDS -> "Commands"
+                    RemodexComposerAutocompletePanel.REVIEW_TARGETS -> "Code Review"
+                    RemodexComposerAutocompletePanel.FORK_DESTINATIONS -> "Fork"
+                    RemodexComposerAutocompletePanel.NONE -> ""
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             when (autocomplete.panel) {
                 RemodexComposerAutocompletePanel.FILES -> {
@@ -1248,6 +1396,12 @@ private fun AutocompletePanel(
 
                 RemodexComposerAutocompletePanel.NONE -> Unit
             }
+
+            Text(
+                text = "Tap outside the composer to close",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1516,112 +1670,401 @@ private fun ConversationBubble(
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
 ) {
-    val (containerColor, contentColor, label) = when {
-        item.kind == ConversationItemKind.REASONING -> {
-            Triple(
-                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.84f),
-                MaterialTheme.colorScheme.onTertiaryContainer,
-                "Thinking",
+    when (item.speaker) {
+        ConversationSpeaker.USER -> UserConversationRow(item = item)
+        ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
+            item = item,
+            assistantRevertPresentation = assistantRevertPresentation,
+            onTapAssistantRevert = onTapAssistantRevert,
+        )
+        ConversationSpeaker.SYSTEM -> SystemConversationRow(item = item)
+    }
+}
+
+@Composable
+private fun UserConversationRow(item: RemodexConversationItem) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(0.82f),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (item.attachments.isNotEmpty()) {
+                MessageAttachmentStrip(
+                    attachments = item.attachments,
+                    alignToEnd = true,
+                )
+            }
+            if (item.text.isNotBlank()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(24.dp),
+                ) {
+                    Text(
+                        text = highlightMentions(item.text),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            MessageDeliveryStatus(item.deliveryState)
+        }
+    }
+}
+
+@Composable
+private fun AssistantConversationRow(
+    item: RemodexConversationItem,
+    assistantRevertPresentation: RemodexAssistantRevertPresentation?,
+    onTapAssistantRevert: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(0.92f),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (item.text.isNotBlank()) {
+            Text(
+                text = item.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
-
-        item.kind == ConversationItemKind.ACTIVITY -> {
-            Triple(
-                MaterialTheme.colorScheme.surfaceContainer,
-                MaterialTheme.colorScheme.onSurface,
-                "Activity",
+        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+            Text(
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-
-        item.speaker == ConversationSpeaker.USER -> {
-            Triple(
-                MaterialTheme.colorScheme.surfaceContainerHigh,
-                MaterialTheme.colorScheme.onSurface,
-                "",
-            )
+        if (item.isStreaming) {
+            StreamingIndicator(label = "Streaming")
         }
-
-        item.speaker == ConversationSpeaker.ASSISTANT -> {
-            Triple(
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                MaterialTheme.colorScheme.onSurface,
-                "",
-            )
-        }
-
-        else -> {
-            Triple(
-                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.8f),
-                MaterialTheme.colorScheme.onTertiaryContainer,
-                "System",
+        if (assistantRevertPresentation != null) {
+            AssistantRevertAction(
+                presentation = assistantRevertPresentation,
+                onTap = { onTapAssistantRevert(item.id) },
             )
         }
     }
+}
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (item.speaker == ConversationSpeaker.USER) {
-            Arrangement.End
-        } else {
-            Arrangement.Start
-        },
+@Composable
+private fun SystemConversationRow(item: RemodexConversationItem) {
+    when (item.kind) {
+        ConversationItemKind.REASONING -> ThinkingConversationRow(item)
+        ConversationItemKind.FILE_CHANGE -> SystemStatusRow(
+            title = "File changes",
+            item = item,
+        )
+        ConversationItemKind.COMMAND_EXECUTION -> SystemStatusRow(
+            title = "Command execution",
+            item = item,
+        )
+        ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(item)
+        ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
+        ConversationItemKind.PLAN -> Unit
+        ConversationItemKind.CHAT -> DefaultSystemRow(item)
+    }
+}
+
+@Composable
+private fun ThinkingConversationRow(item: RemodexConversationItem) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Surface(
-            color = containerColor,
-            shape = RoundedCornerShape(22.dp),
-            modifier = Modifier.fillMaxWidth(if (item.kind == ConversationItemKind.ACTIVITY) 1f else 0.84f),
+        Text(
+            text = "Thinking...",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (item.text.isNotBlank()) {
+            Text(
+                text = item.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+            Text(
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SystemStatusRow(
+    title: String,
+    item: RemodexConversationItem,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 15.dp, vertical = 13.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (label.isNotBlank() || item.isStreaming) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (item.text.isNotBlank()) {
+                Text(
+                    text = item.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (item.isStreaming) {
+                StreamingIndicator(label = "Running")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubagentActionRow(item: RemodexConversationItem) {
+    val action = item.subagentAction
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.74f),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Subagents",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = action?.summaryText ?: item.text,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            action?.agentRows?.forEach { row ->
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        if (label.isNotBlank()) {
+                        Text(
+                            text = row.displayLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        row.fallbackStatus?.takeIf(String::isNotBlank)?.let { status ->
                             Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = contentColor.copy(alpha = 0.76f),
+                                text = status.replace('_', ' '),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        } else {
-                            Spacer(modifier = Modifier.width(1.dp))
                         }
-                        if (item.isStreaming) {
+                        row.fallbackMessage?.takeIf(String::isNotBlank)?.let { message ->
                             Text(
-                                text = "Streaming",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = contentColor.copy(alpha = 0.68f),
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
                 }
-                Text(
-                    text = item.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = contentColor,
-                )
-                item.supportingText?.takeIf { supportingText -> supportingText.isNotBlank() }?.let { supportingText ->
+            }
+        }
+    }
+}
+
+@Composable
+private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) {
+    if (request == null) {
+        return
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Needs input",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            request.questions.forEach { question ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = supportingText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = contentColor.copy(alpha = 0.74f),
+                        text = question.header,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
-                }
-                if (assistantRevertPresentation != null && item.speaker == ConversationSpeaker.ASSISTANT) {
-                    AssistantRevertAction(
-                        presentation = assistantRevertPresentation,
-                        onTap = { onTapAssistantRevert(item.id) },
+                    Text(
+                        text = question.question,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
+                    question.options.forEach { option ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(
+                                text = "${option.label}: ${option.description}",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DefaultSystemRow(item: RemodexConversationItem) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        item.text.takeIf(String::isNotBlank)?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+            Text(
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageAttachmentStrip(
+    attachments: List<RemodexConversationAttachment>,
+    alignToEnd: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (alignToEnd) Arrangement.End else Arrangement.Start,
+    ) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            attachments.forEach { attachment ->
+                Surface(
+                    modifier = Modifier.width(140.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.76f),
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        AsyncImage(
+                            model = attachment.uriString,
+                            contentDescription = attachment.displayName,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(76.dp),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Text(
+                            text = attachment.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageDeliveryStatus(state: RemodexMessageDeliveryState) {
+    val label = when (state) {
+        RemodexMessageDeliveryState.PENDING -> "sending..."
+        RemodexMessageDeliveryState.FAILED -> "send failed"
+        RemodexMessageDeliveryState.CONFIRMED -> null
+    }
+    if (label != null) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (state == RemodexMessageDeliveryState.FAILED) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun StreamingIndicator(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textDecoration = TextDecoration.None,
+    )
+}
+
+private fun highlightMentions(text: String) = buildAnnotatedString {
+    val mentionRegex = Regex("([@\\$][^\\s]+)")
+    var cursor = 0
+    mentionRegex.findAll(text).forEach { match ->
+        if (match.range.first > cursor) {
+            append(text.substring(cursor, match.range.first))
+        }
+        withStyle(
+            SpanStyle(
+                color = if (match.value.startsWith("@")) Color(0xFF2563EB) else Color(0xFF4F46E5),
+                fontWeight = FontWeight.Medium,
+            ),
+        ) {
+            append(match.value)
+        }
+        cursor = match.range.last + 1
+    }
+    if (cursor < text.length) {
+        append(text.substring(cursor))
     }
 }
 
@@ -1636,14 +2079,31 @@ private fun AssistantRevertAction(
         RemodexAssistantRevertRiskLevel.BLOCKED -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedButton(
-            onClick = onTap,
-            enabled = presentation.isEnabled,
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(12.dp),
         ) {
-            Text(
-                text = presentation.title,
-                color = actionColor,
-            )
+            Row(
+                modifier = Modifier
+                    .clickable(
+                        enabled = presentation.isEnabled,
+                        onClick = onTap,
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    modifier = Modifier.size(8.dp),
+                    shape = CircleShape,
+                    color = actionColor,
+                ) {}
+                Text(
+                    text = presentation.title,
+                    color = actionColor,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
         }
         presentation.helperText?.takeIf(String::isNotBlank)?.let { helperText ->
             Text(

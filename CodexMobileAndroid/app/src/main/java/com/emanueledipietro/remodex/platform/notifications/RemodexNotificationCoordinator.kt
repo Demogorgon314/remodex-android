@@ -112,7 +112,7 @@ private fun detectAttentionMessage(
 }
 
 private fun isAttentionNeededMessage(message: RemodexConversationItem): Boolean {
-    if (message.kind != ConversationItemKind.ACTIVITY && message.speaker != ConversationSpeaker.SYSTEM) {
+    if (message.speaker != ConversationSpeaker.SYSTEM) {
         return false
     }
     val haystack = buildString {
