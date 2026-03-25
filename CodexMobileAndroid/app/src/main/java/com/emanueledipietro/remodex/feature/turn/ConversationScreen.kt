@@ -46,14 +46,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedAssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -144,6 +150,10 @@ private val ComposerTrailingButtonSize = 32.dp
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
+private val FileAutocompleteRowHeight = 50.dp
+private val SkillAutocompleteRowHeight = 50.dp
+private val SlashAutocompleteRowHeight = 50.dp
+private const val MaxAutocompleteVisibleRows = 6
 internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
 
@@ -376,40 +386,11 @@ fun ConversationScreen(
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        ComposerCard(
-                            uiState = uiState,
-                            onComposerInputChanged = onComposerInputChanged,
-                            onSendPrompt = onSendPrompt,
-                            onStopTurn = onStopTurn,
-                            onSelectModel = onSelectModel,
-                            onSelectPlanningMode = onSelectPlanningMode,
-                            onSelectReasoningEffort = onSelectReasoningEffort,
-                            onSelectAccessMode = onSelectAccessMode,
-                            onSelectServiceTier = onSelectServiceTier,
-                            onOpenAttachmentPicker = onOpenAttachmentPicker,
-                            onRemoveAttachment = onRemoveAttachment,
-                            onSelectFileAutocomplete = onSelectFileAutocomplete,
-                            onRemoveMentionedFile = onRemoveMentionedFile,
-                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                            onRemoveMentionedSkill = onRemoveMentionedSkill,
-                            onSelectSlashCommand = onSelectSlashCommand,
-                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                            onClearReviewSelection = onClearReviewSelection,
-                            onClearSubagentsSelection = onClearSubagentsSelection,
-                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                            onForkThread = onForkThread,
-                            onComposerFocusChanged = { isFocused ->
-                                composerFocused = isFocused
-                            },
-                        )
-
-                        if (autocompleteVisible) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .align(Alignment.TopStart)
-                                    .offset(y = (-12).dp),
-                            ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(0.dp),
+                        ) {
+                            if (autocompleteVisible) {
                                 AutocompletePanel(
                                     uiState = uiState,
                                     onSelectFileAutocomplete = onSelectFileAutocomplete,
@@ -418,8 +399,38 @@ fun ConversationScreen(
                                     onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                     onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                                     onForkThread = onForkThread,
+                                    modifier = Modifier
+                                        .padding(horizontal = 16.dp)
+                                        .padding(bottom = 6.dp),
                                 )
                             }
+
+                            ComposerCard(
+                                uiState = uiState,
+                                onComposerInputChanged = onComposerInputChanged,
+                                onSendPrompt = onSendPrompt,
+                                onStopTurn = onStopTurn,
+                                onSelectModel = onSelectModel,
+                                onSelectPlanningMode = onSelectPlanningMode,
+                                onSelectReasoningEffort = onSelectReasoningEffort,
+                                onSelectAccessMode = onSelectAccessMode,
+                                onSelectServiceTier = onSelectServiceTier,
+                                onOpenAttachmentPicker = onOpenAttachmentPicker,
+                                onRemoveAttachment = onRemoveAttachment,
+                                onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                onRemoveMentionedFile = onRemoveMentionedFile,
+                                onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                onRemoveMentionedSkill = onRemoveMentionedSkill,
+                                onSelectSlashCommand = onSelectSlashCommand,
+                                onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                onClearReviewSelection = onClearReviewSelection,
+                                onClearSubagentsSelection = onClearSubagentsSelection,
+                                onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                onForkThread = onForkThread,
+                                onComposerFocusChanged = { isFocused ->
+                                    composerFocused = isFocused
+                                },
+                            )
                         }
                     }
 
@@ -1694,6 +1705,7 @@ private fun AutocompletePanel(
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val chrome = remodexConversationChrome()
     val autocomplete = uiState.composer.autocomplete
@@ -1702,193 +1714,609 @@ private fun AutocompletePanel(
     }
 
     Surface(
-        modifier = Modifier.testTag(ComposerAutocompletePanelTag),
+        modifier = modifier.testTag(ComposerAutocompletePanelTag),
         shape = RemodexConversationShapes.panel,
         color = chrome.panelSurfaceStrong,
         border = BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = when (autocomplete.panel) {
-                    RemodexComposerAutocompletePanel.FILES -> "Files"
-                    RemodexComposerAutocompletePanel.SKILLS -> "Skills"
-                    RemodexComposerAutocompletePanel.COMMANDS -> "Commands"
-                    RemodexComposerAutocompletePanel.REVIEW_TARGETS -> "Code Review"
-                    RemodexComposerAutocompletePanel.FORK_DESTINATIONS -> "Fork"
-                    RemodexComposerAutocompletePanel.NONE -> ""
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = chrome.secondaryText,
-            )
-
-            when (autocomplete.panel) {
-                RemodexComposerAutocompletePanel.FILES -> {
-                    if (autocomplete.isFileLoading) {
-                        Text("Searching files for @${autocomplete.fileQuery}...")
-                    }
-                    autocomplete.fileItems.forEach { item ->
-                        SuggestionRow(
-                            title = item.fileName,
-                            subtitle = item.path,
-                            onClick = { onSelectFileAutocomplete(item) },
-                        )
-                    }
-                    if (!autocomplete.isFileLoading && autocomplete.fileItems.isEmpty()) {
-                        Text(
-                            text = "No files found for @${autocomplete.fileQuery}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = chrome.secondaryText,
-                        )
-                    }
-                }
-
-                RemodexComposerAutocompletePanel.SKILLS -> {
-                    if (autocomplete.isSkillLoading) {
-                        Text("Searching skills for \$${autocomplete.skillQuery}...")
-                    }
-                    autocomplete.skillItems.forEach { skill ->
-                        SuggestionRow(
-                            title = skill.name,
-                            subtitle = skill.description ?: skill.path.orEmpty(),
-                            onClick = { onSelectSkillAutocomplete(skill) },
-                        )
-                    }
-                    if (!autocomplete.isSkillLoading && autocomplete.skillItems.isEmpty()) {
-                        Text(
-                            text = "No skills found for \$${autocomplete.skillQuery}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = chrome.secondaryText,
-                        )
-                    }
-                }
-
-                RemodexComposerAutocompletePanel.COMMANDS -> {
-                    autocomplete.slashCommands.forEach { command ->
-                        SuggestionRow(
-                            title = command.title,
-                            subtitle = command.subtitle,
-                            trailingLabel = command.token,
-                            onClick = { onSelectSlashCommand(command) },
-                        )
-                    }
-                    if (autocomplete.slashCommands.isEmpty()) {
-                        Text(
-                            text = "No commands available for /${autocomplete.slashQuery}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = chrome.secondaryText,
-                        )
-                    }
-                }
-
-                RemodexComposerAutocompletePanel.REVIEW_TARGETS -> {
-                    autocomplete.reviewTargets.forEach { target ->
-                        SuggestionRow(
-                            title = target.title,
-                            subtitle = when (target) {
-                                RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> "Review everything currently modified in the repo."
-                                RemodexComposerReviewTarget.BASE_BRANCH -> {
-                                    val branch = autocomplete.selectedGitBaseBranch.ifBlank {
-                                        autocomplete.gitDefaultBranch.ifBlank { "main" }
-                                    }
-                                    "Review against $branch."
-                                }
-                            },
-                            onClick = { onSelectCodeReviewTarget(target) },
-                        )
-                    }
-                    if (autocomplete.hasComposerContentConflictingWithReview) {
-                        Text(
-                            text = "Clear text, files, skills, and images before starting a code review.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = chrome.destructive,
-                        )
-                    }
-                }
-
-                RemodexComposerAutocompletePanel.FORK_DESTINATIONS -> {
-                    autocomplete.forkDestinations.forEach { destination ->
-                        SuggestionRow(
-                            title = destination.title,
-                            subtitle = destination.subtitle,
-                            onClick = { onForkThread(destination) },
-                        )
-                    }
-                }
-
-                RemodexComposerAutocompletePanel.NONE -> Unit
+        when (autocomplete.panel) {
+            RemodexComposerAutocompletePanel.FILES -> {
+                FileAutocompletePanel(
+                    items = autocomplete.fileItems,
+                    isLoading = autocomplete.isFileLoading,
+                    query = autocomplete.fileQuery,
+                    onSelect = onSelectFileAutocomplete,
+                )
             }
 
+            RemodexComposerAutocompletePanel.SKILLS -> {
+                SkillAutocompletePanel(
+                    items = autocomplete.skillItems,
+                    isLoading = autocomplete.isSkillLoading,
+                    query = autocomplete.skillQuery,
+                    onSelect = onSelectSkillAutocomplete,
+                )
+            }
+
+            RemodexComposerAutocompletePanel.COMMANDS -> {
+                SlashCommandAutocompletePanel(
+                    autocomplete = autocomplete,
+                    onSelectCommand = onSelectSlashCommand,
+                    onSelectReviewTarget = onSelectCodeReviewTarget,
+                    onSelectForkDestination = onForkThread,
+                    onClose = onCloseComposerAutocomplete,
+                )
+            }
+
+            RemodexComposerAutocompletePanel.REVIEW_TARGETS,
+            RemodexComposerAutocompletePanel.FORK_DESTINATIONS,
+            -> {
+                SlashCommandAutocompletePanel(
+                    autocomplete = autocomplete,
+                    onSelectCommand = onSelectSlashCommand,
+                    onSelectReviewTarget = onSelectCodeReviewTarget,
+                    onSelectForkDestination = onForkThread,
+                    onClose = onCloseComposerAutocomplete,
+                )
+            }
+
+            RemodexComposerAutocompletePanel.NONE -> Unit
+        }
+    }
+}
+
+@Composable
+private fun FileAutocompletePanel(
+    items: List<RemodexFuzzyFileMatch>,
+    isLoading: Boolean,
+    query: String,
+    onSelect: (RemodexFuzzyFileMatch) -> Unit,
+) {
+    if (isLoading) {
+        AutocompleteLoadingState("Searching files...")
+        return
+    }
+    if (items.isEmpty()) {
+        AutocompleteEmptyState("No files for @$query")
+        return
+    }
+
+    AutocompleteListContainer(maxHeight = FileAutocompleteRowHeight * MaxAutocompleteVisibleRows) {
+        items.forEachIndexed { index, item ->
+            FileAutocompleteRow(
+                item = item,
+                onClick = { onSelect(item) },
+            )
+            if (index != items.lastIndex) {
+                HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillAutocompletePanel(
+    items: List<RemodexSkillMetadata>,
+    isLoading: Boolean,
+    query: String,
+    onSelect: (RemodexSkillMetadata) -> Unit,
+) {
+    if (isLoading) {
+        AutocompleteLoadingState("Searching skills...")
+        return
+    }
+    if (items.isEmpty()) {
+        AutocompleteEmptyState("No skills for ${'$'}$query")
+        return
+    }
+
+    AutocompleteListContainer(maxHeight = SkillAutocompleteRowHeight * MaxAutocompleteVisibleRows) {
+        items.forEachIndexed { index, skill ->
+            SkillAutocompleteRow(
+                skill = skill,
+                onClick = { onSelect(skill) },
+            )
+            if (index != items.lastIndex) {
+                HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlashCommandAutocompletePanel(
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+    onSelectCommand: (RemodexSlashCommand) -> Unit,
+    onSelectReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectForkDestination: (RemodexComposerForkDestination) -> Unit,
+    onClose: () -> Unit,
+) {
+    when (autocomplete.panel) {
+        RemodexComposerAutocompletePanel.COMMANDS -> {
+            if (autocomplete.slashCommands.isEmpty()) {
+                AutocompleteEmptyState("No commands for /${autocomplete.slashQuery}")
+                return
+            }
+            AutocompleteListContainer(maxHeight = SlashAutocompleteRowHeight * MaxAutocompleteVisibleRows) {
+                autocomplete.slashCommands.forEachIndexed { index, command ->
+                    val enabled = isCommandEnabled(command, autocomplete)
+                    SlashCommandRow(
+                        command = command,
+                        enabled = enabled,
+                        subtitle = commandSubtitle(command, autocomplete, enabled),
+                        onClick = { onSelectCommand(command) },
+                    )
+                    if (index != autocomplete.slashCommands.lastIndex) {
+                        HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                    }
+                }
+            }
+        }
+
+        RemodexComposerAutocompletePanel.REVIEW_TARGETS -> {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                AutocompleteSubmenuHeader(
+                    title = "Code Review",
+                    subtitle = "Choose what the reviewer should compare.",
+                    closeContentDescription = "Close code review options",
+                    onClose = onClose,
+                )
+                autocomplete.reviewTargets.forEachIndexed { index, target ->
+                    ReviewTargetRow(
+                        target = target,
+                        subtitle = reviewTargetSubtitle(target, autocomplete),
+                        enabled = target != RemodexComposerReviewTarget.BASE_BRANCH ||
+                            resolvedBaseBranchName(autocomplete) != null,
+                        onClick = { onSelectReviewTarget(target) },
+                    )
+                    if (index != autocomplete.reviewTargets.lastIndex) {
+                        HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                    }
+                }
+            }
+        }
+
+        RemodexComposerAutocompletePanel.FORK_DESTINATIONS -> {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                AutocompleteSubmenuHeader(
+                    title = "Fork",
+                    subtitle = forkDestinationSubtitle(autocomplete.forkDestinations),
+                    closeContentDescription = "Close fork options",
+                    onClose = onClose,
+                )
+                autocomplete.forkDestinations.forEachIndexed { index, destination ->
+                    ForkDestinationRow(
+                        destination = destination,
+                        onClick = { onSelectForkDestination(destination) },
+                    )
+                    if (index != autocomplete.forkDestinations.lastIndex) {
+                        HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                    }
+                }
+            }
+        }
+
+        else -> Unit
+    }
+}
+
+@Composable
+private fun AutocompleteListContainer(
+    maxHeight: androidx.compose.ui.unit.Dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = maxHeight)
+            .verticalScroll(rememberScrollState())
+            .padding(4.dp),
+        content = content,
+    )
+}
+
+@Composable
+private fun AutocompleteLoadingState(text: String) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+            color = chrome.secondaryText,
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+        )
+    }
+}
+
+@Composable
+private fun AutocompleteEmptyState(text: String) {
+    val chrome = remodexConversationChrome()
+    Text(
+        text = text,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = chrome.secondaryText,
+    )
+}
+
+@Composable
+private fun FileAutocompleteRow(
+    item: RemodexFuzzyFileMatch,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = FileAutocompleteRowHeight)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = item.fileName,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = chrome.titleText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = item.path,
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun SkillAutocompleteRow(
+    skill: RemodexSkillMetadata,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SkillAutocompleteRowHeight)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Text(
-                text = "Tap outside the composer to close",
+                text = formatSkillDisplayName(skill.name),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "$${skill.name}",
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
+                maxLines = 1,
+            )
+        }
+        normalizedSkillDescription(skill.description)?.let { description ->
+            Text(
+                text = description,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
 
 @Composable
-private fun SuggestionRow(
-    title: String,
+private fun SlashCommandRow(
+    command: RemodexSlashCommand,
+    enabled: Boolean,
     subtitle: String,
-    trailingLabel: String? = null,
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    Surface(
+    val contentColor = if (enabled) chrome.titleText else chrome.secondaryText
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        color = chrome.nestedSurface,
-        shape = RemodexConversationShapes.nestedCard,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+            .height(SlashAutocompleteRowHeight)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Icon(
+            imageVector = slashCommandIcon(command),
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.width(22.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+            Text(
+                text = command.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = command.token,
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun ReviewTargetRow(
+    target: RemodexComposerReviewTarget,
+    subtitle: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val contentColor = if (enabled) chrome.titleText else chrome.secondaryText
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SlashAutocompleteRowHeight)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = target.title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = remodexConversationChrome().secondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun ForkDestinationRow(
+    destination: RemodexComposerForkDestination,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SlashAutocompleteRowHeight)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = forkDestinationIcon(destination),
+            contentDescription = null,
+            tint = chrome.titleText,
+            modifier = Modifier.width(22.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = destination.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = destination.subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AutocompleteSubmenuHeader(
+    title: String,
+    subtitle: String,
+    closeContentDescription: String,
+    onClose: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Surface(
+            shape = CircleShape,
+            color = chrome.nestedSurface,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(28.dp),
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = chrome.titleText,
-                )
-                if (subtitle.isNotBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = chrome.secondaryText,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            trailingLabel?.takeIf(String::isNotBlank)?.let { label ->
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = chrome.secondaryText,
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = closeContentDescription,
+                    tint = chrome.secondaryText,
+                    modifier = Modifier.size(14.dp),
                 )
             }
         }
+    }
+}
+
+private fun formatSkillDisplayName(rawName: String): String {
+    val normalized = rawName.trim()
+    if (normalized.isEmpty()) {
+        return rawName
+    }
+    val parts = normalized
+        .split(Regex("[-_]+"))
+        .filter(String::isNotEmpty)
+        .map { part ->
+            part.lowercase().replaceFirstChar { character ->
+                if (character.isLowerCase()) character.titlecase() else character.toString()
+            }
+        }
+    return if (parts.isEmpty()) normalized else parts.joinToString(separator = " ")
+}
+
+private fun normalizedSkillDescription(rawDescription: String?): String? {
+    val normalized = rawDescription
+        ?.split(Regex("\\s+"))
+        ?.filter(String::isNotEmpty)
+        ?.joinToString(separator = " ")
+        ?.trim()
+        .orEmpty()
+    return normalized.takeIf(String::isNotEmpty)
+}
+
+private fun isCommandEnabled(
+    command: RemodexSlashCommand,
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+): Boolean {
+    return when (command) {
+        RemodexSlashCommand.CODE_REVIEW -> !autocomplete.hasComposerContentConflictingWithReview
+        RemodexSlashCommand.FORK -> !autocomplete.isThreadRunning
+        RemodexSlashCommand.STATUS,
+        RemodexSlashCommand.SUBAGENTS,
+        -> true
+    }
+}
+
+private fun commandSubtitle(
+    command: RemodexSlashCommand,
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+    enabled: Boolean,
+): String {
+    if (command == RemodexSlashCommand.FORK && autocomplete.isThreadRunning) {
+        return "Wait for the current response to finish first"
+    }
+    if (!enabled) {
+        return "Clear draft text, files, skills, and images first"
+    }
+    return command.subtitle
+}
+
+private fun reviewTargetSubtitle(
+    target: RemodexComposerReviewTarget,
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+): String {
+    return when (target) {
+        RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> "Review everything currently modified in the repo"
+        RemodexComposerReviewTarget.BASE_BRANCH -> {
+            resolvedBaseBranchName(autocomplete)?.let { branch ->
+                "Diff against $branch"
+            } ?: "Pick a base branch first"
+        }
+    }
+}
+
+private fun resolvedBaseBranchName(
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+): String? {
+    return autocomplete.selectedGitBaseBranch.trim().takeIf(String::isNotEmpty)
+        ?: autocomplete.gitDefaultBranch.trim().takeIf(String::isNotEmpty)
+}
+
+private fun forkDestinationSubtitle(
+    destinations: List<RemodexComposerForkDestination>,
+): String {
+    val showsLocal = destinations.contains(RemodexComposerForkDestination.LOCAL)
+    val showsNewWorktree = destinations.contains(RemodexComposerForkDestination.NEW_WORKTREE)
+    return when {
+        showsLocal && showsNewWorktree -> "Fork this thread into local or a new worktree."
+        showsLocal -> "Fork this thread into a new local thread."
+        showsNewWorktree -> "Fork this thread into a new worktree."
+        else -> "Fork this thread."
+    }
+}
+
+private fun slashCommandIcon(command: RemodexSlashCommand): ImageVector {
+    return when (command) {
+        RemodexSlashCommand.CODE_REVIEW -> Icons.Outlined.BugReport
+        RemodexSlashCommand.FORK -> Icons.AutoMirrored.Outlined.CallSplit
+        RemodexSlashCommand.STATUS -> Icons.Outlined.Speed
+        RemodexSlashCommand.SUBAGENTS -> Icons.Outlined.AccountCircle
+    }
+}
+
+private fun forkDestinationIcon(destination: RemodexComposerForkDestination): ImageVector {
+    return when (destination) {
+        RemodexComposerForkDestination.LOCAL -> Icons.Outlined.Folder
+        RemodexComposerForkDestination.NEW_WORKTREE -> Icons.AutoMirrored.Outlined.CallSplit
     }
 }
 

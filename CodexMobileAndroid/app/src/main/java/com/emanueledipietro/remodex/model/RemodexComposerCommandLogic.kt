@@ -6,6 +6,25 @@ data class RemodexTrailingToken(
 )
 
 object RemodexComposerCommandLogic {
+    private val fileMentionSegmentRegex = Regex("[A-Z]+(?=$|[A-Z][a-z]|\\d)|[A-Z]?[a-z]+|\\d+")
+    private val disallowedBareSwiftFileMentionQueries = setOf(
+        "Binding",
+        "Environment",
+        "EnvironmentObject",
+        "FocusState",
+        "MainActor",
+        "Namespace",
+        "Observable",
+        "ObservedObject",
+        "Published",
+        "SceneBuilder",
+        "State",
+        "StateObject",
+        "UIApplicationDelegateAdaptor",
+        "ViewBuilder",
+        "testable",
+    )
+
     fun trailingFileToken(text: String): RemodexTrailingToken? {
         if (text.isEmpty() || text.last().isWhitespace()) {
             return null
@@ -20,6 +39,9 @@ object RemodexComposerCommandLogic {
         val rawQuery = text.substring(triggerIndex + 1)
         val query = rawQuery.trim()
         if (query.isEmpty() || query.any { character -> character == '\n' || character == '\r' }) {
+            return null
+        }
+        if (!isAllowedFileAutocompleteQuery(query)) {
             return null
         }
         if (query.any(Char::isWhitespace)) {
@@ -77,6 +99,45 @@ object RemodexComposerCommandLogic {
         return text.replaceRange(token.startIndex, text.length, "").trim()
     }
 
+    fun hasClosedConfirmedFileMentionPrefix(
+        text: String,
+        confirmedMentions: List<RemodexComposerMentionedFile>,
+    ): Boolean {
+        if (confirmedMentions.isEmpty()) {
+            return false
+        }
+        val triggerIndex = text.lastIndexOf('@')
+        if (triggerIndex < 0) {
+            return false
+        }
+        if (triggerIndex > 0 && !text[triggerIndex - 1].isWhitespace()) {
+            return false
+        }
+        val tail = text.substring(triggerIndex + 1)
+        if (tail.isEmpty()) {
+            return false
+        }
+
+        val ambiguousKeys = ambiguousFileNameAliasKeys(confirmedMentions)
+        confirmedMentions.forEach { mention ->
+            val collisionKey = fileNameAliasCollisionKey(mention.fileName)
+            val allowFileNameAliases = collisionKey?.let { key -> !ambiguousKeys.contains(key) } ?: true
+            fileMentionAliases(
+                fileName = mention.fileName,
+                path = mention.path,
+                allowFileNameAliases = allowFileNameAliases,
+            ).forEach { alias ->
+                if (tail.startsWith(alias, ignoreCase = true) &&
+                    tail.length > alias.length &&
+                    tail[alias.length].isWhitespace()
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     fun applySubagentsSelection(
         text: String,
         isSelected: Boolean,
@@ -131,23 +192,44 @@ object RemodexComposerCommandLogic {
         text: String,
         mention: RemodexComposerMentionedFile,
     ): String {
-        return replaceBoundedToken(
-            token = "@${mention.fileName}",
-            replacement = "@${mention.path}",
-            text = text,
-            ignoreCase = true,
-        )
+        val replacement = "@${mention.path}"
+        val placeholder = "__remodex_file_mention__${mention.path.hashCode()}__"
+        val ambiguousKeys = ambiguousFileNameAliasKeys(listOf(mention))
+        val collisionKey = fileNameAliasCollisionKey(mention.fileName)
+        val allowFileNameAliases = collisionKey?.let { key -> !ambiguousKeys.contains(key) } ?: true
+        val replacedText = fileMentionAliases(
+            fileName = mention.fileName,
+            path = mention.path,
+            allowFileNameAliases = allowFileNameAliases,
+        ).fold(text) { partialText, alias ->
+            replaceBoundedToken(
+                token = "@$alias",
+                replacement = placeholder,
+                text = partialText,
+                ignoreCase = true,
+            )
+        }
+        return replacedText.replace(placeholder, replacement)
     }
 
     fun removeFileMentionAliases(
         text: String,
         mention: RemodexComposerMentionedFile,
     ): String {
-        return removeBoundedToken(
-            token = "@${mention.fileName}",
-            text = text,
-            ignoreCase = true,
-        )
+        val ambiguousKeys = ambiguousFileNameAliasKeys(listOf(mention))
+        val collisionKey = fileNameAliasCollisionKey(mention.fileName)
+        val allowFileNameAliases = collisionKey?.let { key -> !ambiguousKeys.contains(key) } ?: true
+        return fileMentionAliases(
+            fileName = mention.fileName,
+            path = mention.path,
+            allowFileNameAliases = allowFileNameAliases,
+        ).fold(text) { partialText, alias ->
+            removeBoundedToken(
+                token = "@$alias",
+                text = partialText,
+                ignoreCase = true,
+            )
+        }
     }
 
     private fun trailingToken(
@@ -167,6 +249,183 @@ object RemodexComposerCommandLogic {
             return null
         }
         return RemodexTrailingToken(query = query, startIndex = tokenStart)
+    }
+
+    private fun isAllowedFileAutocompleteQuery(query: String): Boolean {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.isEmpty()) {
+            return false
+        }
+        if (trimmedQuery.contains('/') || trimmedQuery.contains('\\') || trimmedQuery.contains('.')) {
+            return true
+        }
+        return !disallowedBareSwiftFileMentionQueries.contains(trimmedQuery)
+    }
+
+    private fun fileMentionAliases(
+        fileName: String,
+        path: String,
+        allowFileNameAliases: Boolean = true,
+    ): List<String> {
+        val aliases = linkedSetOf<String>()
+        val seeds = mutableListOf(path, deletingPathExtension(path))
+        if (allowFileNameAliases) {
+            seeds.add(0, fileName)
+            seeds += deletingPathExtension(fileName)
+        }
+        seeds.forEach { seed ->
+            val trimmedSeed = seed.trim()
+            if (trimmedSeed.isEmpty()) {
+                return@forEach
+            }
+            aliases += trimmedSeed
+            appendNormalizedFileMentionAliases(trimmedSeed, aliases)
+        }
+        return aliases
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .sortedWith(
+                compareByDescending<String> { it.length }
+                    .thenBy { it.lowercase() },
+            )
+    }
+
+    private fun ambiguousFileNameAliasKeys(
+        mentions: List<RemodexComposerMentionedFile>,
+    ): Set<String> {
+        return mentions
+            .mapNotNull { mention -> fileNameAliasCollisionKey(mention.fileName) }
+            .groupingBy { key -> key }
+            .eachCount()
+            .filterValues { count -> count > 1 }
+            .keys
+    }
+
+    private fun fileNameAliasCollisionKey(fileName: String): String? {
+        val trimmedName = fileName.trim()
+        if (trimmedName.isEmpty()) {
+            return null
+        }
+        val normalizedExtension = trimmedName.substringAfterLast('.', "").lowercase()
+        val stem = deletingPathExtension(trimmedName)
+        val tokens = mentionSearchTokens(stem)
+        if (tokens.isEmpty()) {
+            return normalizedExtension.takeIf(String::isNotEmpty)?.let { ".$it" }
+        }
+        val tokenKey = tokens.joinToString(separator = "|")
+        return if (normalizedExtension.isEmpty()) {
+            tokenKey
+        } else {
+            "$tokenKey.$normalizedExtension"
+        }
+    }
+
+    private fun appendNormalizedFileMentionAliases(
+        seed: String,
+        aliases: MutableSet<String>,
+    ) {
+        val trimmedSeed = seed.trim()
+        if (trimmedSeed.isEmpty()) {
+            return
+        }
+        val normalizedExtension = trimmedSeed.substringAfterLast('.', "").lowercase()
+        val stem = if (normalizedExtension.isEmpty()) {
+            trimmedSeed
+        } else {
+            deletingPathExtension(trimmedSeed)
+        }
+        val tokens = mentionSearchTokens(stem)
+        if (tokens.isEmpty()) {
+            return
+        }
+        val baseVariants = linkedSetOf(
+            tokens.joinToString(separator = " "),
+            tokens.joinToString(separator = "-"),
+            tokens.joinToString(separator = "_"),
+            tokens.joinToString(separator = ""),
+            lowerCamelCase(tokens),
+            upperCamelCase(tokens),
+        ).filter(String::isNotEmpty)
+        baseVariants.forEach { variant ->
+            aliases += variant
+            if (normalizedExtension.isNotEmpty()) {
+                aliases += "$variant.$normalizedExtension"
+            }
+        }
+    }
+
+    private fun mentionSearchTokens(value: String): List<String> {
+        val trimmedValue = value.trim()
+        if (trimmedValue.isEmpty()) {
+            return emptyList()
+        }
+        return trimmedValue
+            .split(Regex("[^A-Za-z0-9]+"))
+            .filter(String::isNotEmpty)
+            .flatMap(::tokensFromMentionSegment)
+    }
+
+    private fun tokensFromMentionSegment(segment: String): List<String> {
+        val trimmedSegment = segment.trim()
+        if (trimmedSegment.isEmpty()) {
+            return emptyList()
+        }
+        val rawTokens = fileMentionSegmentRegex.findAll(trimmedSegment)
+            .map { match -> match.value }
+            .toList()
+        if (rawTokens.isEmpty()) {
+            return listOf(trimmedSegment.lowercase())
+        }
+        val normalizedTokens = mutableListOf<String>()
+        var index = 0
+        while (index < rawTokens.size) {
+            val token = rawTokens[index]
+            if (token.length == 1 &&
+                token == token.lowercase() &&
+                index + 1 < rawTokens.size &&
+                isAllCapsAcronym(rawTokens[index + 1])
+            ) {
+                normalizedTokens += (token + rawTokens[index + 1]).lowercase()
+                index += 2
+                continue
+            }
+            normalizedTokens += token.lowercase()
+            index += 1
+        }
+        return normalizedTokens
+    }
+
+    private fun isAllCapsAcronym(token: String): Boolean {
+        return token.length > 1 && token.all { character ->
+            character.isUpperCase() || character.isDigit()
+        }
+    }
+
+    private fun lowerCamelCase(tokens: List<String>): String {
+        val first = tokens.firstOrNull() ?: return ""
+        return first + tokens.drop(1).joinToString(separator = "") { token -> token.capitalizeToken() }
+    }
+
+    private fun upperCamelCase(tokens: List<String>): String {
+        return tokens.joinToString(separator = "") { token -> token.capitalizeToken() }
+    }
+
+    private fun String.capitalizeToken(): String {
+        val first = firstOrNull() ?: return this
+        return first.uppercaseChar() + drop(1)
+    }
+
+    private fun deletingPathExtension(value: String): String {
+        val trimmedValue = value.trim()
+        if (trimmedValue.isEmpty()) {
+            return ""
+        }
+        val extensionIndex = trimmedValue.lastIndexOf('.')
+        return if (extensionIndex <= 0) {
+            trimmedValue
+        } else {
+            trimmedValue.substring(0, extensionIndex)
+        }
     }
 
     private fun replaceBoundedToken(

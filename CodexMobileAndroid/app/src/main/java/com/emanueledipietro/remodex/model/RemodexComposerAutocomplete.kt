@@ -67,6 +67,12 @@ enum class RemodexComposerForkDestination {
             LOCAL -> "Continue in a new local thread"
             NEW_WORKTREE -> "Continue in a new worktree"
         }
+
+    val symbolName: String
+        get() = when (this) {
+            LOCAL -> "laptopcomputer"
+            NEW_WORKTREE -> "arrow.triangle.branch"
+        }
 }
 
 enum class RemodexSlashCommand(
@@ -76,18 +82,6 @@ enum class RemodexSlashCommand(
     val cannedPrompt: String? = null,
     val isImplemented: Boolean = true,
 ) {
-    STATUS(
-        title = "Status",
-        subtitle = "Show context usage, runtime status, and git context",
-        token = "/status",
-        cannedPrompt = "Show the current context usage, runtime status, and git context for this thread.",
-    ),
-    SUBAGENTS(
-        title = "Subagents",
-        subtitle = "Insert a canned prompt that asks Remodex to delegate work",
-        token = "/subagents",
-        cannedPrompt = "Run subagents for different tasks. Delegate distinct work in parallel when helpful and then synthesize the results.",
-    ),
     CODE_REVIEW(
         title = "Code Review",
         subtitle = "Run the reviewer on your local changes",
@@ -98,10 +92,34 @@ enum class RemodexSlashCommand(
         subtitle = "Fork this thread into local or a new worktree",
         token = "/fork",
     ),
+    STATUS(
+        title = "Status",
+        subtitle = "Show context usage and rate limits",
+        token = "/status",
+    ),
+    SUBAGENTS(
+        title = "Subagents",
+        subtitle = "Insert a canned prompt that asks Codex to delegate work",
+        token = "/subagents",
+        cannedPrompt = "Run subagents for different tasks. Delegate distinct work in parallel when helpful and then synthesize the results.",
+    ),
     ;
 
+    val symbolName: String
+        get() = when (this) {
+            CODE_REVIEW -> "ladybug"
+            FORK -> "arrow.triangle.branch"
+            STATUS -> "speedometer"
+            SUBAGENTS -> "person.crop.circle"
+        }
+
     companion object {
-        val allCommands: List<RemodexSlashCommand> = entries
+        val allCommands: List<RemodexSlashCommand> = listOf(
+            CODE_REVIEW,
+            FORK,
+            STATUS,
+            SUBAGENTS,
+        )
 
         fun filtered(query: String): List<RemodexSlashCommand> {
             val trimmedQuery = query.trim().lowercase()

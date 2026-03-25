@@ -582,18 +582,9 @@ class AppViewModel(
             RemodexSlashCommand.STATUS -> {
                 composerDrafts.update { draftsByThread ->
                     val currentDraft = draftsByThread[threadId].orEmpty()
-                    val withoutToken = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(currentDraft)
-                        ?: currentDraft
-                    val nextDraft = buildString {
-                        append(withoutToken.trim())
-                        if (isNotEmpty()) {
-                            append('\n')
-                            append('\n')
-                        }
-                        append(command.cannedPrompt.orEmpty())
-                    }.trim()
                     draftsByThread.toMutableMap().apply {
-                        this[threadId] = nextDraft
+                        this[threadId] = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(currentDraft)
+                            ?: currentDraft
                     }
                 }
                 clearComposerAutocomplete()
@@ -1021,66 +1012,114 @@ class AppViewModel(
 
         when {
             fileToken != null -> {
-                skillAutocompleteJob?.cancel()
-                autocompleteState.value = RemodexComposerAutocompleteState(
-                    panel = RemodexComposerAutocompletePanel.FILES,
-                    fileQuery = fileToken.query,
-                    isFileLoading = fileToken.query.length >= MinAutocompleteQueryLength,
-                )
-                if (fileToken.query.length < MinAutocompleteQueryLength) {
+                if (RemodexComposerCommandLogic.hasClosedConfirmedFileMentionPrefix(
+                        text = input,
+                        confirmedMentions = composer.mentionedFiles,
+                    )
+                ) {
+                    clearComposerAutocomplete()
                     return
                 }
                 fileAutocompleteJob?.cancel()
+                skillAutocompleteJob?.cancel()
+                if (fileToken.query.length < MinAutocompleteQueryLength) {
+                    clearComposerAutocomplete()
+                    return
+                }
+                autocompleteState.value = RemodexComposerAutocompleteState(
+                    panel = RemodexComposerAutocompletePanel.FILES,
+                    fileQuery = fileToken.query,
+                    isFileLoading = true,
+                )
+                val expectedQuery = fileToken.query
                 fileAutocompleteJob = viewModelScope.launch {
                     delay(AutocompleteDebounceMs)
-                    val matches = repository.fuzzyFileSearch(threadId, fileToken.query)
-                    autocompleteState.value = autocompleteState.value.copy(
-                        panel = RemodexComposerAutocompletePanel.FILES,
-                        fileQuery = fileToken.query,
-                        fileItems = matches.take(MaxAutocompleteItems),
-                        isFileLoading = false,
-                    )
+                    runCatching {
+                        repository.fuzzyFileSearch(threadId, expectedQuery)
+                    }.onSuccess { matches ->
+                        val currentToken = RemodexComposerCommandLogic.trailingFileToken(
+                            composerDrafts.value[threadId].orEmpty(),
+                        )
+                        if (currentToken?.query != expectedQuery) {
+                            return@onSuccess
+                        }
+                        autocompleteState.value = autocompleteState.value.copy(
+                            panel = RemodexComposerAutocompletePanel.FILES,
+                            fileQuery = expectedQuery,
+                            fileItems = matches.take(MaxAutocompleteItems),
+                            isFileLoading = false,
+                        )
+                    }.onFailure {
+                        val currentToken = RemodexComposerCommandLogic.trailingFileToken(
+                            composerDrafts.value[threadId].orEmpty(),
+                        )
+                        if (currentToken?.query != expectedQuery) {
+                            return@onFailure
+                        }
+                        clearComposerAutocomplete()
+                    }
                 }
             }
 
             skillToken != null -> {
+                skillAutocompleteJob?.cancel()
                 fileAutocompleteJob?.cancel()
+                if (skillToken.query.length < MinAutocompleteQueryLength) {
+                    clearComposerAutocomplete()
+                    return
+                }
                 autocompleteState.value = RemodexComposerAutocompleteState(
                     panel = RemodexComposerAutocompletePanel.SKILLS,
                     skillQuery = skillToken.query,
-                    isSkillLoading = skillToken.query.length >= MinAutocompleteQueryLength,
+                    isSkillLoading = true,
                 )
-                if (skillToken.query.length < MinAutocompleteQueryLength) {
-                    return
-                }
-                skillAutocompleteJob?.cancel()
+                val expectedQuery = skillToken.query
                 skillAutocompleteJob = viewModelScope.launch {
                     delay(AutocompleteDebounceMs)
-                    val matches = repository.listSkills(threadId = threadId, forceReload = false)
-                        .filter { skill ->
-                            skill.enabled && skillSearchBlob(skill).contains(skillToken.query.lowercase())
+                    runCatching {
+                        repository.listSkills(threadId = threadId, forceReload = false)
+                            .filter { skill ->
+                                skill.enabled && skillSearchBlob(skill).contains(expectedQuery.lowercase())
+                            }
+                            .take(MaxAutocompleteItems)
+                    }.onSuccess { matches ->
+                        val currentToken = RemodexComposerCommandLogic.trailingSkillToken(
+                            composerDrafts.value[threadId].orEmpty(),
+                        )
+                        if (currentToken?.query != expectedQuery) {
+                            return@onSuccess
                         }
-                        .take(MaxAutocompleteItems)
-                    autocompleteState.value = autocompleteState.value.copy(
-                        panel = RemodexComposerAutocompletePanel.SKILLS,
-                        skillQuery = skillToken.query,
-                        skillItems = matches,
-                        isSkillLoading = false,
-                    )
+                        autocompleteState.value = autocompleteState.value.copy(
+                            panel = RemodexComposerAutocompletePanel.SKILLS,
+                            skillQuery = expectedQuery,
+                            skillItems = matches,
+                            isSkillLoading = false,
+                        )
+                    }.onFailure {
+                        val currentToken = RemodexComposerCommandLogic.trailingSkillToken(
+                            composerDrafts.value[threadId].orEmpty(),
+                        )
+                        if (currentToken?.query != expectedQuery) {
+                            return@onFailure
+                        }
+                        clearComposerAutocomplete()
+                    }
                 }
             }
 
             slashToken != null -> {
                 fileAutocompleteJob?.cancel()
                 skillAutocompleteJob?.cancel()
+                val availableCommands = availableSlashCommands(
+                    composer = composer,
+                    draftText = input,
+                )
                 autocompleteState.value = autocompleteState.value.copy(
                     panel = RemodexComposerAutocompletePanel.COMMANDS,
                     slashQuery = slashToken.query,
-                    availableCommands = availableSlashCommands(
-                        composer = composer,
-                    ),
+                    availableCommands = availableCommands,
                     slashCommands = RemodexSlashCommand.filtered(slashToken.query)
-                        .filter { command -> availableSlashCommands(composer).contains(command) },
+                        .filter { command -> availableCommands.contains(command) },
                 )
             }
 
@@ -1208,9 +1247,10 @@ class AppViewModel(
 
     private fun availableSlashCommands(
         composer: ComposerUiState,
+        draftText: String = composer.draftText,
     ): List<RemodexSlashCommand> {
         val allowsFork = RemodexComposerCommandLogic.canOfferForkSlashCommand(
-            text = composer.draftText,
+            text = draftText,
             mentionedFileCount = composer.mentionedFiles.size,
             mentionedSkillCount = composer.mentionedSkills.size,
             attachmentCount = composer.attachments.size,

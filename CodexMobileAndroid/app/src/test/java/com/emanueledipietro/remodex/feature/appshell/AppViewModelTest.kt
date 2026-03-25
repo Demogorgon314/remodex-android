@@ -14,6 +14,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -25,6 +26,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -286,10 +288,135 @@ class AppViewModelTest {
         assertFalse(viewModel.uiState.value.isRefreshingThreads)
     }
 
+    @Test
+    fun `file autocomplete matches iOS debounce and closes after confirmed mention prose`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            fileSearchResults = listOf(
+                RemodexFuzzyFileMatch(
+                    root = "/tmp/remodex",
+                    path = "app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt",
+                    fileName = "ConversationScreen.kt",
+                    score = 1.0,
+                ),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Autocomplete thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("@co")
+        runCurrent()
+
+        assertEquals(RemodexComposerAutocompletePanel.FILES, viewModel.uiState.value.composer.autocomplete.panel)
+        assertTrue(viewModel.uiState.value.composer.autocomplete.isFileLoading)
+
+        advanceTimeBy(250)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("ConversationScreen.kt"),
+            viewModel.uiState.value.composer.autocomplete.fileItems.map(RemodexFuzzyFileMatch::fileName),
+        )
+
+        viewModel.selectFileAutocomplete(repository.fileSearchResults.first())
+        advanceUntilIdle()
+        viewModel.updateComposerInput("${viewModel.uiState.value.composer.draftText}notes")
+        advanceUntilIdle()
+
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+        assertEquals(1, viewModel.uiState.value.composer.mentionedFiles.size)
+    }
+
+    @Test
+    fun `skill autocomplete matches iOS debounce and hides under minimum query length`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            skillResults = listOf(
+                RemodexSkillMetadata(
+                    name = "android-ui-review",
+                    description = "Review Android UI parity before shipping.",
+                    enabled = true,
+                ),
+                RemodexSkillMetadata(
+                    name = "bridge-protocol-check",
+                    description = "Validate bridge JSON-RPC compatibility.",
+                    enabled = true,
+                ),
+                RemodexSkillMetadata(
+                    name = "disabled-skill",
+                    description = "Should never appear.",
+                    enabled = false,
+                ),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Skills thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("\$an")
+        runCurrent()
+
+        assertEquals(RemodexComposerAutocompletePanel.SKILLS, viewModel.uiState.value.composer.autocomplete.panel)
+        assertTrue(viewModel.uiState.value.composer.autocomplete.isSkillLoading)
+
+        advanceTimeBy(250)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("android-ui-review"),
+            viewModel.uiState.value.composer.autocomplete.skillItems.map(RemodexSkillMetadata::name),
+        )
+
+        viewModel.updateComposerInput("\$a")
+        advanceUntilIdle()
+
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `slash command ordering and status action match iOS behavior`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Commands thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                RemodexSlashCommand.CODE_REVIEW,
+                RemodexSlashCommand.FORK,
+                RemodexSlashCommand.STATUS,
+                RemodexSlashCommand.SUBAGENTS,
+            ),
+            viewModel.uiState.value.composer.autocomplete.slashCommands,
+        )
+
+        viewModel.updateComposerInput("/status")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.STATUS)
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
+        var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
+        var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
         var refreshDelayMs = 1_000L
         var previewResult = RemodexRevertPreviewResult(
@@ -375,12 +502,12 @@ class AppViewModelTest {
         override suspend fun fuzzyFileSearch(
             threadId: String,
             query: String,
-        ): List<RemodexFuzzyFileMatch> = emptyList()
+        ): List<RemodexFuzzyFileMatch> = fileSearchResults
 
         override suspend fun listSkills(
             threadId: String,
             forceReload: Boolean,
-        ): List<RemodexSkillMetadata> = emptyList()
+        ): List<RemodexSkillMetadata> = skillResults
 
         override suspend fun startCodeReview(
             threadId: String,
