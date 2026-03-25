@@ -94,14 +94,29 @@ data class RemodexSubagentAction(
     val receiverAgents: List<RemodexSubagentRef> = emptyList(),
     val agentStates: Map<String, RemodexSubagentState> = emptyMap(),
 ) {
+    val normalizedTool: String
+        get() = tool.trim()
+            .lowercase()
+            .replace("_", "")
+            .replace("-", "")
+
+    val normalizedStatus: String
+        get() = status.trim()
+            .lowercase()
+            .replace("_", "")
+            .replace("-", "")
+
     val summaryText: String
         get() {
-            val normalizedPrompt = prompt?.trim().orEmpty()
-            return when {
-                normalizedPrompt.isNotEmpty() -> normalizedPrompt
-                receiverThreadIds.isNotEmpty() -> "Coordinating ${receiverThreadIds.size} subagent(s)"
-                receiverAgents.isNotEmpty() -> "Coordinating ${receiverAgents.size} subagent(s)"
-                else -> "Coordinating subagents"
+            val count = maxOf(1, maxOf(agentRows.size, receiverThreadIds.size, receiverAgents.size))
+            val noun = if (count == 1) "agent" else "agents"
+            return when (normalizedTool) {
+                "spawnagent" -> "Spawning $count $noun"
+                "wait", "waitagent" -> "Waiting on $count $noun"
+                "closeagent" -> "Closing $count $noun"
+                "resumeagent" -> "Resuming $count $noun"
+                "sendinput" -> if (count == 1) "Updating agent" else "Updating agents"
+                else -> if (count == 1) "Agent activity" else "Agent activity ($count)"
             }
         }
 
@@ -133,8 +148,8 @@ data class RemodexSubagentAction(
                     nickname = matchingAgent?.nickname,
                     role = matchingAgent?.role,
                     model = matchingAgent?.model ?: model,
-                    prompt = matchingAgent?.prompt ?: prompt,
-                    fallbackStatus = state?.status ?: status,
+                    prompt = matchingAgent?.prompt,
+                    fallbackStatus = state?.status,
                     fallbackMessage = state?.message,
                 )
             }

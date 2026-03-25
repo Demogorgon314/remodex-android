@@ -38,6 +38,7 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -112,6 +113,15 @@ private data class ComposerRenderStateB(
     val gitStatesByThread: Map<String, RemodexGitState> = emptyMap(),
     val baseBranchesByThread: Map<String, String> = emptyMap(),
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
+)
+
+private data class PendingComposerSendState(
+    val draftText: String,
+    val attachments: List<RemodexComposerAttachment>,
+    val mentionedFiles: List<RemodexComposerMentionedFile>,
+    val mentionedSkills: List<RemodexComposerMentionedSkill>,
+    val reviewSelection: RemodexComposerReviewSelection?,
+    val isSubagentsSelectionArmed: Boolean,
 )
 
 class AppViewModel(
@@ -390,6 +400,14 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
             val composer = uiState.value.composer
+            val pendingComposerState = PendingComposerSendState(
+                draftText = composer.draftText,
+                attachments = composer.attachments,
+                mentionedFiles = composer.mentionedFiles,
+                mentionedSkills = composer.mentionedSkills,
+                reviewSelection = composer.reviewSelection,
+                isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
+            )
             val reviewSelection = composer.reviewSelection
             if (reviewSelection?.target != null) {
                 if (composer.autocomplete.hasComposerContentConflictingWithReview) {
@@ -399,13 +417,24 @@ class AppViewModel(
                     )
                     return@launch
                 }
-                repository.startCodeReview(
-                    threadId = threadId,
-                    target = reviewSelection.target,
-                    baseBranch = composer.selectedGitBaseBranch.ifBlank { null },
-                )
                 clearComposer(threadId)
-                refreshGitState(threadId)
+                try {
+                    repository.startCodeReview(
+                        threadId = threadId,
+                        target = reviewSelection.target,
+                        baseBranch = composer.selectedGitBaseBranch.ifBlank { null },
+                    )
+                    refreshGitState(threadId)
+                } catch (error: Throwable) {
+                    if (error is CancellationException) {
+                        throw error
+                    }
+                    restoreComposer(threadId, pendingComposerState)
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = error.message ?: "Could not start this code review.",
+                    )
+                }
                 return@launch
             }
 
@@ -414,8 +443,19 @@ class AppViewModel(
                 mentionedFiles = composer.mentionedFiles,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
-            repository.sendPrompt(threadId, payload, composer.attachments)
             clearComposer(threadId)
+            try {
+                repository.sendPrompt(threadId, payload, composer.attachments)
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                restoreComposer(threadId, pendingComposerState)
+                setComposerMessage(
+                    threadId = threadId,
+                    message = error.message ?: "Could not send this message.",
+                )
+            }
         }
     }
 
@@ -1216,6 +1256,46 @@ class AppViewModel(
             messagesByThread.toMutableMap().apply { remove(threadId) }
         }
         clearComposerAutocomplete()
+    }
+
+    private fun restoreComposer(
+        threadId: String,
+        pendingComposerState: PendingComposerSendState,
+    ) {
+        composerDrafts.update { draftsByThread ->
+            draftsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.draftText
+            }
+        }
+        composerAttachments.update { attachmentsByThread ->
+            attachmentsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.attachments
+            }
+        }
+        composerMentionedFiles.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.mentionedFiles
+            }
+        }
+        composerMentionedSkills.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.mentionedSkills
+            }
+        }
+        composerReviewSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply {
+                if (pendingComposerState.reviewSelection == null) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = pendingComposerState.reviewSelection
+                }
+            }
+        }
+        composerSubagentsSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.isSubagentsSelectionArmed
+            }
+        }
     }
 
     private fun setComposerMessage(

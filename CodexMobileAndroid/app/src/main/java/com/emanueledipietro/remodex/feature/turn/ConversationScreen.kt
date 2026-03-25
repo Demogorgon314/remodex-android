@@ -1,6 +1,12 @@
 package com.emanueledipietro.remodex.feature.turn
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
@@ -91,6 +97,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -156,6 +163,12 @@ private val SlashAutocompleteRowHeight = 50.dp
 private const val MaxAutocompleteVisibleRows = 6
 internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
+internal const val ComposerSendButtonTag = "composer_send_button"
+internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
+
+private data class ConversationBlockAccessoryState(
+    val showsRunningIndicator: Boolean = false,
+)
 
 @Composable
 fun ConversationScreen(
@@ -209,6 +222,12 @@ fun ConversationScreen(
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
     val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
+    val blockAccessories = remember(timelineItems, thread.isRunning) {
+        buildConversationBlockAccessories(
+            items = timelineItems,
+            isThreadRunning = thread.isRunning,
+        )
+    }
     val timelineState = rememberLazyListState()
     val density = LocalDensity.current
     val lastTimelineItemId = timelineItems.lastOrNull()?.id
@@ -323,6 +342,7 @@ fun ConversationScreen(
                             items(timelineItems, key = { it.id }) { message ->
                                 ConversationBubble(
                                     item = message,
+                                    accessoryState = blockAccessories[message.id],
                                     assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
                                     onTapAssistantRevert = onStartAssistantRevertPreview,
                                 )
@@ -510,9 +530,19 @@ private fun ConversationCircleButton(
     filled: Boolean = false,
 ) {
     val chrome = remodexConversationChrome()
+    val buttonColor = when {
+        filled && enabled -> chrome.sendButton
+        filled -> chrome.sendButtonDisabled
+        else -> chrome.mutedSurface
+    }
+    val iconTint = when {
+        filled && enabled -> chrome.sendIcon
+        filled -> chrome.sendIconDisabled
+        else -> if (enabled) chrome.titleText else chrome.secondaryText.copy(alpha = 0.72f)
+    }
     Surface(
         modifier = modifier.requiredSize(ComposerTrailingButtonSize),
-        color = if (filled) chrome.sendButton else chrome.mutedSurface,
+        color = buttonColor,
         shape = CircleShape,
         border = if (filled) null else BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
@@ -528,7 +558,7 @@ private fun ConversationCircleButton(
                 imageVector = icon,
                 contentDescription = contentDescription,
                 modifier = Modifier.size(14.dp),
-                tint = if (filled) chrome.sendIcon else chrome.titleText,
+                tint = iconTint,
             )
         }
     }
@@ -1542,6 +1572,7 @@ private fun ComposerCard(
                         }
                         Box {
                             ConversationCircleButton(
+                                modifier = Modifier.testTag(ComposerSendButtonTag),
                                 icon = Icons.Outlined.KeyboardArrowUp,
                                 contentDescription = composer.sendLabel,
                                 onClick = onSendPrompt,
@@ -2785,6 +2816,7 @@ private fun <T> RuntimeControlsSection(
 @Composable
 private fun ConversationBubble(
     item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
 ) {
@@ -2792,10 +2824,14 @@ private fun ConversationBubble(
         ConversationSpeaker.USER -> UserConversationRow(item = item)
         ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
             item = item,
+            accessoryState = accessoryState,
             assistantRevertPresentation = assistantRevertPresentation,
             onTapAssistantRevert = onTapAssistantRevert,
         )
-        ConversationSpeaker.SYSTEM -> SystemConversationRow(item = item)
+        ConversationSpeaker.SYSTEM -> SystemConversationRow(
+            item = item,
+            accessoryState = accessoryState,
+        )
     }
 }
 
@@ -2841,6 +2877,7 @@ private fun UserConversationRow(item: RemodexConversationItem) {
 @Composable
 private fun AssistantConversationRow(
     item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
 ) {
@@ -2863,8 +2900,8 @@ private fun AssistantConversationRow(
                 color = chrome.secondaryText,
             )
         }
-        if (item.isStreaming) {
-            StreamingIndicator(label = "Streaming")
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
         }
         if (assistantRevertPresentation != null) {
             AssistantRevertAction(
@@ -2876,26 +2913,41 @@ private fun AssistantConversationRow(
 }
 
 @Composable
-private fun SystemConversationRow(item: RemodexConversationItem) {
+private fun SystemConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
     when (item.kind) {
-        ConversationItemKind.REASONING -> ThinkingConversationRow(item)
-        ConversationItemKind.FILE_CHANGE -> SystemStatusRow(
-            title = "File changes",
+        ConversationItemKind.REASONING -> ThinkingConversationRow(
             item = item,
+            accessoryState = accessoryState,
         )
-        ConversationItemKind.COMMAND_EXECUTION -> SystemStatusRow(
-            title = "Command execution",
+        ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
             item = item,
+            accessoryState = accessoryState,
         )
-        ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(item)
+        ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
+            item = item,
+            accessoryState = accessoryState,
+        )
+        ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(
+            item = item,
+            accessoryState = accessoryState,
+        )
         ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
         ConversationItemKind.PLAN -> Unit
-        ConversationItemKind.CHAT -> DefaultSystemRow(item)
+        ConversationItemKind.CHAT -> DefaultSystemRow(
+            item = item,
+            accessoryState = accessoryState,
+        )
     }
 }
 
 @Composable
-private fun ThinkingConversationRow(item: RemodexConversationItem) {
+private fun ThinkingConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
     val chrome = remodexConversationChrome()
     Column(
         modifier = Modifier
@@ -2922,13 +2974,16 @@ private fun ThinkingConversationRow(item: RemodexConversationItem) {
                 color = chrome.secondaryText,
             )
         }
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
+        }
     }
 }
 
 @Composable
-private fun SystemStatusRow(
-    title: String,
+private fun FileChangeConversationRow(
     item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
 ) {
     val chrome = remodexConversationChrome()
     Surface(
@@ -2945,7 +3000,7 @@ private fun SystemStatusRow(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                text = title,
+                text = "File changes",
                 style = MaterialTheme.typography.labelMedium,
                 color = chrome.secondaryText,
             )
@@ -2963,7 +3018,9 @@ private fun SystemStatusRow(
                     color = chrome.secondaryText,
                 )
             }
-            if (item.isStreaming) {
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            } else if (item.isStreaming) {
                 StreamingIndicator(label = "Running")
             }
         }
@@ -2971,32 +3028,86 @@ private fun SystemStatusRow(
 }
 
 @Composable
-private fun SubagentActionRow(item: RemodexConversationItem) {
+private fun CommandExecutionConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
     val chrome = remodexConversationChrome()
-    val action = item.subagentAction
-    Surface(
-        color = chrome.panelSurface,
-        shape = RemodexConversationShapes.card,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+    val commandRows = remember(item.text) {
+        item.text
+            .lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toList()
+    }
+    val parsedRows = remember(commandRows) {
+        commandRows.map { line -> parseCommandExecutionStatus(line) }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        if (parsedRows.all { it != null } && parsedRows.isNotEmpty()) {
+            parsedRows.filterNotNull().forEach { status ->
+                CommandExecutionStatusLine(status = status)
+            }
+        } else {
+            item.text.takeIf(String::isNotBlank)?.let { text ->
+                ConversationMarkdownText(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+        }
+        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
             Text(
-                text = "Subagents",
-                style = MaterialTheme.typography.labelMedium,
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
+        }
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
+        }
+    }
+}
+
+@Composable
+private fun SubagentActionRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    val chrome = remodexConversationChrome()
+    val action = item.subagentAction
+    var expanded by rememberSaveable(item.id) { mutableStateOf(true) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 text = action?.summaryText ?: item.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = chrome.bodyText,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+                modifier = Modifier.weight(1f),
             )
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = chrome.tertiaryText,
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer { rotationZ = if (expanded) 0f else -90f },
+            )
+        }
+        if (expanded) {
             action?.agentRows?.forEach { row ->
                 Surface(
                     color = chrome.nestedSurface,
@@ -3017,11 +3128,18 @@ private fun SubagentActionRow(item: RemodexConversationItem) {
                             fontWeight = FontWeight.SemiBold,
                             color = chrome.titleText,
                         )
-                        row.fallbackStatus?.takeIf(String::isNotBlank)?.let { status ->
+                        readableSubagentStatus(
+                            action = action,
+                            rawStatus = row.fallbackStatus,
+                        )?.let { status ->
                             Text(
-                                text = status.replace('_', ' '),
+                                text = status,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = chrome.secondaryText,
+                                color = subagentStatusColor(
+                                    chrome = chrome,
+                                    action = action,
+                                    rawStatus = row.fallbackStatus,
+                                ),
                             )
                         }
                         row.fallbackMessage?.takeIf(String::isNotBlank)?.let { message ->
@@ -3035,6 +3153,506 @@ private fun SubagentActionRow(item: RemodexConversationItem) {
                 }
             }
         }
+        if (item.isStreaming) {
+            MiniTypingIndicator()
+        }
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
+        }
+    }
+}
+
+private enum class CommandExecutionStatusAccent {
+    RUNNING,
+    COMPLETED,
+    FAILED,
+}
+
+private data class CommandExecutionStatusPresentation(
+    val command: String,
+    val statusLabel: String,
+    val accent: CommandExecutionStatusAccent,
+)
+
+private data class HumanizedCommandInfo(
+    val verb: String,
+    val target: String,
+)
+
+@Composable
+private fun CommandExecutionStatusLine(status: CommandExecutionStatusPresentation) {
+    val chrome = remodexConversationChrome()
+    val humanized = remember(status.command, status.accent) {
+        humanizeCommand(
+            raw = status.command,
+            isRunning = status.accent == CommandExecutionStatusAccent.RUNNING,
+        )
+    }
+    val accentColor = when (status.accent) {
+        CommandExecutionStatusAccent.RUNNING -> chrome.warning
+        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText.copy(alpha = 0.7f)
+        CommandExecutionStatusAccent.FAILED -> chrome.destructive
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "${humanized.verb} ${humanized.target}",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.bodyText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = status.statusLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = accentColor,
+        )
+    }
+}
+
+@Composable
+private fun MiniTypingIndicator() {
+    val chrome = remodexConversationChrome()
+    val transition = rememberInfiniteTransition(label = "mini_typing")
+    val highlightAlpha by transition.animateFloat(
+        initialValue = 0.18f,
+        targetValue = 0.52f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "mini_typing_alpha",
+    )
+    Surface(
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .width(22.dp)
+                .height(4.dp)
+                .background(
+                    color = chrome.secondaryText.copy(alpha = highlightAlpha),
+                    shape = RemodexConversationShapes.pill,
+                ),
+        )
+    }
+}
+
+@Composable
+private fun TerminalRunningIndicator() {
+    val chrome = remodexConversationChrome()
+    val transition = rememberInfiniteTransition(label = "terminal_running")
+    val cursorAlpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.18f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 550, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "terminal_running_cursor",
+    )
+
+    Row(
+        modifier = Modifier
+            .testTag(ConversationRunningIndicatorTag)
+            .padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = chrome.mutedSurface,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = ">",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = chrome.secondaryText,
+                )
+                Box(
+                    modifier = Modifier
+                        .padding(top = 1.dp)
+                        .width(4.dp)
+                        .height(1.dp)
+                        .background(
+                            color = chrome.secondaryText.copy(alpha = cursorAlpha),
+                            shape = RemodexConversationShapes.pill,
+                        ),
+                )
+            }
+        }
+        Text(
+            text = "Remodex is thinking...",
+            style = MaterialTheme.typography.labelSmall,
+            color = chrome.secondaryText,
+        )
+    }
+}
+
+private fun buildConversationBlockAccessories(
+    items: List<RemodexConversationItem>,
+    isThreadRunning: Boolean,
+): Map<String, ConversationBlockAccessoryState> {
+    if (!isThreadRunning || items.isEmpty()) {
+        return emptyMap()
+    }
+
+    val latestBlockEnd = items.indexOfLast { it.speaker != ConversationSpeaker.USER }
+    if (latestBlockEnd == -1) {
+        return emptyMap()
+    }
+
+    val activeTurnId = items.asReversed().firstNotNullOfOrNull { item ->
+        item.turnId?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    val accessories = mutableMapOf<String, ConversationBlockAccessoryState>()
+    var cursor = items.lastIndex
+    while (cursor >= 0) {
+        if (items[cursor].speaker == ConversationSpeaker.USER) {
+            cursor -= 1
+            continue
+        }
+
+        val blockEnd = cursor
+        var blockStart = cursor
+        while (blockStart > 0 && items[blockStart - 1].speaker != ConversationSpeaker.USER) {
+            blockStart -= 1
+        }
+
+        val blockTurnId = items.subList(blockStart, blockEnd + 1)
+            .asReversed()
+            .firstNotNullOfOrNull { item -> item.turnId?.trim()?.takeIf(String::isNotEmpty) }
+
+        val showsRunningIndicator = when {
+            activeTurnId != null && blockTurnId != null -> activeTurnId == blockTurnId
+            else -> blockEnd == latestBlockEnd
+        }
+
+        if (showsRunningIndicator) {
+            accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
+                showsRunningIndicator = true,
+            )
+        }
+
+        cursor = blockStart - 1
+    }
+
+    return accessories
+}
+
+private fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPresentation? {
+    val parts = text.trim().split(Regex("\\s+"), limit = 2)
+    val first = parts.firstOrNull()?.lowercase() ?: return null
+    val commandLabel = parts.getOrNull(1)?.trim().orEmpty().ifBlank { "command" }
+
+    return when (first) {
+        "running" -> CommandExecutionStatusPresentation(
+            command = commandLabel,
+            statusLabel = "running",
+            accent = CommandExecutionStatusAccent.RUNNING,
+        )
+        "completed" -> CommandExecutionStatusPresentation(
+            command = commandLabel,
+            statusLabel = "completed",
+            accent = CommandExecutionStatusAccent.COMPLETED,
+        )
+        "failed", "stopped" -> CommandExecutionStatusPresentation(
+            command = commandLabel,
+            statusLabel = first,
+            accent = CommandExecutionStatusAccent.FAILED,
+        )
+        else -> null
+    }
+}
+
+private fun humanizeCommand(
+    raw: String,
+    isRunning: Boolean,
+): HumanizedCommandInfo {
+    val command = unwrapShellCommand(raw)
+    val firstSpace = command.indexOf(' ')
+    val rawTool = if (firstSpace == -1) command else command.substring(0, firstSpace)
+    val tool = rawTool.substringAfterLast('/').lowercase()
+    val args = if (firstSpace == -1) "" else command.substring(firstSpace + 1)
+
+    return when (tool) {
+        "cat", "nl", "head", "tail", "sed", "less", "more" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Reading" else "Read",
+            target = lastPathComponent(args, fallback = "file"),
+        )
+        "rg", "grep", "ag", "ack" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Searching" else "Searched",
+            target = searchSummary(args),
+        )
+        "ls" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Listing" else "Listed",
+            target = lastPathComponent(args, fallback = "directory"),
+        )
+        "find", "fd" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Finding" else "Found",
+            target = lastPathComponent(args, fallback = "files"),
+        )
+        "mkdir" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Creating" else "Created",
+            target = lastPathComponent(args, fallback = "directory"),
+        )
+        "rm" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Removing" else "Removed",
+            target = lastPathComponent(args, fallback = "file"),
+        )
+        "cp", "mv" -> HumanizedCommandInfo(
+            verb = when {
+                tool == "cp" && isRunning -> "Copying"
+                tool == "cp" -> "Copied"
+                isRunning -> "Moving"
+                else -> "Moved"
+            },
+            target = lastPathComponent(args, fallback = "file"),
+        )
+        "git" -> gitHumanizedCommand(args, isRunning)
+        else -> HumanizedCommandInfo(
+            verb = if (isRunning) "Running" else "Ran",
+            target = command.ifBlank { "command" },
+        )
+    }
+}
+
+private fun unwrapShellCommand(raw: String): String {
+    var result = raw.trim()
+    val lowered = result.lowercase()
+    val shellPrefixes = listOf(
+        "/usr/bin/bash -lc ",
+        "/usr/bin/bash -c ",
+        "/bin/bash -lc ",
+        "/bin/bash -c ",
+        "/bin/zsh -lc ",
+        "/bin/zsh -c ",
+        "bash -lc ",
+        "bash -c ",
+        "zsh -lc ",
+        "zsh -c ",
+        "/bin/sh -c ",
+        "sh -c ",
+    )
+
+    shellPrefixes.firstOrNull { lowered.startsWith(it) }?.let { prefix ->
+        result = result.drop(prefix.length)
+            .trim()
+            .trim('"', '\'')
+        val andIndex = result.indexOf("&&")
+        if (andIndex != -1) {
+            result = result.substring(andIndex + 2).trim()
+        }
+    }
+
+    val pipeIndex = result.indexOf(" | ")
+    if (pipeIndex != -1) {
+        result = result.substring(0, pipeIndex).trim()
+    }
+
+    return result
+}
+
+private fun lastPathComponent(args: String, fallback: String): String {
+    return args.split(Regex("\\s+"))
+        .asReversed()
+        .map { it.trim('"', '\'') }
+        .firstOrNull { token -> token.isNotBlank() && !token.startsWith("-") }
+        ?.let(::compactPath)
+        ?: fallback
+}
+
+private fun compactPath(path: String): String {
+    val parts = path.split('/').filter(String::isNotBlank)
+    return if (parts.size > 2) {
+        parts.takeLast(2).joinToString("/")
+    } else {
+        path
+    }
+}
+
+private fun searchSummary(args: String): String {
+    val tokens = tokenizeCommandArgs(args)
+    val pattern = tokens.firstOrNull { token -> token.isNotBlank() && !token.startsWith("-") } ?: "..."
+    val path = tokens.dropWhile { it != pattern }
+        .drop(1)
+        .firstOrNull { token -> token.isNotBlank() && !token.startsWith("-") }
+
+    return if (path != null) {
+        "for $pattern in ${compactPath(path)}"
+    } else {
+        "for $pattern"
+    }
+}
+
+private fun tokenizeCommandArgs(input: String): List<String> {
+    val tokens = mutableListOf<String>()
+    val current = StringBuilder()
+    var quote: Char? = null
+    var escaped = false
+
+    input.forEach { char ->
+        when {
+            escaped -> {
+                current.append(char)
+                escaped = false
+            }
+            char == '\\' -> escaped = true
+            quote != null && char == quote -> quote = null
+            quote != null -> current.append(char)
+            char == '"' || char == '\'' -> quote = char
+            char.isWhitespace() -> {
+                if (current.isNotEmpty()) {
+                    tokens += current.toString()
+                    current.clear()
+                }
+            }
+            else -> current.append(char)
+        }
+    }
+
+    if (current.isNotEmpty()) {
+        tokens += current.toString()
+    }
+    return tokens
+}
+
+private fun gitHumanizedCommand(
+    args: String,
+    isRunning: Boolean,
+): HumanizedCommandInfo {
+    val tokens = tokenizeCommandArgs(args)
+    val subcommand = tokens.firstOrNull()?.lowercase()
+    val target = tokens.drop(1).firstOrNull()?.trim().orEmpty()
+
+    return when (subcommand) {
+        "status" -> HumanizedCommandInfo(if (isRunning) "Checking" else "Checked", "git status")
+        "diff" -> HumanizedCommandInfo(if (isRunning) "Inspecting" else "Inspected", "git diff")
+        "checkout", "switch" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Switching" else "Switched",
+            target = target.ifBlank { "branch" },
+        )
+        "branch" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Updating" else "Updated",
+            target = target.ifBlank { "branch" },
+        )
+        "add" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Staging" else "Staged",
+            target = target.ifBlank { "changes" },
+        )
+        "commit" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Committing" else "Committed",
+            target = "changes",
+        )
+        "push" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Pushing" else "Pushed",
+            target = target.ifBlank { "branch" },
+        )
+        "pull" -> HumanizedCommandInfo(
+            verb = if (isRunning) "Pulling" else "Pulled",
+            target = target.ifBlank { "changes" },
+        )
+        else -> HumanizedCommandInfo(
+            verb = if (isRunning) "Running" else "Ran",
+            target = "git ${args.trim()}".trim(),
+        )
+    }
+}
+
+private fun readableSubagentStatus(
+    action: RemodexSubagentAction?,
+    rawStatus: String?,
+): String? {
+    val label = normalizedSubagentStatus(rawStatus ?: action?.status)
+    return when (action?.normalizedTool) {
+        "spawnagent" -> when (label) {
+            "running" -> "Starting child thread"
+            "completed" -> "Child thread created"
+            "failed" -> "Could not create child thread"
+            "stopped" -> "Spawn interrupted"
+            "queued" -> "Queued for spawn"
+            else -> "Preparing child thread"
+        }
+        "wait", "waitagent" -> when (label) {
+            "running" -> "Still working"
+            "completed" -> "Finished"
+            "failed" -> "Finished with error"
+            "stopped" -> "Stopped early"
+            "queued" -> "Queued"
+            else -> "Waiting for updates"
+        }
+        "sendinput" -> when (label) {
+            "running" -> "Working on new instructions"
+            "completed" -> "Processed the update"
+            "failed" -> "Update failed"
+            "stopped" -> "Update interrupted"
+            "queued" -> "Queued update"
+            else -> "Instructions sent"
+        }
+        "resumeagent" -> when (label) {
+            "running" -> "Back to work"
+            "completed" -> "Resumed and completed"
+            "failed" -> "Resume failed"
+            "stopped" -> "Resume interrupted"
+            "queued" -> "Queued to resume"
+            else -> "Resuming agent"
+        }
+        "closeagent" -> when (label) {
+            "running" -> "Closing"
+            "completed" -> "Closed"
+            "failed" -> "Close failed"
+            "stopped" -> "Close interrupted"
+            "queued" -> "Queued to close"
+            else -> "Closing agent"
+        }
+        else -> when (label) {
+            "running" -> "Working now"
+            "completed" -> "Completed"
+            "failed" -> "Ended with error"
+            "stopped" -> "Stopped"
+            "queued" -> "Queued"
+            else -> "Idle"
+        }
+    }
+}
+
+private fun normalizedSubagentStatus(rawStatus: String?): String {
+    return rawStatus?.trim()
+        ?.lowercase()
+        ?.replace("_", "")
+        ?.replace("-", "")
+        ?.ifBlank { null }
+        ?: "idle"
+}
+
+private fun subagentStatusColor(
+    chrome: RemodexConversationChrome,
+    action: RemodexSubagentAction?,
+    rawStatus: String?,
+): Color {
+    return when (normalizedSubagentStatus(rawStatus ?: action?.status)) {
+        "failed" -> chrome.destructive
+        "completed" -> chrome.secondaryText
+        "running" -> chrome.warning
+        else -> chrome.secondaryText
     }
 }
 
@@ -3096,7 +3714,10 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
 }
 
 @Composable
-private fun DefaultSystemRow(item: RemodexConversationItem) {
+private fun DefaultSystemRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
     val chrome = remodexConversationChrome()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         item.text.takeIf(String::isNotBlank)?.let { text ->
@@ -3112,6 +3733,9 @@ private fun DefaultSystemRow(item: RemodexConversationItem) {
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
+        }
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
         }
     }
 }

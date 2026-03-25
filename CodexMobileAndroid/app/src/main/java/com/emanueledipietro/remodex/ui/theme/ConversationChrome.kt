@@ -29,6 +29,8 @@ data class RemodexConversationChrome(
     val destructive: Color,
     val sendButton: Color,
     val sendIcon: Color,
+    val sendButtonDisabled: Color,
+    val sendIconDisabled: Color,
 )
 
 object RemodexConversationShapes {
@@ -67,6 +69,8 @@ fun remodexConversationChrome(): RemodexConversationChrome {
             destructive = scheme.error,
             sendButton = scheme.onSurface,
             sendIcon = scheme.surface,
+            sendButtonDisabled = scheme.surfaceContainerHighest,
+            sendIconDisabled = scheme.onSurfaceVariant.copy(alpha = 0.78f),
         )
     } else {
         RemodexConversationChrome(
@@ -89,6 +93,8 @@ fun remodexConversationChrome(): RemodexConversationChrome {
             destructive = scheme.error,
             sendButton = scheme.onSurface,
             sendIcon = scheme.surface,
+            sendButtonDisabled = scheme.surfaceContainerHighest,
+            sendIconDisabled = scheme.onSurfaceVariant.copy(alpha = 0.86f),
         )
     }
 }

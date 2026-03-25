@@ -411,14 +411,59 @@ class AppViewModelTest {
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
     }
 
+    @Test
+    fun `send clears composer immediately and restores full state on failure`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Send thread")),
+                selectedThreadId = "thread-1",
+            )
+            sendPromptDelayMs = 100
+            sendPromptError = IllegalStateException("Bridge down")
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Ship this")
+        viewModel.addAttachments(
+            listOf(
+                RemodexComposerAttachment(
+                    id = "attachment-1",
+                    uriString = "content://attachments/1",
+                    displayName = "Shot.png",
+                ),
+            ),
+        )
+        viewModel.selectSlashCommand(RemodexSlashCommand.SUBAGENTS)
+        advanceUntilIdle()
+
+        viewModel.sendPrompt()
+        runCurrent()
+
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertTrue(viewModel.uiState.value.composer.attachments.isEmpty())
+        assertFalse(viewModel.uiState.value.composer.isSubagentsSelectionArmed)
+
+        advanceTimeBy(100)
+        advanceUntilIdle()
+
+        assertEquals("Ship this", viewModel.uiState.value.composer.draftText)
+        assertEquals(1, viewModel.uiState.value.composer.attachments.size)
+        assertTrue(viewModel.uiState.value.composer.isSubagentsSelectionArmed)
+        assertEquals("Bridge down", viewModel.uiState.value.composer.composerMessage)
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
+        val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
         var refreshDelayMs = 1_000L
+        var sendPromptDelayMs = 0L
+        var sendPromptError: Throwable? = null
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -464,7 +509,13 @@ class AppViewModelTest {
             threadId: String,
             prompt: String,
             attachments: List<RemodexComposerAttachment>,
-        ) = Unit
+        ) {
+            if (sendPromptDelayMs > 0) {
+                delay(sendPromptDelayMs)
+            }
+            sendPromptError?.let { throw it }
+            sentPrompts += Triple(threadId, prompt, attachments)
+        }
 
         override suspend fun stopTurn(threadId: String) = Unit
 
