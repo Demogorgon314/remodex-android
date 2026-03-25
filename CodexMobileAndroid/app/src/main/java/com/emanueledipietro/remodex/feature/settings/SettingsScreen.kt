@@ -325,7 +325,7 @@ private fun SettingsSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Surface(
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
             shape = RoundedCornerShape(20.dp),
         ) {
             Column(

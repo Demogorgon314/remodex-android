@@ -38,7 +38,7 @@ fun ArchivedChatsScreen(
     ) {
         if (archivedThreads.isEmpty()) {
             Surface(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = RoundedCornerShape(20.dp),
             ) {
                 Column(
@@ -62,7 +62,7 @@ fun ArchivedChatsScreen(
         } else {
             archivedThreads.forEach { thread ->
                 Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     shape = RoundedCornerShape(20.dp),
                 ) {
                     Column(

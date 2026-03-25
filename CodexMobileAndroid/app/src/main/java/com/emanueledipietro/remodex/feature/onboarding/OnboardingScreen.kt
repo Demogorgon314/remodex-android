@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.onboarding
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,10 +19,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -31,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -38,10 +36,12 @@ import androidx.compose.ui.unit.dp
 fun OnboardingScreen(
     onContinue: () -> Unit,
 ) {
+    val accent = MaterialTheme.colorScheme.primary
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color.Black)
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp),
@@ -55,9 +55,9 @@ fun OnboardingScreen(
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            MaterialTheme.colorScheme.tertiaryContainer,
-                            MaterialTheme.colorScheme.surface,
+                            accent.copy(alpha = 0.28f),
+                            accent.copy(alpha = 0.08f),
+                            Color(0xFF15171C),
                         ),
                     ),
                 ),
@@ -70,26 +70,26 @@ fun OnboardingScreen(
             ) {
                 Surface(
                     shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                    color = Color.White.copy(alpha = 0.1f),
                 ) {
                     Text(
                         text = "Android preview",
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = Color.White.copy(alpha = 0.92f),
                     )
                 }
 
                 Text(
                     text = "Control Codex from your Android phone.",
                     style = MaterialTheme.typography.headlineLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = Color.White,
                 )
 
                 Text(
                     text = "Local-first pairing, trusted reconnect, and cross-project conversations stay front and center.",
                     style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.82f),
+                    color = Color.White.copy(alpha = 0.74f),
                 )
             }
         }
@@ -98,11 +98,12 @@ fun OnboardingScreen(
             Text(
                 text = "Before you scan",
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
+                color = accent.copy(alpha = 0.84f),
             )
             Text(
                 text = "The Android client follows the same setup loop as iOS, but with Android-native navigation and recovery surfaces.",
                 style = MaterialTheme.typography.titleLarge,
+                color = Color.White,
             )
         }
 
@@ -122,11 +123,14 @@ fun OnboardingScreen(
             command = "remodex up",
         )
 
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-            ),
+        Surface(
+            color = Color.White.copy(alpha = 0.06f),
             shape = RoundedCornerShape(28.dp),
+            modifier = Modifier.border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(28.dp),
+            ),
         ) {
             Column(
                 modifier = Modifier
@@ -137,21 +141,33 @@ fun OnboardingScreen(
                 Text(
                     text = "One tap drops you into the same local-first shell as iOS, and opens QR pairing right away when this device is not paired yet.",
                     style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White.copy(alpha = 0.82f),
                 )
-                Button(
+                Surface(
                     onClick = onContinue,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.onBackground,
-                        contentColor = MaterialTheme.colorScheme.background,
-                    ),
+                    color = Color.White,
+                    shape = RoundedCornerShape(999.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.QrCodeScanner,
-                        contentDescription = null,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Set Up QR Pairing")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.QrCodeScanner,
+                            contentDescription = null,
+                            tint = Color.Black,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Set Up QR Pairing",
+                            color = Color.Black,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
         }
@@ -164,11 +180,16 @@ private fun SetupStepCard(
     title: String,
     command: String,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
+    val accent = MaterialTheme.colorScheme.primary
+
+    Surface(
+        color = Color.White.copy(alpha = 0.06f),
         shape = RoundedCornerShape(28.dp),
+        modifier = Modifier.border(
+            width = 1.dp,
+            color = Color.White.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(28.dp),
+        ),
     ) {
         Row(
             modifier = Modifier
@@ -180,14 +201,14 @@ private fun SetupStepCard(
             Box(
                 modifier = Modifier
                     .background(
-                        color = MaterialTheme.colorScheme.primary,
+                        color = accent.copy(alpha = 0.18f),
                         shape = CircleShape,
                     )
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Text(
                     text = number,
-                    color = MaterialTheme.colorScheme.onPrimary,
+                    color = Color.White,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                 )
@@ -199,16 +220,21 @@ private fun SetupStepCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
                 )
                 Surface(
                     shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    color = Color.White.copy(alpha = 0.05f),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.07f),
+                    ),
                 ) {
                     Text(
                         text = command,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = Color.White.copy(alpha = 0.82f),
                     )
                 }
             }
