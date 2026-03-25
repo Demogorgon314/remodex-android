@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.data.threads
 
+import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.connection.RpcMessage
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
@@ -39,8 +40,10 @@ import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertConflict
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
+import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputOption
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
@@ -78,6 +81,7 @@ class BridgeThreadSyncService(
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private var initializedAttempt: Int? = null
+    private var supportsServiceTier = true
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
@@ -88,12 +92,14 @@ class BridgeThreadSyncService(
                 if (snapshot.secureState == SecureConnectionState.ENCRYPTED) {
                     if (initializedAttempt != snapshot.attempt) {
                         initializedAttempt = snapshot.attempt
+                        supportsServiceTier = true
                         initializeSession()
                         refreshAvailableModels()
                         refreshThreads()
                     }
                 } else {
                     initializedAttempt = null
+                    supportsServiceTier = true
                     activeTurnIdByThread.clear()
                 }
             }
@@ -160,15 +166,19 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return null
         }
-        val params = buildJsonObject {
-            preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
-            runtimeDefaults.modelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
-            runtimeDefaults.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
-        }
-        val response = sendRequestWithApprovalPolicyFallback(
+        val response = sendRequestWithServiceTierFallback(
             method = "thread/start",
-            baseParams = params,
             accessMode = runtimeDefaults.accessMode,
+            includeServiceTier = shouldIncludeServiceTier(runtimeDefaults.serviceTier),
+            buildBaseParams = { includeServiceTier ->
+                buildJsonObject {
+                    preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+                    runtimeDefaults.modelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
+                    if (includeServiceTier) {
+                        runtimeDefaults.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
+                    }
+                }
+            },
         )
         val threadObject = response.result
             ?.jsonObjectOrNull
@@ -281,16 +291,19 @@ class BridgeThreadSyncService(
             runtimeConfig = runtimeConfig,
         )
 
-        val request = buildTurnStartParams(
-            threadId = threadId,
-            prompt = trimmedPrompt,
-            attachments = attachments,
-            runtimeConfig = runtimeConfig,
-        )
-        val response = sendRequestWithApprovalPolicyFallback(
+        val response = sendRequestWithServiceTierFallback(
             method = "turn/start",
-            baseParams = request,
             accessMode = runtimeConfig.accessMode,
+            includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
+            buildBaseParams = { includeServiceTier ->
+                buildTurnStartParams(
+                    threadId = threadId,
+                    prompt = trimmedPrompt,
+                    attachments = attachments,
+                    runtimeConfig = runtimeConfig,
+                    includeServiceTier = includeServiceTier,
+                )
+            },
         )
         val turnId = extractTurnId(response.result)
         if (turnId != null) {
@@ -844,7 +857,7 @@ class BridgeThreadSyncService(
         projectPath: String?,
         runtimeConfig: RemodexRuntimeConfig,
     ): ThreadSyncSnapshot? {
-        var includeServiceTier = runtimeConfig.serviceTier != null
+        var includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier)
         var includeSandbox = true
         var useMinimalParams = false
         while (true) {
@@ -876,7 +889,7 @@ class BridgeThreadSyncService(
             } catch (error: Throwable) {
                 val message = error.message.orEmpty().lowercase(Locale.ROOT)
                 when {
-                    includeServiceTier && (message.contains("servicetier") || message.contains("service tier")) -> {
+                    consumeUnsupportedServiceTier(error, includeServiceTier) -> {
                         includeServiceTier = false
                     }
 
@@ -974,7 +987,7 @@ class BridgeThreadSyncService(
     private suspend fun sendRequestWithApprovalPolicyFallback(
         method: String,
         baseParams: JsonObject,
-        accessMode: com.emanueledipietro.remodex.model.RemodexAccessMode,
+        accessMode: RemodexAccessMode,
     ): RpcMessage {
         var lastError: Throwable? = null
         for (policy in accessMode.approvalPolicyCandidates) {
@@ -986,6 +999,60 @@ class BridgeThreadSyncService(
             }
         }
         throw lastError ?: IllegalStateException("$method failed without a concrete transport error.")
+    }
+
+    private suspend fun sendRequestWithServiceTierFallback(
+        method: String,
+        accessMode: RemodexAccessMode,
+        includeServiceTier: Boolean,
+        buildBaseParams: (Boolean) -> JsonObject,
+    ): RpcMessage {
+        var shouldIncludeServiceTier = includeServiceTier
+        while (true) {
+            try {
+                return sendRequestWithApprovalPolicyFallback(
+                    method = method,
+                    baseParams = buildBaseParams(shouldIncludeServiceTier),
+                    accessMode = accessMode,
+                )
+            } catch (error: Throwable) {
+                if (consumeUnsupportedServiceTier(error, shouldIncludeServiceTier)) {
+                    shouldIncludeServiceTier = false
+                    continue
+                }
+                throw error
+            }
+        }
+    }
+
+    private fun shouldIncludeServiceTier(serviceTier: RemodexServiceTier?): Boolean {
+        return supportsServiceTier && serviceTier != null
+    }
+
+    private fun consumeUnsupportedServiceTier(
+        error: Throwable,
+        includeServiceTier: Boolean,
+    ): Boolean {
+        if (!includeServiceTier || !shouldRetryWithoutServiceTier(error)) {
+            return false
+        }
+        supportsServiceTier = false
+        return true
+    }
+
+    private fun shouldRetryWithoutServiceTier(error: Throwable): Boolean {
+        val rpcError = error as? RpcError ?: return false
+        if (rpcError.code != -32600 && rpcError.code != -32602) {
+            return false
+        }
+        val message = rpcError.message.lowercase(Locale.ROOT)
+        return message.contains("servicetier")
+            || message.contains("service tier")
+            || message.contains("unknown field")
+            || message.contains("unexpected field")
+            || message.contains("unrecognized field")
+            || message.contains("invalid param")
+            || message.contains("invalid params")
     }
 
     private suspend fun handleNotification(message: RpcMessage) {
@@ -1673,6 +1740,7 @@ class BridgeThreadSyncService(
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
         runtimeConfig: RemodexRuntimeConfig,
+        includeServiceTier: Boolean,
     ): JsonObject {
         val inputItems = buildJsonArray {
             if (prompt.isNotBlank()) {
@@ -1704,7 +1772,9 @@ class BridgeThreadSyncService(
             runtimeConfig.reasoningEffort?.takeIf { it.isNotBlank() }?.let {
                 put("reasoningEffort", JsonPrimitive(it))
             }
-            runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
+            if (includeServiceTier) {
+                runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
+            }
             if (runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
                 put("collaborationMode", JsonPrimitive("plan"))
             }

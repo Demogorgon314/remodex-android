@@ -167,6 +167,10 @@ data class RemodexRuntimeConfig(
     }
 
     fun normalizeSelections(): RemodexRuntimeConfig {
+        val normalizedServiceTiers = availableServiceTiers
+            .ifEmpty { RemodexServiceTier.entries.toList() }
+            .distinct()
+        val normalizedServiceTier = serviceTier?.takeIf { tier -> tier in normalizedServiceTiers }
         val normalizedModels = availableModels
             .mapNotNull(RemodexModelOption::normalizedOrNull)
             .distinctBy(RemodexModelOption::id)
@@ -176,8 +180,10 @@ data class RemodexRuntimeConfig(
                 availableReasoningEfforts = availableReasoningEfforts
                     .mapNotNull(RemodexReasoningEffortOption::normalizedOrNull)
                     .distinctBy(RemodexReasoningEffortOption::reasoningEffort),
+                availableServiceTiers = normalizedServiceTiers,
                 selectedModelId = selectedModelId?.trim()?.takeIf(String::isNotEmpty),
                 reasoningEffort = reasoningEffort?.trim()?.takeIf(String::isNotEmpty),
+                serviceTier = normalizedServiceTier,
             )
         }
 
@@ -197,8 +203,10 @@ data class RemodexRuntimeConfig(
         return copy(
             availableModels = normalizedModels,
             availableReasoningEfforts = supportedReasoningEfforts,
+            availableServiceTiers = normalizedServiceTiers,
             selectedModelId = resolvedModel?.id,
             reasoningEffort = normalizedReasoning,
+            serviceTier = normalizedServiceTier,
         )
     }
 

@@ -6,6 +6,13 @@ import org.junit.Test
 
 class RemodexRuntimeConfigTest {
     @Test
+    fun `normalize selections exposes fast speed by default`() {
+        val config = RemodexRuntimeConfig().normalizeSelections()
+
+        assertEquals(listOf(RemodexServiceTier.FAST), config.availableServiceTiers)
+    }
+
+    @Test
     fun `normalize selections keeps xhigh when selected model supports it`() {
         val config = RemodexRuntimeConfig(
             availableModels = listOf(gpt54Model()),

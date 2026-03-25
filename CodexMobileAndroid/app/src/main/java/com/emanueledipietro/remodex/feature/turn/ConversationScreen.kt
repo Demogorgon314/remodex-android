@@ -29,7 +29,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -40,6 +42,7 @@ import androidx.compose.material3.ElevatedAssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -66,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
@@ -1080,27 +1084,24 @@ private fun ComposerCard(
                     selected = selectedModelOption,
                     label = { option -> RemodexRuntimeMetaMapper.modelTitle(option) },
                     key = { option -> option.id },
+                    leadingIcon = if (composer.runtimeConfig.serviceTier != null) {
+                        Icons.Outlined.Bolt
+                    } else {
+                        null
+                    },
                     onClear = { onSelectModel(null) },
                     onSelect = { option -> onSelectModel(option.id) },
                 )
-                CompactRuntimeSelector(
+                ReasoningRuntimeSelector(
                     title = composer.runtimeConfig.reasoningEffort
                         ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
                         ?: "Auto",
-                    options = composer.runtimeConfig.availableReasoningEfforts,
-                    selected = selectedReasoningOption,
-                    label = { option -> option.label },
-                    key = { option -> option.reasoningEffort },
-                    onSelect = { option -> onSelectReasoningEffort(option.reasoningEffort) },
-                )
-                CompactRuntimeSelector(
-                    title = composer.runtimeConfig.serviceTier?.label ?: "Normal",
-                    options = composer.runtimeConfig.availableServiceTiers,
-                    selected = composer.runtimeConfig.serviceTier,
-                    label = { option -> option.label },
-                    key = { option -> option.name },
-                    onClear = { onSelectServiceTier(null) },
-                    onSelect = onSelectServiceTier,
+                    reasoningOptions = composer.runtimeConfig.availableReasoningEfforts,
+                    selectedReasoning = selectedReasoningOption,
+                    onSelectReasoning = { option -> onSelectReasoningEffort(option.reasoningEffort) },
+                    speedOptions = composer.runtimeConfig.availableServiceTiers,
+                    selectedSpeed = composer.runtimeConfig.serviceTier,
+                    onSelectSpeed = onSelectServiceTier,
                 )
                 if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
                     MetaPill(
@@ -1537,6 +1538,7 @@ private fun <T> CompactRuntimeSelector(
     selected: T?,
     label: (T) -> String,
     key: (T) -> Any,
+    leadingIcon: ImageVector? = null,
     onClear: (() -> Unit)? = null,
     onSelect: (T) -> Unit,
 ) {
@@ -1553,6 +1555,14 @@ private fun <T> CompactRuntimeSelector(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                leadingIcon?.let { icon ->
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     text = title,
                     maxLines = 1,
@@ -1560,17 +1570,7 @@ private fun <T> CompactRuntimeSelector(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Surface(
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                    shape = CircleShape,
-                ) {
-                    Text(
-                        text = "▾",
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                RuntimeSelectorChevron()
             }
         }
         DropdownMenu(
@@ -1597,6 +1597,118 @@ private fun <T> CompactRuntimeSelector(
             }
         }
     }
+}
+
+@Composable
+private fun ReasoningRuntimeSelector(
+    title: String,
+    reasoningOptions: List<com.emanueledipietro.remodex.model.RemodexReasoningEffortOption>,
+    selectedReasoning: com.emanueledipietro.remodex.model.RemodexReasoningEffortOption?,
+    onSelectReasoning: (com.emanueledipietro.remodex.model.RemodexReasoningEffortOption) -> Unit,
+    speedOptions: List<RemodexServiceTier>,
+    selectedSpeed: RemodexServiceTier?,
+    onSelectSpeed: (RemodexServiceTier?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
+            shape = RoundedCornerShape(999.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .clickable(onClick = { expanded = true })
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                RuntimeSelectorChevron()
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            RuntimeMenuSectionLabel("Reasoning")
+            reasoningOptions.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        expanded = false
+                        onSelectReasoning(option)
+                    },
+                )
+            }
+
+            HorizontalDivider()
+            RuntimeMenuSectionLabel("Speed")
+            DropdownMenuItem(
+                text = { Text("Normal") },
+                onClick = {
+                    expanded = false
+                    onSelectSpeed(null)
+                },
+                trailingIcon = if (selectedSpeed == null) {
+                    {
+                        Text(
+                            text = "✓",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    null
+                },
+            )
+            speedOptions.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        expanded = false
+                        onSelectSpeed(option)
+                    },
+                    trailingIcon = if (selectedSpeed == option) {
+                        {
+                            Text(
+                                text = "✓",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RuntimeSelectorChevron() {
+    Icon(
+        imageVector = Icons.Outlined.ExpandMore,
+        contentDescription = null,
+        modifier = Modifier.size(14.dp),
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun RuntimeMenuSectionLabel(title: String) {
+    Text(
+        text = title,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

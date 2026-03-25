@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.data.connection.InMemorySecureStore
+import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.connection.ScriptedRpcRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
@@ -10,6 +11,9 @@ import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.connection.firstArray
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
+import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -150,6 +154,134 @@ class BridgeThreadSyncServiceTest {
                     request.method == "thread/read"
                 },
             )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `service tier retries once and future requests omit unsupported field`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-service-tier",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val threadStartServiceTiers = mutableListOf<String?>()
+        val turnStartServiceTiers = mutableListOf<String?>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "model/list" to {
+                    buildJsonObject {
+                        put(
+                            "items",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("gpt-5.4"))
+                                        put("model", JsonPrimitive("gpt-5.4"))
+                                        put("displayName", JsonPrimitive("GPT-5.4"))
+                                        put("isDefault", JsonPrimitive(true))
+                                        put(
+                                            "supported_reasoning_efforts",
+                                            buildJsonArray {
+                                                add(JsonPrimitive("medium"))
+                                                add(JsonPrimitive("high"))
+                                            },
+                                        )
+                                        put("default_reasoning_effort", JsonPrimitive("medium"))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/start" to { message ->
+                    val serviceTier = message.params?.jsonObjectOrNull?.firstString("serviceTier")
+                    threadStartServiceTiers += serviceTier
+                    if (serviceTier == "fast") {
+                        throw RpcError(code = -32602, message = "Unknown field serviceTier")
+                    }
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-fast"))
+                                put("title", JsonPrimitive("Fast thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-fast"))
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-fast"))
+                                put("title", JsonPrimitive("Fast thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-fast"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    turnStartServiceTiers += message.params?.jsonObjectOrNull?.firstString("serviceTier")
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-fast"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            val createdThread = service.createThread(
+                preferredProjectPath = "/tmp/project-fast",
+                runtimeDefaults = RemodexRuntimeDefaults(
+                    accessMode = RemodexAccessMode.FULL_ACCESS,
+                    serviceTier = RemodexServiceTier.FAST,
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals(listOf("fast", null), threadStartServiceTiers)
+            assertEquals(RemodexServiceTier.FAST, createdThread?.runtimeConfig?.serviceTier)
+            assertEquals(listOf(RemodexServiceTier.FAST), createdThread?.runtimeConfig?.availableServiceTiers)
+
+            service.sendPrompt(
+                threadId = "thread-fast",
+                prompt = "Ship this quickly.",
+                runtimeConfig = createdThread!!.runtimeConfig,
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals(listOf(null), turnStartServiceTiers)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

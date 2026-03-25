@@ -360,8 +360,17 @@ class ScriptedRpcRelayWebSocketFactory(
             return
         }
 
-        val result = requestHandlers[message.method]?.invoke(message) ?: buildJsonObject { }
-        val response = RpcMessage.response(id = message.id, result = result)
+        val response = try {
+            val result = requestHandlers[message.method]?.invoke(message) ?: buildJsonObject { }
+            RpcMessage.response(id = message.id, result = result)
+        } catch (error: RpcError) {
+            RpcMessage.error(
+                id = message.id,
+                code = error.code,
+                message = error.message,
+                data = error.data,
+            )
+        }
         val responsePayload = SecureApplicationPayload(
             bridgeOutboundSeq = ++session.bridgeOutboundSeq,
             payloadText = json.encodeToString(RpcMessage.serializer(), response),
