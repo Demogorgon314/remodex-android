@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -105,6 +106,25 @@ private enum class ShellRoute(val title: String) {
     ARCHIVED_CHATS("Archived Chats"),
 }
 
+internal enum class ShellBackAction {
+    DISMISS_SCANNER,
+    CLOSE_SIDEBAR,
+    NAVIGATE_TO_CONTENT,
+}
+
+internal fun resolveShellBackAction(
+    isScannerPresented: Boolean,
+    isCompactSidebarOpen: Boolean,
+    isSecondaryRouteVisible: Boolean,
+): ShellBackAction? {
+    return when {
+        isScannerPresented -> ShellBackAction.DISMISS_SCANNER
+        isCompactSidebarOpen -> ShellBackAction.CLOSE_SIDEBAR
+        isSecondaryRouteVisible -> ShellBackAction.NAVIGATE_TO_CONTENT
+        else -> null
+    }
+}
+
 @Composable
 fun RemodexApp(
     viewModel: AppViewModel,
@@ -180,12 +200,36 @@ fun RemodexApp(
     }
 
     val windowLayout = remodexWindowLayout(LocalConfiguration.current.screenWidthDp)
+    val shellBackAction = resolveShellBackAction(
+        isScannerPresented = isScannerPresented,
+        isCompactSidebarOpen = windowLayout == RemodexWindowLayout.COMPACT && isSidebarOpen,
+        isSecondaryRouteVisible = shellRoute != ShellRoute.CONTENT,
+    )
+    val handleShellBack = {
+        when (
+            resolveShellBackAction(
+                isScannerPresented = isScannerPresented,
+                isCompactSidebarOpen = windowLayout == RemodexWindowLayout.COMPACT && isSidebarOpen,
+                isSecondaryRouteVisible = shellRoute != ShellRoute.CONTENT,
+            )
+        ) {
+            ShellBackAction.DISMISS_SCANNER -> isScannerPresented = false
+            ShellBackAction.CLOSE_SIDEBAR -> isSidebarOpen = false
+            ShellBackAction.NAVIGATE_TO_CONTENT -> shellRoute = ShellRoute.CONTENT
+            null -> Unit
+        }
+    }
+    BackHandler(enabled = shellBackAction != null) {
+        handleShellBack()
+    }
+
     RemodexShell(
         viewModel = viewModel,
         uiState = uiState,
         windowLayout = windowLayout,
         shellRoute = shellRoute,
         onShellRouteChange = { shellRoute = it },
+        onShellBack = handleShellBack,
         isSidebarOpen = isSidebarOpen,
         onSidebarOpenChange = { isSidebarOpen = it },
         isSidebarSearchActive = isSidebarSearchActive,
@@ -233,6 +277,7 @@ private fun RemodexShell(
     windowLayout: RemodexWindowLayout,
     shellRoute: ShellRoute,
     onShellRouteChange: (ShellRoute) -> Unit,
+    onShellBack: () -> Unit,
     isSidebarOpen: Boolean,
     onSidebarOpenChange: (Boolean) -> Unit,
     isSidebarSearchActive: Boolean,
@@ -307,7 +352,7 @@ private fun RemodexShell(
                         shellRoute = shellRoute,
                         compact = false,
                         onMenu = {},
-                        onBack = { onShellRouteChange(ShellRoute.CONTENT) },
+                        onBack = onShellBack,
                         onOpenScanner = onOpenScanner,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
                         onNotificationAction = onNotificationAction,
@@ -376,7 +421,7 @@ private fun RemodexShell(
                         shellRoute = shellRoute,
                         compact = true,
                         onMenu = { onSidebarOpenChange(true) },
-                        onBack = { onShellRouteChange(ShellRoute.CONTENT) },
+                        onBack = onShellBack,
                         onOpenScanner = onOpenScanner,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
                         onNotificationAction = onNotificationAction,
