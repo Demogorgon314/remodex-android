@@ -30,10 +30,14 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -241,10 +245,53 @@ class AppViewModelTest {
         assertEquals("Finished chat", viewModel.uiState.value.threadCompletionBanner?.title)
     }
 
+    @Test
+    fun `refresh threads delegates only while connected and exposes refreshing state`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.refreshThreads()
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.isRefreshingThreads)
+        assertEquals(1, repository.refreshRequests)
+
+        advanceTimeBy(repository.refreshDelayMs)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.isRefreshingThreads)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.DISCONNECTED, attempt = 1),
+            secureConnection = repository.snapshot.value.secureConnection.copy(
+                secureState = SecureConnectionState.TRUSTED_MAC,
+            ),
+        )
+        advanceUntilIdle()
+
+        viewModel.refreshThreads()
+        runCurrent()
+
+        assertEquals(1, repository.refreshRequests)
+        assertFalse(viewModel.uiState.value.isRefreshingThreads)
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
+        var refreshRequests = 0
+        var refreshDelayMs = 1_000L
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -265,6 +312,11 @@ class AppViewModelTest {
 
         override suspend fun completeOnboarding() {
             snapshot.value = snapshot.value.copy(onboardingCompleted = true)
+        }
+
+        override suspend fun refreshThreads() {
+            refreshRequests += 1
+            delay(refreshDelayMs)
         }
 
         override suspend fun selectThread(threadId: String) = Unit

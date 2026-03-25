@@ -20,6 +20,8 @@ interface RemodexAppRepository {
 
     suspend fun completeOnboarding()
 
+    suspend fun refreshThreads()
+
     suspend fun selectThread(threadId: String)
 
     suspend fun createThread(preferredProjectPath: String? = null)

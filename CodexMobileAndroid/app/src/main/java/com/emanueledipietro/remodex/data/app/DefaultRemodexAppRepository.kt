@@ -176,6 +176,14 @@ class DefaultRemodexAppRepository(
         )
     }
 
+    override suspend fun refreshThreads() {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            return
+        }
+        val hydrationService = threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
+        hydrationService?.refreshThreads()
+    }
+
     override suspend fun selectThread(threadId: String) {
         val threadExists = session.value.threads.any { it.id == threadId } ||
             threadSyncService.threads.value.any { it.id == threadId }

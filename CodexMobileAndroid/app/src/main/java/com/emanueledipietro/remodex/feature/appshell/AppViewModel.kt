@@ -81,6 +81,7 @@ data class AppUiState(
     val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
+    val isRefreshingThreads: Boolean = false,
     val composer: ComposerUiState = ComposerUiState(),
     val conversationBanner: String? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
@@ -130,6 +131,7 @@ class AppViewModel(
     private val revertedAssistantMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
+    private val isRefreshingThreadsState = MutableStateFlow(false)
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
     private var lastObservedThreadId: String? = null
@@ -264,11 +266,18 @@ class AppViewModel(
                 ),
                 assistantRevertSheet = revertSheetState,
             )
-        }
+    }
 
     val uiState: StateFlow<AppUiState> =
-        combine(baseUiState, threadCompletionBannerState) { baseState, threadCompletionBanner ->
-            baseState.copy(threadCompletionBanner = threadCompletionBanner)
+        combine(baseUiState, threadCompletionBannerState, isRefreshingThreadsState) {
+            baseState,
+            threadCompletionBanner,
+            isRefreshingThreads,
+            ->
+            baseState.copy(
+                threadCompletionBanner = threadCompletionBanner,
+                isRefreshingThreads = isRefreshingThreads,
+            )
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -296,6 +305,20 @@ class AppViewModel(
     fun completeOnboarding() {
         viewModelScope.launch {
             repository.completeOnboarding()
+        }
+    }
+
+    fun refreshThreads() {
+        if (!uiState.value.isConnected || isRefreshingThreadsState.value) {
+            return
+        }
+        viewModelScope.launch {
+            isRefreshingThreadsState.value = true
+            try {
+                repository.refreshThreads()
+            } finally {
+                isRefreshingThreadsState.value = false
+            }
         }
     }
 

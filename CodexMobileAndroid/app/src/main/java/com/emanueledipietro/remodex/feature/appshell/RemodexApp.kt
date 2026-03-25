@@ -278,6 +278,7 @@ private fun RemodexShell(
                             viewModel.selectThread(threadId)
                             onShellRouteChange(ShellRoute.CONTENT)
                         },
+                        onRefreshThreads = viewModel::refreshThreads,
                         onRetryConnection = viewModel::retryConnection,
                         onCreateThread = { preferredProjectPath ->
                             viewModel.createThread(preferredProjectPath)
@@ -344,6 +345,7 @@ private fun RemodexShell(
                             onShellRouteChange(ShellRoute.CONTENT)
                             onSidebarOpenChange(false)
                         },
+                        onRefreshThreads = viewModel::refreshThreads,
                         onRetryConnection = viewModel::retryConnection,
                         onCreateThread = { preferredProjectPath ->
                             viewModel.createThread(preferredProjectPath)
