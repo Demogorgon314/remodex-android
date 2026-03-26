@@ -1318,7 +1318,7 @@ class BridgeThreadSyncService(
                     turnId = resolvedTurnId,
                     itemId = itemId,
                     speaker = ConversationSpeaker.SYSTEM,
-                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
                 ),
             ),
             isRunning = true,
@@ -1516,11 +1516,9 @@ class BridgeThreadSyncService(
                         isCompleted = isCompleted,
                     )
                 } else {
-                    kind = ConversationItemKind.COMMAND_EXECUTION
-                    body = decodeStructuredLifecycleBody(
+                    kind = ConversationItemKind.TOOL_ACTIVITY
+                    body = decodeToolCallActivityBody(
                         itemObject = itemObject,
-                        inProgressFallback = "Running tool activity...",
-                        completedFallback = "Tool activity finished.",
                         isCompleted = isCompleted,
                     )
                 }
@@ -1827,7 +1825,11 @@ class BridgeThreadSyncService(
                 val nextMutations = snapshot.timelineMutations + mutation
                 snapshot.copy(
                     timelineMutations = nextMutations,
-                    preview = derivePreview(snapshot = snapshot, nextMutations = nextMutations),
+                    preview = if (mutationAffectsThreadPreview(mutation)) {
+                        derivePreview(snapshot = snapshot, nextMutations = nextMutations)
+                    } else {
+                        snapshot.preview
+                    },
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
                     isRunning = isRunning ?: snapshot.isRunning,
@@ -1936,6 +1938,10 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun mutationAffectsThreadPreview(mutation: TimelineMutation): Boolean {
+        return mutationAffectsThreadPreviewValue(mutation)
+    }
+
     private fun completeStreamingItemsForThread(
         threadId: String,
         turnId: String?,
@@ -2005,6 +2011,23 @@ class BridgeThreadSyncService(
             .ifBlank {
                 if (isCompleted) completedFallback else inProgressFallback
             }
+    }
+
+    private fun decodeToolCallActivityBody(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String {
+        val output = decodeItemText(itemObject)
+            .ifBlank { decodeStringParts(itemObject.firstValue("output")).joinToString(separator = "\n") }
+        val activityLines = extractToolCallActivityLines(output)
+        if (activityLines.isNotEmpty()) {
+            return activityLines.joinToString(separator = "\n")
+        }
+        return if (isCompleted) {
+            "Tool activity finished."
+        } else {
+            "Running tool activity..."
+        }
     }
 
     private fun decodeStringParts(value: JsonElement?): List<String> {
@@ -2378,7 +2401,8 @@ class BridgeThreadSyncService(
                     "reasoning" -> ConversationItemKind.REASONING
                     "plan" -> ConversationItemKind.PLAN
                     "filechange", "diff" -> ConversationItemKind.FILE_CHANGE
-                    "toolcall", "commandexecution", "contextcompaction" -> ConversationItemKind.COMMAND_EXECUTION
+                    "toolcall" -> ConversationItemKind.TOOL_ACTIVITY
+                    "commandexecution", "contextcompaction" -> ConversationItemKind.COMMAND_EXECUTION
                     "userinputprompt", "requestuserinput" -> ConversationItemKind.USER_INPUT_PROMPT
                     else -> if (isSubagentHistoryItemType(itemType)) {
                         ConversationItemKind.SUBAGENT_ACTION
@@ -2408,6 +2432,10 @@ class BridgeThreadSyncService(
                 }
                 val resolvedText = when {
                     kind == ConversationItemKind.PLAN -> decodePlanItemText(itemObject)
+                    itemType == "toolcall" -> decodeToolCallActivityBody(
+                        itemObject = itemObject,
+                        isCompleted = true,
+                    )
                     subagentAction != null -> subagentAction.summaryText
                     else -> text
                 }

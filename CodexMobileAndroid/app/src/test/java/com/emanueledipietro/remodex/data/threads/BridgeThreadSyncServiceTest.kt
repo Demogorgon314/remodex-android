@@ -32,6 +32,68 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class BridgeThreadSyncServiceTest {
     @Test
+    fun `preview recompute only tracks chat upserts`() {
+        assertTrue(
+            mutationAffectsThreadPreviewValue(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "user-1",
+                        speaker = com.emanueledipietro.remodex.model.ConversationSpeaker.USER,
+                        text = "hello",
+                        orderIndex = 0L,
+                    ),
+                ),
+            ),
+        )
+        assertTrue(
+            mutationAffectsThreadPreviewValue(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "assistant-1",
+                        speaker = com.emanueledipietro.remodex.model.ConversationSpeaker.ASSISTANT,
+                        text = "hi",
+                        orderIndex = 1L,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `preview recompute ignores streaming system deltas`() {
+        assertFalse(
+            mutationAffectsThreadPreviewValue(
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    delta = "partial",
+                    orderIndex = 1L,
+                ),
+            ),
+        )
+        assertFalse(
+            mutationAffectsThreadPreviewValue(
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "thinking-1",
+                    turnId = "turn-1",
+                    delta = "thinking",
+                    orderIndex = 2L,
+                ),
+            ),
+        )
+        assertFalse(
+            mutationAffectsThreadPreviewValue(
+                TimelineMutation.ActivityLine(
+                    messageId = "tool-1",
+                    turnId = "turn-1",
+                    line = "running rg",
+                    orderIndex = 3L,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `bridge thread sync service loads real threads and hydrates history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

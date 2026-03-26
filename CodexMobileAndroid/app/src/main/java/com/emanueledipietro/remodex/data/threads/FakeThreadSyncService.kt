@@ -178,9 +178,9 @@ class FakeThreadSyncService(
                                 orderIndex = nextOrderIndex + 1,
                             ),
                             TimelineMutation.ActivityLine(
-                                messageId = reasoningMessageId,
+                                messageId = "tool-activity-$turnId",
                                 turnId = turnId,
-                                itemId = "reasoning-$turnId",
+                                itemId = "tool-activity-$turnId",
                                 line = if (attachments.isEmpty()) {
                                     "Streaming the local-first turn to the paired Mac bridge."
                                 } else {
@@ -613,9 +613,9 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                     orderIndex = 1,
                 ),
                 TimelineMutation.ActivityLine(
-                    messageId = "android-reasoning-1",
+                    messageId = "android-tool-activity-1",
                     turnId = "turn-android-client",
-                    itemId = "reasoning-android-client",
+                    itemId = "tool-activity-android-client",
                     line = "Comparing the iOS reducer with Android models.",
                     orderIndex = 1,
                 ),

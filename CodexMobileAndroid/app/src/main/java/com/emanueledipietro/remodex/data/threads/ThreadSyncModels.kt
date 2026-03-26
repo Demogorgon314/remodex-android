@@ -217,3 +217,17 @@ fun timelineItem(
         assistantChangeSet = assistantChangeSet,
     )
 }
+
+internal fun mutationAffectsThreadPreviewValue(mutation: TimelineMutation): Boolean {
+    return when (mutation) {
+        is TimelineMutation.Upsert -> {
+            mutation.item.kind == ConversationItemKind.CHAT &&
+                (
+                    mutation.item.speaker == ConversationSpeaker.USER ||
+                        mutation.item.speaker == ConversationSpeaker.ASSISTANT
+                    )
+        }
+
+        else -> false
+    }
+}

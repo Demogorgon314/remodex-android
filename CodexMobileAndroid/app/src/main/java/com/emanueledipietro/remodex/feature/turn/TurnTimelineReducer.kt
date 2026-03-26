@@ -197,19 +197,21 @@ object TurnTimelineReducer {
     ): List<RemodexConversationItem> {
         val trimmedLine = line.trim()
         val existingIndex = items.indexOfFirst { item ->
-            item.id == messageId || (
+            (
+                item.id == messageId &&
+                    item.kind == ConversationItemKind.TOOL_ACTIVITY
+            ) || (
                 item.turnId == turnId &&
                     item.itemId == itemId &&
-                    item.kind == ConversationItemKind.COMMAND_EXECUTION
+                    item.kind == ConversationItemKind.TOOL_ACTIVITY
             )
         }
         val nextItem = if (existingIndex == -1) {
             RemodexConversationItem(
                 id = messageId,
                 speaker = ConversationSpeaker.SYSTEM,
-                kind = ConversationItemKind.COMMAND_EXECUTION,
+                kind = ConversationItemKind.TOOL_ACTIVITY,
                 text = trimmedLine,
-                supportingText = "Activity",
                 turnId = turnId,
                 itemId = itemId,
                 isStreaming = true,
@@ -218,8 +220,7 @@ object TurnTimelineReducer {
         } else {
             val existing = items[existingIndex]
             existing.copy(
-                text = mergeActivityText(existing.text, trimmedLine),
-                supportingText = existing.supportingText ?: "Activity",
+                text = mergeToolActivityText(existing.text, trimmedLine),
                 turnId = turnId,
                 itemId = itemId ?: existing.itemId,
                 isStreaming = true,
@@ -236,7 +237,7 @@ object TurnTimelineReducer {
         }
     }
 
-    private fun mergeActivityText(
+    private fun mergeToolActivityText(
         existing: String,
         incoming: String,
     ): String {
@@ -248,13 +249,24 @@ object TurnTimelineReducer {
         if (existingTrimmed.isEmpty()) {
             return incomingTrimmed
         }
-        if (incomingTrimmed in existingTrimmed) {
+        if (incomingTrimmed.equals(existingTrimmed, ignoreCase = true)) {
             return existingTrimmed
         }
-        if (existingTrimmed in incomingTrimmed) {
-            return incomingTrimmed
-        }
-        return "$existingTrimmed\n$incomingTrimmed"
+
+        val mergedLines = existingTrimmed
+            .lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toMutableList()
+        incomingTrimmed.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .forEach { line ->
+                if (mergedLines.none { existingLine -> existingLine.equals(line, ignoreCase = true) }) {
+                    mergedLines += line
+                }
+            }
+        return mergedLines.joinToString(separator = "\n")
     }
 
     private fun markComplete(
@@ -397,6 +409,7 @@ object TurnTimelineReducer {
         }
         return when (item.kind) {
             ConversationItemKind.REASONING,
+            ConversationItemKind.TOOL_ACTIVITY,
             ConversationItemKind.COMMAND_EXECUTION,
             -> true
 
@@ -414,6 +427,7 @@ object TurnTimelineReducer {
             ConversationSpeaker.USER -> 0
             ConversationSpeaker.SYSTEM -> when (item.kind) {
                 ConversationItemKind.REASONING -> 1
+                ConversationItemKind.TOOL_ACTIVITY -> 2
                 ConversationItemKind.COMMAND_EXECUTION -> 2
                 ConversationItemKind.SUBAGENT_ACTION -> 3
                 ConversationItemKind.CHAT,
@@ -854,11 +868,7 @@ object TurnTimelineReducer {
     }
 
     private fun normalizedThinkingContent(text: String): String {
-        return text.lineSequence()
-            .map(String::trim)
-            .filterNot { line -> line.equals("thinking...", ignoreCase = true) }
-            .joinToString(separator = "\n")
-            .trim()
+        return ThinkingDisclosureParser.normalizedThinkingContent(text)
     }
 
     private fun normalizedIdentifier(value: String?): String? {

@@ -2922,6 +2922,10 @@ private fun SystemConversationRow(
             item = item,
             accessoryState = accessoryState,
         )
+        ConversationItemKind.TOOL_ACTIVITY -> ToolActivityConversationRow(
+            item = item,
+            accessoryState = accessoryState,
+        )
         ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
             item = item,
             accessoryState = accessoryState,
@@ -2944,28 +2948,102 @@ private fun SystemConversationRow(
 }
 
 @Composable
+private fun ToolActivityConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    val chrome = remodexConversationChrome()
+    val joined = remember(item.text) {
+        item.text
+            .lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .joinToString(separator = "\n")
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (joined.isNotEmpty()) {
+            Text(
+                text = joined,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
+        if (item.isStreaming && accessoryState?.showsRunningIndicator != true) {
+            MiniTypingIndicator()
+        }
+        if (accessoryState?.showsRunningIndicator == true) {
+            TerminalRunningIndicator()
+        }
+    }
+}
+
+@Composable
 private fun ThinkingConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
 ) {
     val chrome = remodexConversationChrome()
+    val thinkingText = remember(item.text) {
+        ThinkingDisclosureParser.normalizedThinkingContent(item.text)
+    }
+    val activityPreview = remember(thinkingText) {
+        if (thinkingText.isEmpty()) {
+            null
+        } else {
+            ThinkingDisclosureParser.compactActivityPreview(thinkingText)
+        }
+    }
+    val showDetailedThinking = !item.isStreaming && activityPreview == null && thinkingText.isNotEmpty()
+    val thinkingContent = remember(item.id, thinkingText, showDetailedThinking) {
+        if (showDetailedThinking) {
+            ThinkingDisclosureParser.parse(thinkingText)
+        } else {
+            ThinkingDisclosureContent(
+                sections = emptyList(),
+                fallbackText = "",
+            )
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = "Thinking...",
-            style = MaterialTheme.typography.labelMedium,
-            color = chrome.secondaryText,
-        )
-        if (item.text.isNotBlank()) {
-            ConversationMarkdownText(
-                text = item.text,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
+        when {
+            activityPreview != null -> {
+                ThinkingTitle(isStreaming = item.isStreaming)
+                ThinkingActivityPreviewText(
+                    preview = activityPreview,
+                    chrome = chrome,
+                )
+            }
+
+            thinkingText.isEmpty() -> {
+                ThinkingTitle(isStreaming = item.isStreaming)
+            }
+
+            item.isStreaming -> {
+                ThinkingTitle(isStreaming = true)
+                StreamingThinkingPreviewText(
+                    text = thinkingText,
+                    chrome = chrome,
+                )
+            }
+
+            else -> {
+                ThinkingTitle(isStreaming = item.isStreaming)
+                ThinkingDisclosureContentView(
+                    messageId = item.id,
+                    content = thinkingContent,
+                    chrome = chrome,
+                )
+            }
         }
         item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
             Text(
@@ -2976,6 +3054,137 @@ private fun ThinkingConversationRow(
         }
         if (accessoryState?.showsRunningIndicator == true) {
             TerminalRunningIndicator()
+        }
+    }
+}
+
+@Composable
+private fun StreamingThinkingPreviewText(
+    text: String,
+    chrome: RemodexConversationChrome,
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = chrome.secondaryText,
+        maxLines = 6,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun ThinkingTitle(
+    isStreaming: Boolean,
+) {
+    val chrome = remodexConversationChrome()
+    Text(
+        text = "Thinking...",
+        style = MaterialTheme.typography.labelMedium,
+        color = chrome.secondaryText.copy(alpha = if (isStreaming) 0.92f else 1f),
+    )
+}
+
+@Composable
+private fun ThinkingActivityPreviewText(
+    preview: String,
+    chrome: RemodexConversationChrome,
+) {
+    val trimmed = preview.trim()
+    if (trimmed.isEmpty()) {
+        return
+    }
+
+    val splitIndex = trimmed.indexOf(' ').takeIf { it >= 0 }
+    val leading = if (splitIndex == null) trimmed else trimmed.substring(0, splitIndex)
+    val remainder = if (splitIndex == null) "" else trimmed.substring(splitIndex)
+    val capitalizedLeading = leading.replaceFirstChar(Char::titlecase)
+
+    Text(
+        text = buildAnnotatedString {
+            withStyle(
+                SpanStyle(
+                    color = chrome.secondaryText,
+                    fontWeight = FontWeight.Medium,
+                ),
+            ) {
+                append(capitalizedLeading)
+            }
+            withStyle(
+                SpanStyle(color = chrome.tertiaryText),
+            ) {
+                append(remainder)
+            }
+        },
+        style = MaterialTheme.typography.labelMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun ThinkingDisclosureContentView(
+    messageId: String,
+    content: ThinkingDisclosureContent,
+    chrome: RemodexConversationChrome,
+) {
+    var expandedSectionIds by rememberSaveable(messageId) { mutableStateOf(emptyList<String>()) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (content.showsDisclosure) {
+            content.sections.forEach { section ->
+                val isExpanded = section.id in expandedSectionIds
+                val hasDetail = section.detail.isNotBlank()
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = hasDetail) {
+                                expandedSectionIds = if (isExpanded) {
+                                    expandedSectionIds - section.id
+                                } else {
+                                    expandedSectionIds + section.id
+                                }
+                            },
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = null,
+                            tint = if (hasDetail) chrome.secondaryText else chrome.tertiaryText,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .graphicsLayer { rotationZ = if (isExpanded) 0f else -90f },
+                        )
+                        Text(
+                            text = section.title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = chrome.secondaryText,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    if (isExpanded && hasDetail) {
+                        ConversationMarkdownText(
+                            text = section.detail,
+                            modifier = Modifier.padding(start = 22.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = chrome.secondaryText,
+                        )
+                    }
+                }
+            }
+        } else if (content.fallbackText.isNotBlank()) {
+            ConversationMarkdownText(
+                text = content.fallbackText,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
         }
     }
 }

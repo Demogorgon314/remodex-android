@@ -47,7 +47,7 @@ class TurnTimelineReducerTest {
     }
 
     @Test
-    fun `late reasoning and activity updates merge into the existing item`() {
+    fun `activity lines become dedicated tool activity rows while reasoning stays separate`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(
                 TimelineMutation.Upsert(
@@ -63,11 +63,11 @@ class TurnTimelineReducerTest {
                     ),
                 ),
                 TimelineMutation.ActivityLine(
-                    messageId = "reasoning-1",
+                    messageId = "tool-activity-1",
                     turnId = "turn-1",
-                    itemId = "reasoning-item",
+                    itemId = "tool-activity-item",
                     line = "Running ./gradlew :app:testDebugUnitTest",
-                    orderIndex = 1,
+                    orderIndex = 2,
                 ),
                 TimelineMutation.ReasoningTextDelta(
                     messageId = "reasoning-1",
@@ -79,11 +79,15 @@ class TurnTimelineReducerTest {
             ),
         )
 
-        assertEquals(1, projected.size)
-        assertTrue(projected.first().text.contains("Running ./gradlew"))
-        assertTrue(projected.first().text.contains("Merged late reasoning detail"))
-        assertEquals("reasoning-item", projected.first().itemId)
-        assertTrue(projected.first().isStreaming)
+        assertEquals(2, projected.size)
+        val reasoning = projected.first { it.kind == ConversationItemKind.REASONING }
+        val toolActivity = projected.first { it.kind == ConversationItemKind.TOOL_ACTIVITY }
+        assertTrue(reasoning.text.contains("Merged late reasoning detail"))
+        assertEquals("reasoning-item", reasoning.itemId)
+        assertTrue(reasoning.isStreaming)
+        assertEquals("tool-activity-item", toolActivity.itemId)
+        assertTrue(toolActivity.text.contains("Running ./gradlew"))
+        assertTrue(toolActivity.isStreaming)
     }
 
     @Test
@@ -196,12 +200,12 @@ class TurnTimelineReducerTest {
                     orderIndex = 1,
                 ),
                 RemodexConversationItem(
-                    id = "command-1",
+                    id = "activity-1",
                     speaker = ConversationSpeaker.SYSTEM,
-                    kind = ConversationItemKind.COMMAND_EXECUTION,
-                    text = "running ./gradlew test",
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
+                    text = "Searching app/src",
                     turnId = "turn-1",
-                    itemId = "command-item",
+                    itemId = "activity-item",
                     orderIndex = 2,
                 ),
                 RemodexConversationItem(
@@ -217,7 +221,7 @@ class TurnTimelineReducerTest {
         )
 
         assertEquals(
-            listOf("user-1", "command-1", "assistant-1", "file-1"),
+            listOf("user-1", "activity-1", "assistant-1", "file-1"),
             projected.map(RemodexConversationItem::id),
         )
     }

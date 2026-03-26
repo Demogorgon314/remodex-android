@@ -13,6 +13,7 @@ enum class ConversationSpeaker {
 enum class ConversationItemKind {
     CHAT,
     REASONING,
+    TOOL_ACTIVITY,
     FILE_CHANGE,
     COMMAND_EXECUTION,
     SUBAGENT_ACTION,
