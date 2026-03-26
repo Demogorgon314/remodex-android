@@ -1,5 +1,7 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -11,6 +13,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -58,13 +61,16 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
@@ -108,13 +114,20 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -165,6 +178,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.flow.drop
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
@@ -196,13 +210,29 @@ internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
 internal const val ComposerSendButtonTag = "composer_send_button"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
+internal const val ConversationCopyButtonTag = "conversation_copy_button"
+internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
 
 private data class ConversationBlockAccessoryState(
     val showsRunningIndicator: Boolean = false,
+    val copyText: String? = null,
     val blockDiffText: String? = null,
     val blockDiffEntries: List<FileChangeSummaryEntry>? = null,
     val blockRevertPresentation: RemodexAssistantRevertPresentation? = null,
 )
+
+private data class SelectableMessageTextSheetState(
+    val role: ConversationSpeaker,
+    val text: String,
+    val usesMarkdownSelection: Boolean,
+) {
+    val title: String
+        get() = when (role) {
+            ConversationSpeaker.ASSISTANT -> "Assistant Message"
+            ConversationSpeaker.SYSTEM -> "System Message"
+            ConversationSpeaker.USER -> "Message"
+        }
+}
 
 internal data class FileChangeSheetPresentation(
     val title: String = "Changes",
@@ -2866,6 +2896,288 @@ private fun ComposerDropdownMenuItem(
 }
 
 @Composable
+private fun ConversationMessageActionContainer(
+    text: String,
+    messageRole: ConversationSpeaker,
+    usesMarkdownSelection: Boolean,
+    allowsSelectText: Boolean,
+    modifier: Modifier = Modifier,
+    alignMenuToEnd: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    val trimmedText = remember(text) { text.trim() }
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    var menuExpanded by rememberSaveable(trimmedText, messageRole.name) { mutableStateOf(false) }
+    var menuPressOffset by remember(trimmedText, messageRole.name) { mutableStateOf(IntOffset.Zero) }
+    var selectableTextSheetState by remember(trimmedText, messageRole.name, usesMarkdownSelection) {
+        mutableStateOf<SelectableMessageTextSheetState?>(null)
+    }
+
+    val gestureModifier = if (trimmedText.isNotEmpty() || onClick != null) {
+        Modifier
+            .pointerInput(trimmedText, messageRole.name, onClick, density) {
+                detectTapGestures(
+                    onTap = {
+                        onClick?.invoke()
+                    },
+                    onLongPress = { pressOffset ->
+                        menuPressOffset = IntOffset(
+                            x = pressOffset.x.toInt(),
+                            y = pressOffset.y.toInt(),
+                        )
+                        menuExpanded = true
+                    },
+                )
+            }
+            .semantics(mergeDescendants = false) {
+                role = Role.Button
+                if (onClick != null) {
+                    onClick {
+                        onClick.invoke()
+                        true
+                    }
+                }
+                if (trimmedText.isNotEmpty()) {
+                    onLongClick {
+                        menuPressOffset = IntOffset.Zero
+                        menuExpanded = true
+                        true
+                    }
+                }
+            }
+    } else {
+        Modifier
+    }
+
+    Box(modifier = modifier.then(gestureModifier)) {
+        content()
+        ConversationMessageContextMenu(
+            expanded = menuExpanded,
+            alignToTrailing = alignMenuToEnd,
+            pressOffset = menuPressOffset,
+            showsSelectTextAction = allowsSelectText && trimmedText.isNotEmpty(),
+            onSelectText = {
+                selectableTextSheetState = SelectableMessageTextSheetState(
+                    role = messageRole,
+                    text = trimmedText,
+                    usesMarkdownSelection = usesMarkdownSelection,
+                )
+                menuExpanded = false
+            },
+            onCopy = {
+                copyPlainTextToClipboard(
+                    context = context,
+                    label = "Conversation message",
+                    text = trimmedText,
+                )
+                menuExpanded = false
+            },
+            onDismissRequest = { menuExpanded = false },
+        )
+    }
+
+    selectableTextSheetState?.let { state ->
+        SelectableMessageTextSheet(
+            state = state,
+            onDismiss = { selectableTextSheetState = null },
+        )
+    }
+}
+
+@Composable
+private fun ConversationMessageContextMenu(
+    expanded: Boolean,
+    alignToTrailing: Boolean,
+    pressOffset: IntOffset,
+    showsSelectTextAction: Boolean,
+    onSelectText: () -> Unit,
+    onCopy: () -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val verticalGapPx = with(density) { 8.dp.roundToPx() }
+    val windowMarginPx = with(density) { 12.dp.roundToPx() }
+    if (!expanded) {
+        return
+    }
+
+    Popup(
+        popupPositionProvider = remember(verticalGapPx, windowMarginPx, alignToTrailing, pressOffset) {
+            ConversationContextMenuPositionProvider(
+                verticalGapPx = verticalGapPx,
+                windowMarginPx = windowMarginPx,
+                alignToTrailing = alignToTrailing,
+                pressOffset = pressOffset,
+            )
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Surface(
+            color = chrome.panelSurfaceStrong,
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 6.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 168.dp, max = 220.dp)
+                    .padding(vertical = 2.dp),
+            ) {
+                if (showsSelectTextAction) {
+                    ComposerDropdownMenuItem(
+                        text = { Text("Select Text") },
+                        onClick = onSelectText,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.TextFields,
+                                contentDescription = null,
+                            )
+                        },
+                    )
+                }
+                ComposerDropdownMenuItem(
+                    text = { Text("Copy") },
+                    onClick = onCopy,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.ContentCopy,
+                            contentDescription = null,
+                        )
+                    },
+                )
+            }
+        }
+    }
+}
+
+private class ConversationContextMenuPositionProvider(
+    private val verticalGapPx: Int,
+    private val windowMarginPx: Int,
+    private val alignToTrailing: Boolean,
+    private val pressOffset: IntOffset,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val touchX = anchorBounds.left + pressOffset.x
+        val touchY = anchorBounds.top + pressOffset.y
+        val preferredX = when {
+            pressOffset != IntOffset.Zero && alignToTrailing -> touchX - popupContentSize.width
+            pressOffset != IntOffset.Zero -> touchX
+            alignToTrailing && layoutDirection == LayoutDirection.Ltr ->
+                anchorBounds.right - popupContentSize.width
+            alignToTrailing && layoutDirection == LayoutDirection.Rtl ->
+                anchorBounds.left
+            layoutDirection == LayoutDirection.Ltr ->
+                anchorBounds.left
+            else ->
+                anchorBounds.right - popupContentSize.width
+        }
+        val maxX = (windowSize.width - popupContentSize.width - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedX = preferredX.coerceIn(windowMarginPx, maxX)
+
+        val referenceTop = if (pressOffset != IntOffset.Zero) touchY else anchorBounds.top
+        val referenceBottom = if (pressOffset != IntOffset.Zero) touchY else anchorBounds.bottom
+        val aboveY = referenceTop - popupContentSize.height - verticalGapPx
+        val belowY = referenceBottom + verticalGapPx
+        val maxY = (windowSize.height - popupContentSize.height - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedY = when {
+            aboveY >= windowMarginPx -> aboveY
+            belowY <= maxY -> belowY
+            else -> aboveY.coerceIn(windowMarginPx, maxY)
+        }
+
+        return IntOffset(resolvedX, resolvedY)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectableMessageTextSheet(
+    state: SelectableMessageTextSheetState,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(ConversationSelectableTextSheetTag)
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = state.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = chrome.titleText,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("Done")
+                }
+            }
+
+            Surface(
+                color = chrome.panelSurface,
+                shape = RemodexConversationShapes.card,
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                ) {
+                    if (state.usesMarkdownSelection) {
+                        SelectionContainer {
+                            ConversationMarkdownText(
+                                text = state.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = chrome.bodyText,
+                            )
+                        }
+                    } else {
+                        SelectionContainer {
+                            Text(
+                                text = state.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = chrome.bodyText,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+private fun copyPlainTextToClipboard(
+    context: android.content.Context,
+    label: String,
+    text: String,
+) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+@Composable
 private fun ComposerMenuCheckmark() {
     val chrome = remodexConversationChrome()
     Text(
@@ -3000,34 +3312,42 @@ private fun UserConversationRow(item: RemodexConversationItem) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
-        Column(
+        ConversationMessageActionContainer(
+            text = item.text,
+            messageRole = ConversationSpeaker.USER,
+            usesMarkdownSelection = false,
+            allowsSelectText = false,
             modifier = Modifier.fillMaxWidth(0.8f),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            alignMenuToEnd = true,
         ) {
-            if (item.attachments.isNotEmpty()) {
-                MessageAttachmentStrip(
-                    attachments = item.attachments,
-                    alignToEnd = true,
-                )
-            }
-            if (item.text.isNotBlank()) {
-                Surface(
-                    color = chrome.userBubble,
-                    shape = RemodexConversationShapes.bubble,
-                    border = BorderStroke(1.dp, chrome.userBubbleBorder),
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
-                ) {
-                    Text(
-                        text = highlightMentions(item.text, chrome),
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = chrome.bodyText,
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (item.attachments.isNotEmpty()) {
+                    MessageAttachmentStrip(
+                        attachments = item.attachments,
+                        alignToEnd = true,
                     )
                 }
+                if (item.text.isNotBlank()) {
+                    Surface(
+                        color = chrome.userBubble,
+                        shape = RemodexConversationShapes.bubble,
+                        border = BorderStroke(1.dp, chrome.userBubbleBorder),
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
+                    ) {
+                        Text(
+                            text = highlightMentions(item.text, chrome),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                        )
+                    }
+                }
+                MessageDeliveryStatus(item.deliveryState)
             }
-            MessageDeliveryStatus(item.deliveryState)
         }
     }
 }
@@ -3073,38 +3393,48 @@ private fun AssistantConversationRow(
         }
     }
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
-    Column(
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.ASSISTANT,
+        usesMarkdownSelection = true,
+        allowsSelectText = true,
         modifier = Modifier.fillMaxWidth(0.94f),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (item.text.isNotBlank()) {
-            ConversationMarkdownText(
-                text = item.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = chrome.bodyText,
-            )
-        }
-        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-            Text(
-                text = supportingText,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
-        }
-        if (revertPresentation != null) {
-            AssistantRevertAction(
-                presentation = revertPresentation,
-                onTap = { onTapAssistantRevert(item.id) },
-            )
-        }
-        if (blockDiffPresentation != null) {
-            AssistantBlockDiffAction(
-                entries = blockDiffPresentation.renderState.summary?.entries.orEmpty(),
-                onTap = { onOpenFileChangeDetails(blockDiffPresentation) },
-            )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (item.text.isNotBlank()) {
+                ConversationMarkdownText(
+                    text = item.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
+                )
+            }
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
+            if (revertPresentation != null) {
+                AssistantRevertAction(
+                    presentation = revertPresentation,
+                    onTap = { onTapAssistantRevert(item.id) },
+                )
+            }
+            if (blockDiffPresentation != null) {
+                AssistantBlockDiffAction(
+                    entries = blockDiffPresentation.renderState.summary?.entries.orEmpty(),
+                    onTap = { onOpenFileChangeDetails(blockDiffPresentation) },
+                )
+            }
+            accessoryState?.copyText?.let { copyText ->
+                ConversationCopyBlockButton(text = copyText)
+            }
         }
     }
 }
@@ -3122,41 +3452,49 @@ private fun SystemConversationRow(
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
 ) {
-    when (item.kind) {
-        ConversationItemKind.REASONING -> ThinkingConversationRow(
-            item = item,
-            accessoryState = accessoryState,
-        )
-        ConversationItemKind.TOOL_ACTIVITY -> ToolActivityConversationRow(
-            item = item,
-            accessoryState = accessoryState,
-        )
-        ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
-            item = item,
-            accessoryState = accessoryState,
-            onOpenDetails = onOpenFileChangeDetails,
-        )
-        ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
-            item = item,
-            accessoryState = accessoryState,
-            details = item.itemId?.let(commandExecutionDetailsByItemId::get),
-            onOpenDetails = { onOpenCommandExecutionDetails(item.id) },
-        )
-        ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(
-            item = item,
-            accessoryState = accessoryState,
-            parentThreadId = parentThreadId,
-            threads = threads,
-            parentThreadMessages = parentThreadMessages,
-            onOpenSubagentThread = onOpenSubagentThread,
-            onHydrateSubagentThread = onHydrateSubagentThread,
-        )
-        ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
-        ConversationItemKind.PLAN -> Unit
-        ConversationItemKind.CHAT -> DefaultSystemRow(
-            item = item,
-            accessoryState = accessoryState,
-        )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when (item.kind) {
+            ConversationItemKind.REASONING -> ThinkingConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.TOOL_ACTIVITY -> ToolActivityConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+                onOpenDetails = onOpenFileChangeDetails,
+            )
+            ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+                details = item.itemId?.let(commandExecutionDetailsByItemId::get),
+                onOpenDetails = { onOpenCommandExecutionDetails(item.id) },
+            )
+            ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(
+                item = item,
+                accessoryState = accessoryState,
+                parentThreadId = parentThreadId,
+                threads = threads,
+                parentThreadMessages = parentThreadMessages,
+                onOpenSubagentThread = onOpenSubagentThread,
+                onHydrateSubagentThread = onHydrateSubagentThread,
+            )
+            ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
+            ConversationItemKind.PLAN -> Unit
+            ConversationItemKind.CHAT -> DefaultSystemRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+        }
+        accessoryState?.copyText?.let { copyText ->
+            ConversationCopyBlockButton(text = copyText)
+        }
     }
 }
 
@@ -3173,24 +3511,31 @@ private fun ToolActivityConversationRow(
             .filter(String::isNotEmpty)
             .joinToString(separator = "\n")
     }
-    Column(
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (joined.isNotEmpty()) {
-            Text(
-                text = joined,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        if (item.isStreaming && accessoryState?.showsRunningIndicator != true) {
-            MiniTypingIndicator()
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (joined.isNotEmpty()) {
+                Text(
+                    text = joined,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+            if (item.isStreaming && accessoryState?.showsRunningIndicator != true) {
+                MiniTypingIndicator()
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
         }
     }
 }
@@ -3454,50 +3799,52 @@ private fun FileChangeConversationRow(
             )
         }
     }
-    val openDetailsModifier = if (detailsPresentation != null) {
-        Modifier.clickable { onOpenDetails(detailsPresentation) }
-    } else {
-        Modifier
-    }
-    Surface(
-        color = chrome.panelSurface,
-        shape = RemodexConversationShapes.card,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
+        onClick = detailsPresentation?.let { presentation -> { onOpenDetails(presentation) } },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(openDetailsModifier)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        Surface(
+            color = chrome.panelSurface,
+            shape = RemodexConversationShapes.card,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
-            if (groupedEntries.isNotEmpty()) {
-                groupedEntries.forEach { group ->
-                    FileChangeInlineGroup(
-                        group = group,
-                        chrome = chrome,
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (groupedEntries.isNotEmpty()) {
+                    groupedEntries.forEach { group ->
+                        FileChangeInlineGroup(
+                            group = group,
+                            chrome = chrome,
+                        )
+                    }
+                } else if (item.text.isNotBlank()) {
+                    ConversationMarkdownText(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
                     )
                 }
-            } else if (item.text.isNotBlank()) {
-                ConversationMarkdownText(
-                    text = item.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.bodyText,
-                )
-            }
-            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-                Text(
-                    text = supportingText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.secondaryText,
-                )
-            }
-            if (accessoryState?.showsRunningIndicator == true) {
-                TerminalRunningIndicator()
-            } else if (item.isStreaming) {
-                StreamingIndicator(label = "Running")
+                item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                    Text(
+                        text = supportingText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = chrome.secondaryText,
+                    )
+                }
+                if (accessoryState?.showsRunningIndicator == true) {
+                    TerminalRunningIndicator()
+                } else if (item.isStreaming) {
+                    StreamingIndicator(label = "Running")
+                }
             }
         }
     }
@@ -4453,6 +4800,12 @@ private fun buildConversationBlockAccessories(
         val blockTurnId = items.subList(blockStart, blockEnd + 1)
             .asReversed()
             .firstNotNullOfOrNull { item -> item.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        val blockText = items.subList(blockStart, blockEnd + 1)
+            .map(RemodexConversationItem::text)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .joinToString(separator = "\n\n")
+            .takeIf(String::isNotBlank)
         val fileChangeMessages = items.subList(blockStart, blockEnd + 1).filter { item ->
             item.speaker == ConversationSpeaker.SYSTEM &&
                 item.kind == ConversationItemKind.FILE_CHANGE &&
@@ -4478,10 +4831,17 @@ private fun buildConversationBlockAccessories(
             activeTurnId != null && blockTurnId != null -> activeTurnId == blockTurnId
             else -> blockEnd == latestBlockEnd
         }
+        val showsCopyButton = when {
+            blockText == null -> false
+            !isThreadRunning -> true
+            activeTurnId != null && blockTurnId != null -> activeTurnId != blockTurnId
+            else -> blockEnd != latestBlockEnd
+        }
 
-        if (showsRunningIndicator) {
+        if (showsRunningIndicator || showsCopyButton) {
             accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
-                showsRunningIndicator = true,
+                showsRunningIndicator = showsRunningIndicator,
+                copyText = if (showsCopyButton) blockText else null,
                 blockDiffText = blockDiffText,
                 blockDiffEntries = blockDiffEntries,
                 blockRevertPresentation = blockRevertPresentation,
@@ -4489,6 +4849,7 @@ private fun buildConversationBlockAccessories(
         } else if (blockDiffEntries != null || blockRevertPresentation != null) {
             accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
                 showsRunningIndicator = false,
+                copyText = null,
                 blockDiffText = blockDiffText,
                 blockDiffEntries = blockDiffEntries,
                 blockRevertPresentation = blockRevertPresentation,
@@ -5499,23 +5860,30 @@ private fun DefaultSystemRow(
     accessoryState: ConversationBlockAccessoryState?,
 ) {
     val chrome = remodexConversationChrome()
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        item.text.takeIf(String::isNotBlank)?.let { text ->
-            ConversationMarkdownText(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-            Text(
-                text = supportingText,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            item.text.takeIf(String::isNotBlank)?.let { text ->
+                ConversationMarkdownText(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
         }
     }
 }
@@ -5717,6 +6085,50 @@ private fun AssistantBlockDiffAction(
             FileChangeDiffCounts(
                 additions = totalAdditions,
                 deletions = totalDeletions,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationCopyBlockButton(text: String) {
+    val chrome = remodexConversationChrome()
+    val context = LocalContext.current
+    var didCopy by remember(text) { mutableStateOf(false) }
+
+    LaunchedEffect(didCopy) {
+        if (didCopy) {
+            delay(1_500)
+            didCopy = false
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .testTag(ConversationCopyButtonTag)
+            .clickable {
+                copyPlainTextToClipboard(
+                    context = context,
+                    label = "Assistant response",
+                    text = text,
+                )
+                didCopy = true
+            }
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (didCopy) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+            contentDescription = null,
+            tint = chrome.secondaryText,
+            modifier = Modifier.size(15.dp),
+        )
+        if (didCopy) {
+            Text(
+                text = "Copied",
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText,
             )
         }
     }
