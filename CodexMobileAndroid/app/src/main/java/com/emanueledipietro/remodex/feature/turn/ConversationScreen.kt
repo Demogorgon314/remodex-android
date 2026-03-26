@@ -2,7 +2,16 @@ package com.emanueledipietro.remodex.feature.turn
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -130,6 +139,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
@@ -578,7 +588,27 @@ fun ConversationScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(0.dp),
                         ) {
-                            if (autocompleteVisible) {
+                            AnimatedVisibility(
+                                visible = autocompleteVisible,
+                                enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
+                                    slideInVertically(
+                                        animationSpec = tween(durationMillis = 180),
+                                        initialOffsetY = { fullHeight -> fullHeight / 6 },
+                                    ) +
+                                    scaleIn(
+                                        animationSpec = tween(durationMillis = 160),
+                                        initialScale = 0.98f,
+                                    ),
+                                exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                                    slideOutVertically(
+                                        animationSpec = tween(durationMillis = 120),
+                                        targetOffsetY = { fullHeight -> fullHeight / 8 },
+                                    ) +
+                                    scaleOut(
+                                        animationSpec = tween(durationMillis = 110),
+                                        targetScale = 0.985f,
+                                    ),
+                            ) {
                                 AutocompletePanel(
                                     uiState = uiState,
                                     onSelectFileAutocomplete = onSelectFileAutocomplete,
@@ -717,8 +747,10 @@ private fun ConversationCircleButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     filled: Boolean = false,
+    hapticOnClick: Boolean = false,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     val buttonColor = when {
         filled && enabled -> chrome.sendButton
         filled -> chrome.sendButtonDisabled
@@ -740,7 +772,15 @@ private fun ConversationCircleButton(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(enabled = enabled, onClick = onClick),
+                .clickable(
+                    enabled = enabled,
+                    onClick = {
+                        if (hapticOnClick) {
+                            performLightHaptic()
+                        }
+                        onClick()
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -1447,7 +1487,10 @@ private fun ComposerSecondaryBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box {
-            SecondaryBarPill(onClick = { runtimeExpanded = !runtimeExpanded }) {
+            SecondaryBarPill(
+                onClick = { runtimeExpanded = !runtimeExpanded },
+                hapticOnClick = true,
+            ) {
                 if (isWorktreeProject) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Outlined.CallSplit,
@@ -1528,7 +1571,10 @@ private fun ComposerSecondaryBar(
         }
 
         Box {
-            SecondaryBarPill(onClick = { accessExpanded = !accessExpanded }) {
+            SecondaryBarPill(
+                onClick = { accessExpanded = !accessExpanded },
+                hapticOnClick = true,
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.Security,
                     contentDescription = null,
@@ -1568,6 +1614,7 @@ private fun ComposerSecondaryBar(
             SecondaryBarPill(
                 onClick = onOpenGitSheet,
                 enabled = branchSelectorEnabled,
+                hapticOnClick = true,
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Outlined.CallSplit,
@@ -1639,9 +1686,11 @@ private fun SecondaryBarPill(
     onClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    hapticOnClick: Boolean = false,
     content: @Composable RowScope.() -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     Surface(
         modifier = modifier,
         color = chrome.mutedSurface,
@@ -1652,7 +1701,15 @@ private fun SecondaryBarPill(
     ) {
         Row(
             modifier = Modifier
-                .clickable(enabled = enabled && onClick != null, onClick = { onClick?.invoke() })
+                .clickable(
+                    enabled = enabled && onClick != null,
+                    onClick = {
+                        if (hapticOnClick) {
+                            performLightHaptic()
+                        }
+                        onClick?.invoke()
+                    },
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1669,6 +1726,7 @@ private fun ContextWindowStatusRing(
 ) {
     val chrome = remodexConversationChrome()
     val density = LocalDensity.current
+    val performLightHaptic = rememberLightImpactHaptic()
     val progress = usage?.fractionUsed?.coerceIn(0.0, 1.0)?.toFloat()
     val ringColor = when {
         progress == null -> chrome.secondaryText.copy(alpha = 0.55f)
@@ -1687,7 +1745,12 @@ private fun ContextWindowStatusRing(
         Box(
             modifier = Modifier
                 .size(34.dp)
-                .clickable(onClick = onClick),
+                .clickable(
+                    onClick = {
+                        performLightHaptic()
+                        onClick()
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             if (progress == null && isRefreshing) {
@@ -1743,7 +1806,11 @@ private fun ComposerStatusPopover(
     val density = LocalDensity.current
     val verticalGapPx = with(density) { 8.dp.roundToPx() }
     val windowMarginPx = with(density) { 12.dp.roundToPx() }
-    if (!expanded) {
+    val transitionState = remember { MutableTransitionState(false) }
+    LaunchedEffect(expanded) {
+        transitionState.targetState = expanded
+    }
+    if (!transitionState.currentState && !transitionState.targetState) {
         return
     }
 
@@ -1757,20 +1824,42 @@ private fun ComposerStatusPopover(
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = true),
     ) {
-        Surface(
-            color = chrome.panelSurfaceStrong,
-            shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 8.dp,
-            tonalElevation = 0.dp,
+        AnimatedVisibility(
+            visibleState = transitionState,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 190),
+                    initialOffsetY = { fullHeight -> fullHeight / 10 },
+                ) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 170),
+                    initialScale = 0.97f,
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 120)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 120),
+                    targetOffsetY = { fullHeight -> fullHeight / 14 },
+                ) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 120),
+                    targetScale = 0.985f,
+                ),
         ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(min = 260.dp, max = 320.dp)
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                content = content,
-            )
+            Surface(
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 8.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 260.dp, max = 320.dp)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    content = content,
+                )
+            }
         }
     }
 }
@@ -2210,10 +2299,16 @@ private fun ComposerCard(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box {
+                            val performLightHaptic = rememberLightImpactHaptic()
                             Box(
                                 modifier = Modifier
                                     .requiredSize(ComposerLeadingIconTapTarget)
-                                    .clickable(onClick = { plusMenuExpanded = !plusMenuExpanded }),
+                                    .clickable(
+                                        onClick = {
+                                            performLightHaptic()
+                                            plusMenuExpanded = !plusMenuExpanded
+                                        },
+                                    ),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
@@ -2325,6 +2420,7 @@ private fun ComposerCard(
                                 onClick = onSendPrompt,
                                 enabled = composer.canSend,
                                 filled = true,
+                                hapticOnClick = true,
                             )
                             if (queuedCount > 0) {
                                 Surface(
@@ -2734,11 +2830,17 @@ private fun FileAutocompleteRow(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = FileAutocompleteRowHeight)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -2766,11 +2868,17 @@ private fun SkillAutocompleteRow(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .height(SkillAutocompleteRowHeight)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
@@ -2815,12 +2923,19 @@ private fun SlashCommandRow(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     val contentColor = if (enabled) chrome.titleText else chrome.secondaryText
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(SlashAutocompleteRowHeight)
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                enabled = enabled,
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2868,12 +2983,19 @@ private fun ReviewTargetRow(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     val contentColor = if (enabled) chrome.titleText else chrome.secondaryText
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .height(SlashAutocompleteRowHeight)
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                enabled = enabled,
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -2901,11 +3023,17 @@ private fun ForkDestinationRow(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(SlashAutocompleteRowHeight)
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3320,9 +3448,15 @@ private fun ComposerMenuTrigger(
     leadingIcon: ImageVector? = null,
 ) {
     val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
     Row(
         modifier = modifier
-            .clickable(onClick = onClick)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -3379,7 +3513,11 @@ private fun ComposerDropdownMenu(
     val density = LocalDensity.current
     val verticalGapPx = with(density) { 8.dp.roundToPx() }
     val windowMarginPx = with(density) { 12.dp.roundToPx() }
-    if (!expanded) {
+    val transitionState = remember { MutableTransitionState(false) }
+    LaunchedEffect(expanded) {
+        transitionState.targetState = expanded
+    }
+    if (!transitionState.currentState && !transitionState.targetState) {
         return
     }
 
@@ -3393,19 +3531,41 @@ private fun ComposerDropdownMenu(
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = false),
     ) {
-        Surface(
-            color = chrome.panelSurfaceStrong,
-            shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 6.dp,
-            tonalElevation = 0.dp,
+        AnimatedVisibility(
+            visibleState = transitionState,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    initialOffsetY = { fullHeight -> fullHeight / 8 },
+                ) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 160),
+                    initialScale = 0.96f,
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 120),
+                    targetOffsetY = { fullHeight -> fullHeight / 12 },
+                ) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 110),
+                    targetScale = 0.98f,
+                ),
         ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(min = 180.dp, max = 228.dp)
-                    .padding(vertical = 2.dp),
-                content = content,
-            )
+            Surface(
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 6.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 180.dp, max = 228.dp)
+                        .padding(vertical = 2.dp),
+                    content = content,
+                )
+            }
         }
     }
 }
@@ -3460,9 +3620,13 @@ private fun ComposerDropdownMenuItem(
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null,
 ) {
+    val performLightHaptic = rememberLightImpactHaptic()
     DropdownMenuItem(
         text = text,
-        onClick = onClick,
+        onClick = {
+            performLightHaptic()
+            onClick()
+        },
         modifier = modifier.heightIn(min = 30.dp),
         enabled = enabled,
         leadingIcon = leadingIcon,
@@ -3485,6 +3649,7 @@ private fun ConversationMessageActionContainer(
     val trimmedText = remember(text) { text.trim() }
     val context = LocalContext.current
     val density = LocalDensity.current
+    val performLightHaptic = rememberLightImpactHaptic()
     var menuExpanded by rememberSaveable(trimmedText, messageRole.name) { mutableStateOf(false) }
     var menuPressOffset by remember(trimmedText, messageRole.name) { mutableStateOf(IntOffset.Zero) }
     var selectableTextSheetState by remember(trimmedText, messageRole.name, usesMarkdownSelection) {
@@ -3499,6 +3664,7 @@ private fun ConversationMessageActionContainer(
                         onClick?.invoke()
                     },
                     onLongPress = { pressOffset ->
+                        performLightHaptic()
                         menuPressOffset = IntOffset(
                             x = pressOffset.x.toInt(),
                             y = pressOffset.y.toInt(),
@@ -3517,6 +3683,7 @@ private fun ConversationMessageActionContainer(
                 }
                 if (trimmedText.isNotEmpty()) {
                     onLongClick {
+                        performLightHaptic()
                         menuPressOffset = IntOffset.Zero
                         menuExpanded = true
                         true
@@ -3579,7 +3746,11 @@ private fun ConversationMessageContextMenu(
     val density = LocalDensity.current
     val verticalGapPx = with(density) { 8.dp.roundToPx() }
     val windowMarginPx = with(density) { 12.dp.roundToPx() }
-    if (!expanded) {
+    val transitionState = remember { MutableTransitionState(false) }
+    LaunchedEffect(expanded) {
+        transitionState.targetState = expanded
+    }
+    if (!transitionState.currentState && !transitionState.targetState) {
         return
     }
 
@@ -3595,40 +3766,62 @@ private fun ConversationMessageContextMenu(
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = true),
     ) {
-        Surface(
-            color = chrome.panelSurfaceStrong,
-            shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 6.dp,
-            tonalElevation = 0.dp,
+        AnimatedVisibility(
+            visibleState = transitionState,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    initialOffsetY = { fullHeight -> fullHeight / 10 },
+                ) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 160),
+                    initialScale = 0.97f,
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 120),
+                    targetOffsetY = { fullHeight -> fullHeight / 14 },
+                ) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 110),
+                    targetScale = 0.985f,
+                ),
         ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(min = 168.dp, max = 220.dp)
-                    .padding(vertical = 2.dp),
+            Surface(
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 6.dp,
+                tonalElevation = 0.dp,
             ) {
-                if (showsSelectTextAction) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 168.dp, max = 220.dp)
+                        .padding(vertical = 2.dp),
+                ) {
+                    if (showsSelectTextAction) {
+                        ComposerDropdownMenuItem(
+                            text = { Text("Select Text") },
+                            onClick = onSelectText,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.TextFields,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
+                    }
                     ComposerDropdownMenuItem(
-                        text = { Text("Select Text") },
-                        onClick = onSelectText,
+                        text = { Text("Copy") },
+                        onClick = onCopy,
                         leadingIcon = {
                             Icon(
-                                imageVector = Icons.Outlined.TextFields,
+                                imageVector = Icons.Outlined.ContentCopy,
                                 contentDescription = null,
                             )
                         },
                     )
                 }
-                ComposerDropdownMenuItem(
-                    text = { Text("Copy") },
-                    onClick = onCopy,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.ContentCopy,
-                            contentDescription = null,
-                        )
-                    },
-                )
             }
         }
     }
@@ -3754,6 +3947,16 @@ private fun copyPlainTextToClipboard(
 ) {
     val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+@Composable
+private fun rememberLightImpactHaptic(): () -> Unit {
+    val view = LocalView.current
+    return remember(view) {
+        {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
 }
 
 @Composable
