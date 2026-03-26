@@ -212,6 +212,70 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun selectingStatusSlashCommandOpensStatusSheet() {
+        composeRule.setContent {
+            RemodexTheme {
+                var autocompleteState by remember {
+                    mutableStateOf(
+                        RemodexComposerAutocompleteState(
+                            panel = RemodexComposerAutocompletePanel.COMMANDS,
+                            slashCommands = listOf(RemodexSlashCommand.STATUS),
+                        ),
+                    )
+                }
+
+                ConversationScreen(
+                    uiState = conversationUiState(autocompleteState),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {
+                        autocompleteState = RemodexComposerAutocompleteState()
+                    },
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {
+                        autocompleteState = RemodexComposerAutocompleteState()
+                    },
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onRefreshUsageStatus = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Status").performClick()
+        composeRule.onAllNodesWithTag(ConversationStatusSheetTag).assertCountEquals(1)
+    }
+
+    @Test
     fun runningConversationShowsThinkingAccessoryOnLatestBlock() {
         composeRule.setContent {
             RemodexTheme {

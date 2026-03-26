@@ -242,6 +242,7 @@ internal const val ComposerSendButtonTag = "composer_send_button"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
+internal const val ConversationStatusSheetTag = "conversation_status_sheet"
 
 private data class ConversationBlockAccessoryState(
     val showsRunningIndicator: Boolean = false,
@@ -341,6 +342,7 @@ fun ConversationScreen(
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
@@ -422,6 +424,18 @@ fun ConversationScreen(
             ?.filter(String::isNotEmpty)
             ?.map(::parseCommandExecutionStatus)
             ?.firstOrNull { status -> status != null }
+    }
+    val handleSelectSlashCommand: (RemodexSlashCommand) -> Unit = remember(
+        onSelectSlashCommand,
+        onRefreshUsageStatus,
+    ) {
+        { command ->
+            onSelectSlashCommand(command)
+            if (command == RemodexSlashCommand.STATUS) {
+                statusSheetExpanded = true
+                onRefreshUsageStatus()
+            }
+        }
     }
     LaunchedEffect(thread.id, lastTimelineItemId) {
         if (!initialScrollApplied && timelineItems.isNotEmpty()) {
@@ -634,7 +648,7 @@ fun ConversationScreen(
                                     uiState = uiState,
                                     onSelectFileAutocomplete = onSelectFileAutocomplete,
                                     onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                    onSelectSlashCommand = onSelectSlashCommand,
+                                    onSelectSlashCommand = handleSelectSlashCommand,
                                     onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                     onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                                     onForkThread = onForkThread,
@@ -659,7 +673,7 @@ fun ConversationScreen(
                                 onRemoveMentionedFile = onRemoveMentionedFile,
                                 onSelectSkillAutocomplete = onSelectSkillAutocomplete,
                                 onRemoveMentionedSkill = onRemoveMentionedSkill,
-                                onSelectSlashCommand = onSelectSlashCommand,
+                                onSelectSlashCommand = handleSelectSlashCommand,
                                 onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                 onClearReviewSelection = onClearReviewSelection,
                                 onClearSubagentsSelection = onClearSubagentsSelection,
@@ -709,6 +723,15 @@ fun ConversationScreen(
             PlanDetailsSheet(
                 planItem = pinnedPlanItem,
                 onDismiss = { planSheetExpanded = false },
+            )
+        }
+
+        if (statusSheetExpanded) {
+            ConversationStatusSheet(
+                usageStatus = uiState.usageStatus,
+                isRefreshingUsage = uiState.isRefreshingUsage,
+                onRefreshUsageStatus = onRefreshUsageStatus,
+                onDismiss = { statusSheetExpanded = false },
             )
         }
 
@@ -1128,6 +1151,58 @@ private fun EmptyThreadTimelineCard() {
             style = MaterialTheme.typography.bodyMedium,
             color = chrome.secondaryText,
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConversationStatusSheet(
+    usageStatus: RemodexUsageStatus,
+    isRefreshingUsage: Boolean,
+    onRefreshUsageStatus: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(ConversationStatusSheetTag)
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Status",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+            )
+
+            Surface(
+                color = chrome.panelSurface,
+                shape = RoundedCornerShape(28.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    ComposerUsageStatusSummaryContent(
+                        contextWindowUsage = usageStatus.contextWindowUsage,
+                        rateLimitBuckets = usageStatus.rateLimitBuckets,
+                        rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
+                        isRefreshing = isRefreshingUsage,
+                        onRefresh = onRefreshUsageStatus,
+                        showRefreshButton = false,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1880,40 +1955,43 @@ private fun ComposerUsageStatusSummaryContent(
     rateLimitsErrorMessage: String?,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    showRefreshButton: Boolean = true,
 ) {
     val chrome = remodexConversationChrome()
     val visibleRows = remember(rateLimitBuckets) {
         RemodexRateLimitBucket.visibleDisplayRows(rateLimitBuckets)
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
-    ) {
-        TextButton(
-            onClick = onRefresh,
-            enabled = !isRefreshing,
+    if (showRefreshButton) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
         ) {
-            if (isRefreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
+            TextButton(
+                onClick = onRefresh,
+                enabled = !isRefreshing,
+            ) {
+                if (isRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = chrome.secondaryText,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = chrome.secondaryText,
+                    )
+                }
+                Text(
+                    text = if (isRefreshing) "Refreshing..." else "Refresh",
+                    modifier = Modifier.padding(start = 6.dp),
+                    style = MaterialTheme.typography.labelMedium,
                     color = chrome.secondaryText,
                 )
-            } else {
-                Icon(
-                    imageVector = Icons.Outlined.Refresh,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = chrome.secondaryText,
-                )
             }
-            Text(
-                text = if (isRefreshing) "Refreshing..." else "Refresh",
-                modifier = Modifier.padding(start = 6.dp),
-                style = MaterialTheme.typography.labelMedium,
-                color = chrome.secondaryText,
-            )
         }
     }
 
