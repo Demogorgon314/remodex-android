@@ -138,6 +138,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -192,10 +193,8 @@ import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
-import com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
-import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -213,6 +212,13 @@ private val FileAutocompleteRowHeight = 50.dp
 private val ConversationBottomAnchorHeight = 1.dp
 private val FileChangeAddedColor = Color(0xFF22A653)
 private val FileChangeDeletedColor = Color(0xFFE04646)
+
+private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
+    com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject(projectPath)
+
+@Composable
+private fun remodexConversationChrome(): RemodexConversationChrome =
+    com.emanueledipietro.remodex.ui.theme.remodexConversationChrome()
 
 private data class TimelineBottomAnchorRequest(
     val targetIndex: Int,
@@ -353,6 +359,7 @@ fun ConversationScreen(
     }
     val timelineState = rememberLazyListState()
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val lastTimelineItem = timelineItems.lastOrNull()
     val lastTimelineItemId = lastTimelineItem?.id
@@ -360,6 +367,7 @@ fun ConversationScreen(
     val followBottomThresholdPx = with(density) { ComposerFollowBottomThreshold.roundToPx() }
     var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
     var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
+    var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     val latestRunningIndicatorMessageId = remember(timelineItems, blockAccessories) {
         timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
     }
@@ -435,6 +443,19 @@ fun ConversationScreen(
                     )
                 }
             }
+    }
+
+    LaunchedEffect(thread.id, composerFocused, imeBottomPx) {
+        when {
+            !composerFocused -> composerSawImeWhileFocused = false
+            imeBottomPx > 0 -> composerSawImeWhileFocused = true
+            composerSawImeWhileFocused -> {
+                focusManager.clearFocus(force = true)
+                composerFocused = false
+                composerSawImeWhileFocused = false
+                onCloseComposerAutocomplete()
+            }
+        }
     }
 
     LaunchedEffect(thread.id, bottomAnchorRequest) {
@@ -651,7 +672,7 @@ fun ConversationScreen(
                         }
                     }
 
-                    if (!composerFocused) {
+                    if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
                         ComposerSecondaryBar(
                             thread = thread,
                             gitState = uiState.composer.gitState,
@@ -1472,6 +1493,8 @@ private fun ComposerSecondaryBar(
     var runtimeExpanded by remember(thread.id) { mutableStateOf(false) }
     var accessExpanded by remember(thread.id) { mutableStateOf(false) }
     var usageExpanded by remember(thread.id) { mutableStateOf(false) }
+    val usageRingSize = 34.dp
+    val branchPillMaxWidth = 168.dp
 
     LaunchedEffect(usageExpanded, thread.id) {
         if (usageExpanded && !isRefreshingUsage) {
@@ -1479,179 +1502,199 @@ private fun ComposerSecondaryBar(
         }
     }
 
-    Row(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box {
-            SecondaryBarPill(
-                onClick = { runtimeExpanded = !runtimeExpanded },
-                hapticOnClick = true,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (isWorktreeProject) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.CallSplit,
-                        contentDescription = null,
-                        modifier = Modifier.size(12.dp),
-                        tint = chrome.secondaryText,
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Outlined.Computer,
-                        contentDescription = null,
-                        modifier = Modifier.size(12.dp),
-                        tint = chrome.secondaryText,
-                    )
-                }
-                Text(
-                    text = runtimeLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = chrome.secondaryText,
-                    maxLines = 1,
-                )
-                RuntimeSelectorChevron()
-            }
-            ComposerDropdownMenu(
-                expanded = runtimeExpanded,
-                onDismissRequest = { runtimeExpanded = false },
-            ) {
-                RuntimeMenuSectionLabel("Continue in")
-                ComposerDropdownMenuItem(
-                    text = { Text("Cloud") },
-                    onClick = {
-                        runtimeExpanded = false
-                        uriHandler.openUri("https://chatgpt.com/codex")
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Cloud,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = chrome.secondaryText,
-                        )
-                    },
-                )
-                ComposerDropdownMenuItem(
-                    text = {
+                Box {
+                    SecondaryBarPill(
+                        onClick = { runtimeExpanded = !runtimeExpanded },
+                        hapticOnClick = true,
+                    ) {
+                        if (isWorktreeProject) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = chrome.secondaryText,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Computer,
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = chrome.secondaryText,
+                            )
+                        }
                         Text(
-                            if (isEmptyThread) "New worktree" else "Hand off to worktree",
+                            text = runtimeLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = chrome.secondaryText,
+                            maxLines = 1,
                         )
-                    },
-                    onClick = {
-                        runtimeExpanded = false
-                        onOpenGitSheet()
-                    },
-                    enabled = canHandOffToWorktree,
-                    leadingIcon = {
+                        RuntimeSelectorChevron()
+                    }
+                    ComposerDropdownMenu(
+                        expanded = runtimeExpanded,
+                        onDismissRequest = { runtimeExpanded = false },
+                    ) {
+                        RuntimeMenuSectionLabel("Continue in")
+                        ComposerDropdownMenuItem(
+                            text = { Text("Cloud") },
+                            onClick = {
+                                runtimeExpanded = false
+                                uriHandler.openUri("https://chatgpt.com/codex")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Cloud,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = chrome.secondaryText,
+                                )
+                            },
+                        )
+                        ComposerDropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (isEmptyThread) "New worktree" else "Hand off to worktree",
+                                )
+                            },
+                            onClick = {
+                                runtimeExpanded = false
+                                onOpenGitSheet()
+                            },
+                            enabled = canHandOffToWorktree,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = chrome.secondaryText,
+                                )
+                            },
+                        )
+                        ComposerDropdownMenuItem(
+                            text = { Text("Local") },
+                            onClick = { runtimeExpanded = false },
+                            enabled = false,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Computer,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = chrome.secondaryText,
+                                )
+                            },
+                        )
+                    }
+                }
+
+                Box {
+                    SecondaryBarPill(
+                        onClick = { accessExpanded = !accessExpanded },
+                        hapticOnClick = true,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Security,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                            tint = if (accessMode == RemodexAccessMode.FULL_ACCESS) {
+                                Color(0xFFFF9500)
+                            } else {
+                                chrome.secondaryText
+                            },
+                        )
+                        RuntimeSelectorChevron()
+                    }
+                    ComposerDropdownMenu(
+                        expanded = accessExpanded,
+                        onDismissRequest = { accessExpanded = false },
+                    ) {
+                        RemodexAccessMode.entries.forEach { mode ->
+                            ComposerDropdownMenuItem(
+                                text = { Text(mode.label) },
+                                onClick = {
+                                    accessExpanded = false
+                                    onSelectAccessMode(mode)
+                                },
+                                trailingIcon = if (mode == accessMode) {
+                                    { ComposerMenuCheckmark() }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (showsGitBranchSelector) {
+                    SecondaryBarPill(
+                        onClick = onOpenGitSheet,
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .weight(1f, fill = false)
+                            .widthIn(max = branchPillMaxWidth),
+                        enabled = branchSelectorEnabled,
+                        hapticOnClick = true,
+                    ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.CallSplit,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(12.dp),
                             tint = chrome.secondaryText,
                         )
-                    },
-                )
-                ComposerDropdownMenuItem(
-                    text = { Text("Local") },
-                    onClick = { runtimeExpanded = false },
-                    enabled = false,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Computer,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = chrome.secondaryText,
+                        Text(
+                            text = branchLabel,
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontFamily = FontFamily.Monospace,
+                            color = chrome.secondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    },
-                )
-            }
-        }
-
-        Box {
-            SecondaryBarPill(
-                onClick = { accessExpanded = !accessExpanded },
-                hapticOnClick = true,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Security,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = if (accessMode == RemodexAccessMode.FULL_ACCESS) {
-                        Color(0xFFFF9500)
-                    } else {
-                        chrome.secondaryText
-                    },
-                )
-                RuntimeSelectorChevron()
-            }
-            ComposerDropdownMenu(
-                expanded = accessExpanded,
-                onDismissRequest = { accessExpanded = false },
-            ) {
-                RemodexAccessMode.entries.forEach { mode ->
-                    ComposerDropdownMenuItem(
-                        text = { Text(mode.label) },
-                        onClick = {
-                            accessExpanded = false
-                            onSelectAccessMode(mode)
-                        },
-                        trailingIcon = if (mode == accessMode) {
-                            { ComposerMenuCheckmark() }
-                        } else {
-                            null
-                        },
-                    )
+                        RuntimeSelectorChevron()
+                    }
                 }
-            }
-        }
 
-        Spacer(modifier = Modifier.weight(1f))
-
-        if (showsGitBranchSelector) {
-            SecondaryBarPill(
-                onClick = onOpenGitSheet,
-                enabled = branchSelectorEnabled,
-                hapticOnClick = true,
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.CallSplit,
-                    contentDescription = null,
-                    modifier = Modifier.size(12.dp),
-                    tint = chrome.secondaryText,
-                )
-                Text(
-                    text = branchLabel,
-                    modifier = Modifier.widthIn(max = 128.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = FontFamily.Monospace,
-                    color = chrome.secondaryText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                RuntimeSelectorChevron()
-            }
-        }
-
-        Box {
-            ContextWindowStatusRing(
-                usage = usageStatus.contextWindowUsage,
-                isRefreshing = isRefreshingUsage,
-                onClick = { usageExpanded = true },
-            )
-            ComposerStatusPopover(
-                expanded = usageExpanded,
-                onDismissRequest = { usageExpanded = false },
-            ) {
-                ComposerUsageStatusSummaryContent(
-                    contextWindowUsage = usageStatus.contextWindowUsage,
-                    rateLimitBuckets = usageStatus.rateLimitBuckets,
-                    rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
-                    isRefreshing = isRefreshingUsage,
-                    onRefresh = onRefreshUsageStatus,
-                )
+                Box(
+                    modifier = Modifier.requiredSize(usageRingSize),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ContextWindowStatusRing(
+                        usage = usageStatus.contextWindowUsage,
+                        isRefreshing = isRefreshingUsage,
+                        onClick = { usageExpanded = true },
+                    )
+                    ComposerStatusPopover(
+                        expanded = usageExpanded,
+                        onDismissRequest = { usageExpanded = false },
+                    ) {
+                        ComposerUsageStatusSummaryContent(
+                            contextWindowUsage = usageStatus.contextWindowUsage,
+                            rateLimitBuckets = usageStatus.rateLimitBuckets,
+                            rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
+                            isRefreshing = isRefreshingUsage,
+                            onRefresh = onRefreshUsageStatus,
+                        )
+                    }
+                }
             }
         }
     }
