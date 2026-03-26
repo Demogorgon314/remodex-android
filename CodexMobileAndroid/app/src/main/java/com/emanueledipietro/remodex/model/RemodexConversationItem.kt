@@ -32,6 +32,7 @@ data class RemodexConversationItem(
     val itemId: String? = null,
     val isStreaming: Boolean = false,
     val deliveryState: RemodexMessageDeliveryState = RemodexMessageDeliveryState.CONFIRMED,
+    val createdAtEpochMs: Long? = null,
     val attachments: List<RemodexConversationAttachment> = emptyList(),
     val planState: RemodexPlanState? = null,
     val subagentAction: RemodexSubagentAction? = null,

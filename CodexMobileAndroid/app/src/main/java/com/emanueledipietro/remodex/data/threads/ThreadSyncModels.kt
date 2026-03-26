@@ -22,6 +22,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.flow.StateFlow
 
@@ -37,6 +38,9 @@ data class ThreadSyncSnapshot(
     val parentThreadId: String? = null,
     val agentNickname: String? = null,
     val agentRole: String? = null,
+    val activeTurnId: String? = null,
+    val latestTurnTerminalState: RemodexTurnTerminalState? = null,
+    val stoppedTurnIds: Set<String> = emptySet(),
     val runtimeConfig: RemodexRuntimeConfig,
     val timelineMutations: List<TimelineMutation>,
 )
@@ -214,6 +218,7 @@ fun timelineItem(
     itemId: String? = null,
     isStreaming: Boolean = false,
     deliveryState: RemodexMessageDeliveryState = RemodexMessageDeliveryState.CONFIRMED,
+    createdAtEpochMs: Long? = null,
     attachments: List<RemodexConversationAttachment> = emptyList(),
     planState: RemodexPlanState? = null,
     subagentAction: RemodexSubagentAction? = null,
@@ -231,6 +236,7 @@ fun timelineItem(
         itemId = itemId,
         isStreaming = isStreaming,
         deliveryState = deliveryState,
+        createdAtEpochMs = createdAtEpochMs,
         attachments = attachments,
         planState = planState,
         subagentAction = subagentAction,

@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.flow.Flow
 
@@ -17,6 +18,9 @@ data class CachedThreadRecord(
     val parentThreadId: String? = null,
     val agentNickname: String? = null,
     val agentRole: String? = null,
+    val activeTurnId: String? = null,
+    val latestTurnTerminalState: RemodexTurnTerminalState? = null,
+    val stoppedTurnIds: Set<String> = emptySet(),
     val runtimeConfig: RemodexRuntimeConfig,
     val timelineItems: List<RemodexConversationItem>,
 )

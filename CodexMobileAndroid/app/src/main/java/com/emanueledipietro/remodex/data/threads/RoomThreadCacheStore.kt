@@ -55,6 +55,7 @@ data class CachedTimelineItemEntity(
     val itemId: String?,
     val isStreaming: Boolean,
     val deliveryState: String,
+    val createdAtEpochMs: Long?,
     val attachmentsJson: String,
     val planStateJson: String?,
     val subagentActionJson: String?,
@@ -93,7 +94,7 @@ interface ThreadCacheDao {
 
 @Database(
     entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class RemodexThreadCacheDatabase : RoomDatabase() {
@@ -122,6 +123,9 @@ class RoomThreadCacheStore(
                     parentThreadId = record.thread.parentThreadId,
                     agentNickname = record.thread.agentNickname,
                     agentRole = record.thread.agentRole,
+                    activeTurnId = null,
+                    latestTurnTerminalState = null,
+                    stoppedTurnIds = emptySet(),
                     runtimeConfig = runCatching {
                         threadCacheJson.decodeFromString<RemodexRuntimeConfig>(record.thread.runtimeConfigJson)
                     }.getOrElse {
@@ -179,6 +183,7 @@ private fun RemodexConversationItem.toEntity(threadId: String): CachedTimelineIt
         itemId = itemId,
         isStreaming = isStreaming,
         deliveryState = deliveryState.name,
+        createdAtEpochMs = createdAtEpochMs,
         attachmentsJson = threadCacheJson.encodeToString(attachments),
         planStateJson = planState?.let(threadCacheJson::encodeToString),
         subagentActionJson = subagentAction?.let(threadCacheJson::encodeToString),
@@ -199,6 +204,7 @@ private fun CachedTimelineItemEntity.toModel(): RemodexConversationItem {
         itemId = itemId,
         isStreaming = isStreaming,
         deliveryState = RemodexMessageDeliveryState.valueOf(deliveryState),
+        createdAtEpochMs = createdAtEpochMs,
         attachments = threadCacheJson.decodeFromString(attachmentsJson),
         planState = planStateJson?.let(threadCacheJson::decodeFromString),
         subagentAction = subagentActionJson?.let(threadCacheJson::decodeFromString),

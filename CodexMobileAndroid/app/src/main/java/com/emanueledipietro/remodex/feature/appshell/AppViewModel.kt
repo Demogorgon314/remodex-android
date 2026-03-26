@@ -42,6 +42,7 @@ import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import kotlinx.coroutines.CancellationException
@@ -99,6 +100,7 @@ data class AppUiState(
     val composer: ComposerUiState = ComposerUiState(),
     val conversationBanner: String? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
+    val completionHapticSignal: Long = 0L,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
@@ -173,6 +175,7 @@ class AppViewModel(
     private val revertedAssistantMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
+    private val completionHapticSignalState = MutableStateFlow(0L)
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
@@ -350,22 +353,31 @@ class AppViewModel(
             )
         }
 
+    private val threadChromeState =
+        combine(
+            threadCompletionBannerState,
+            completionHapticSignalState,
+        ) { threadCompletionBanner: ThreadCompletionBannerUiState?, completionHapticSignal: Long ->
+            threadCompletionBanner to completionHapticSignal
+        }
+
     private val decoratedUiState =
         combine(
             baseUiState,
-            threadCompletionBannerState,
+            threadChromeState,
             isRefreshingThreadsState,
             isRefreshingUsageState,
             settingsRenderState,
         ) {
-            baseState,
-            threadCompletionBanner,
-            isRefreshingThreads,
-            isRefreshingUsage,
-            settingsState,
+            baseState: AppUiState,
+            threadChrome: Pair<ThreadCompletionBannerUiState?, Long>,
+            isRefreshingThreads: Boolean,
+            isRefreshingUsage: Boolean,
+            settingsState: SettingsRenderState,
             ->
             baseState.copy(
-                threadCompletionBanner = threadCompletionBanner,
+                threadCompletionBanner = threadChrome.first,
+                completionHapticSignal = threadChrome.second,
                 isRefreshingThreads = isRefreshingThreads,
                 isRefreshingUsage = isRefreshingUsage,
                 gptAccountSnapshot = settingsState.gptAccountSnapshot,
@@ -1503,12 +1515,19 @@ class AppViewModel(
     }
 
     private fun detectThreadCompletionBanner(snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot) {
-        val selectedThreadId = snapshot.selectedThread?.id
-        val completedThread = snapshot.threads.firstOrNull { currentThread ->
-            val previousThread = previousThreadsById[currentThread.id] ?: return@firstOrNull false
+        val completedThreads = snapshot.threads.filter { currentThread ->
+            val previousThread = previousThreadsById[currentThread.id] ?: return@filter false
             previousThread.isRunning &&
                 !currentThread.isRunning &&
-                currentThread.id != selectedThreadId
+                currentThread.latestTurnTerminalState == RemodexTurnTerminalState.COMPLETED
+        }
+        if (isAppForeground && completedThreads.isNotEmpty()) {
+            completionHapticSignalState.update { value -> value + 1L }
+        }
+
+        val selectedThreadId = snapshot.selectedThread?.id
+        val completedThread = completedThreads.firstOrNull { currentThread ->
+            currentThread.id != selectedThreadId
         }
         if (completedThread != null) {
             threadCompletionBannerState.value = ThreadCompletionBannerUiState(
@@ -2016,6 +2035,7 @@ class AppViewModel(
         if (thread == null) {
             return ComposerUiState()
         }
+        val showsRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
         val hasConfirmedReviewSelection = reviewSelection?.target != null
         val hasPendingReviewSelection = reviewSelection != null && reviewSelection.target == null
         val canSend = !hasPendingReviewSelection && (
@@ -2028,11 +2048,11 @@ class AppViewModel(
             draftText = draftText,
             sendLabel = when {
                 hasConfirmedReviewSelection -> "Start review"
-                thread.isRunning -> "Queue follow-up"
+                showsRunningUi -> "Queue follow-up"
                 else -> "Send"
             },
             canSend = canSend,
-            canStop = thread.isRunning,
+            canStop = showsRunningUi,
             mentionedFiles = mentionedFiles,
             mentionedSkills = mentionedSkills,
             reviewSelection = reviewSelection,

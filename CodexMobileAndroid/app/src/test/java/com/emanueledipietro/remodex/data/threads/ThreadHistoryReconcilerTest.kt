@@ -51,4 +51,132 @@ class ThreadHistoryReconcilerTest {
         assertEquals(existing.single().text, merged.single().text)
         assertFalse(merged.single().isStreaming)
     }
+
+    @Test
+    fun `merge history items matches command execution by item id before turn fallback`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "command-local-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-1",
+                orderIndex = 1L,
+            ),
+            RemodexConversationItem(
+                id = "command-local-2",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran ls",
+                turnId = "turn-1",
+                itemId = "command-item-2",
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "command-history-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-1",
+                orderIndex = 1L,
+            ),
+            RemodexConversationItem(
+                id = "command-history-2",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran ls",
+                turnId = "turn-1",
+                itemId = "command-item-2",
+                orderIndex = 2L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(listOf("command-item-1", "command-item-2"), merged.map(RemodexConversationItem::itemId))
+        assertEquals(listOf(1L, 2L), merged.map(RemodexConversationItem::orderIndex))
+    }
+
+    @Test
+    fun `merge history items keeps local command order index when history snapshot arrives later`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "command-local-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-1",
+                orderIndex = 3L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "command-history-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-1",
+                orderIndex = 99L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals(3L, merged.single().orderIndex)
+        assertEquals("command-item-1", merged.single().itemId)
+    }
+
+    @Test
+    fun `merge history items keeps local command item id when preview match rebinding would reorder later`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "command-local-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-local",
+                orderIndex = 3L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "command-history-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Ran pwd",
+                turnId = "turn-1",
+                itemId = "command-item-server",
+                orderIndex = 99L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("command-item-local", merged.single().itemId)
+        assertEquals(3L, merged.single().orderIndex)
+    }
 }

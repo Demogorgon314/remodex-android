@@ -155,6 +155,14 @@ internal object ThreadHistoryReconciler {
                 }
 
                 ConversationItemKind.COMMAND_EXECUTION -> {
+                    val incomingItemId = normalizedIdentifier(historyItem.itemId)
+                    if (incomingItemId != null) {
+                        merged.indexOfLast { candidate ->
+                            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                                candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                                normalizedIdentifier(candidate.itemId) == incomingItemId
+                        }.takeIf { it >= 0 }?.let { return it }
+                    }
                     val incomingCommandKey = normalizedCommandExecutionPreviewKey(historyItem.text)
                     if (turnId != null && incomingCommandKey != null) {
                         merged.indexOfLast { candidate ->
@@ -284,7 +292,6 @@ internal object ThreadHistoryReconciler {
             structuredUserInputRequest = nextStructuredRequest,
             assistantChangeSet = nextAssistantChangeSet,
             isStreaming = nextStreaming,
-            orderIndex = serverItem.orderIndex,
         )
     }
 

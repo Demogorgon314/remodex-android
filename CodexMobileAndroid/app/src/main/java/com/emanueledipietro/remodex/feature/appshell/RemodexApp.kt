@@ -7,7 +7,12 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -157,6 +162,7 @@ fun RemodexApp(
     val conversationChrome = remodexConversationChrome()
     val defaultPageColor = MaterialTheme.colorScheme.background
     val context = LocalContext.current
+    val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var notificationPermissionUiState by remember(notificationManager) {
         mutableStateOf(notificationManager.permissionUiState())
@@ -215,6 +221,16 @@ fun RemodexApp(
         if (uiState.threadCompletionBanner?.threadId == bannerId) {
             viewModel.dismissThreadCompletionBanner()
         }
+    }
+
+    LaunchedEffect(uiState.completionHapticSignal) {
+        if (uiState.completionHapticSignal <= 0L) {
+            return@LaunchedEffect
+        }
+        performRunCompletionHaptic(
+            context = context,
+            view = view,
+        )
     }
 
     val systemBarStyle = when {
@@ -341,6 +357,58 @@ fun RemodexApp(
             },
         )
     }
+}
+
+private fun performRunCompletionHaptic(
+    context: Context,
+    view: View,
+) {
+    val didVibrate = runCatching {
+        completionVibrator(context)?.let { vibrator ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                vibrator.vibrate(
+                    VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK),
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(
+                    VibrationEffect.createWaveform(
+                        longArrayOf(0L, 28L, 44L, 38L),
+                        -1,
+                    ),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(longArrayOf(0L, 28L, 44L, 38L), -1)
+            }
+            true
+        } ?: false
+    }.getOrDefault(false)
+    if (didVibrate) {
+        return
+    }
+    val didConfirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+    } else {
+        false
+    }
+    if (!didConfirm) {
+        val didContextClick = view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        if (!didContextClick) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
+}
+
+private fun completionVibrator(context: Context): Vibrator? {
+    return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = context.getSystemService(VibratorManager::class.java)
+            manager?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+    }.getOrNull()?.takeIf { it.hasVibrator() }
 }
 
 @Composable

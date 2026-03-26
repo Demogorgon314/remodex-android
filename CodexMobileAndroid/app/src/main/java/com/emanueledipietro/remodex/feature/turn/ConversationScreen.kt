@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.feature.turn
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -189,6 +190,7 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentThreadPresentation
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
@@ -200,6 +202,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlinx.coroutines.flow.drop
+import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
 
@@ -339,6 +342,7 @@ fun ConversationScreen(
         return
     }
     val autocompleteVisible = uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE
+    val showsThreadRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
@@ -351,11 +355,17 @@ fun ConversationScreen(
     val blockAccessories = remember(
         timelineItems,
         thread.isRunning,
+        thread.activeTurnId,
+        thread.latestTurnTerminalState,
+        thread.stoppedTurnIds,
         uiState.assistantRevertStatesByMessageId,
     ) {
         buildConversationBlockAccessories(
             items = timelineItems,
             isThreadRunning = thread.isRunning,
+            activeTurnId = thread.activeTurnId,
+            latestTurnTerminalState = thread.latestTurnTerminalState,
+            stoppedTurnIds = thread.stoppedTurnIds,
             assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
         )
     }
@@ -623,7 +633,7 @@ fun ConversationScreen(
                     if (uiState.composer.queuedDrafts.isNotEmpty()) {
                         QueuedDraftsCard(
                             queuedDrafts = uiState.composer.queuedDrafts,
-                            canSendQueuedDrafts = !thread.isRunning,
+                            canSendQueuedDrafts = !showsThreadRunningUi,
                             onSendQueuedDraft = onSendQueuedDraft,
                         )
                     }
@@ -1537,11 +1547,12 @@ private fun ComposerSecondaryBar(
     val isWorktreeProject = remember(thread.projectPath) {
         isCodexManagedWorktreeProject(thread.projectPath)
     }
+    val showsThreadRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
     val runtimeLabel = if (isWorktreeProject) "Worktree" else "Local"
     val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
     val showsGitBranchSelector = gitState.hasContext
-    val branchSelectorEnabled = showsGitBranchSelector && !thread.isRunning
-    val canHandOffToWorktree = showsGitBranchSelector && !thread.isRunning && !isWorktreeProject
+    val branchSelectorEnabled = showsGitBranchSelector && !showsThreadRunningUi
+    val canHandOffToWorktree = showsGitBranchSelector && !showsThreadRunningUi && !isWorktreeProject
     val isEmptyThread = thread.messages.isEmpty()
     var runtimeExpanded by remember(thread.id) { mutableStateOf(false) }
     var accessExpanded by remember(thread.id) { mutableStateOf(false) }
@@ -2335,7 +2346,7 @@ private fun ComposerCard(
             ) {
                 if (composer.draftText.isBlank()) {
                     Text(
-                        text = if (uiState.selectedThread?.isRunning == true) {
+                        text = if (composer.canStop) {
                             "Queue a follow-up"
                         } else {
                             "Ask anything... @files, \$skills, /commands"
@@ -2527,7 +2538,7 @@ private fun ComposerCard(
                                         .align(Alignment.TopEnd)
                                         .offset(x = 8.dp, y = (-6).dp),
                                     shape = CircleShape,
-                                    color = if (uiState.selectedThread?.isRunning == true) {
+                                    color = if (composer.canStop) {
                                         chrome.warning
                                     } else {
                                         chrome.accent
@@ -4226,7 +4237,10 @@ private fun UserConversationRow(item: RemodexConversationItem) {
                         )
                     }
                 }
-                MessageDeliveryStatus(item.deliveryState)
+                MessageDeliveryStatus(
+                    state = item.deliveryState,
+                    createdAtEpochMs = item.createdAtEpochMs,
+                )
             }
         }
     }
@@ -5648,6 +5662,9 @@ private fun TerminalRunningIndicator() {
 private fun buildConversationBlockAccessories(
     items: List<RemodexConversationItem>,
     isThreadRunning: Boolean,
+    activeTurnId: String?,
+    latestTurnTerminalState: RemodexTurnTerminalState?,
+    stoppedTurnIds: Set<String>,
     assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
 ): Map<String, ConversationBlockAccessoryState> {
     if (items.isEmpty()) {
@@ -5657,10 +5674,6 @@ private fun buildConversationBlockAccessories(
     val latestBlockEnd = items.indexOfLast { it.speaker != ConversationSpeaker.USER }
     if (latestBlockEnd == -1) {
         return emptyMap()
-    }
-
-    val activeTurnId = items.asReversed().firstNotNullOfOrNull { item ->
-        item.turnId?.trim()?.takeIf(String::isNotEmpty)
     }
 
     val accessories = mutableMapOf<String, ConversationBlockAccessoryState>()
@@ -5706,14 +5719,18 @@ private fun buildConversationBlockAccessories(
             .asReversed()
             .firstNotNullOfOrNull { item -> assistantRevertStatesByMessageId[item.id] }
 
+        val effectiveThreadRunning = isThreadRunning && latestTurnTerminalState == null
         val showsRunningIndicator = when {
-            !isThreadRunning -> false
+            !effectiveThreadRunning -> false
+            blockTurnId != null && blockTurnId in stoppedTurnIds -> false
             activeTurnId != null && blockTurnId != null -> activeTurnId == blockTurnId
-            else -> blockEnd == latestBlockEnd
+            else -> blockEnd == latestBlockEnd && blockEnd == items.lastIndex
         }
         val showsCopyButton = when {
             blockText == null -> false
-            !isThreadRunning -> true
+            blockTurnId != null && blockTurnId in stoppedTurnIds -> false
+            latestTurnTerminalState == RemodexTurnTerminalState.STOPPED && blockEnd == latestBlockEnd -> false
+            !effectiveThreadRunning -> true
             activeTurnId != null && blockTurnId != null -> activeTurnId != blockTurnId
             else -> blockEnd != latestBlockEnd
         }
@@ -6819,12 +6836,18 @@ private fun MessageAttachmentStrip(
 }
 
 @Composable
-private fun MessageDeliveryStatus(state: RemodexMessageDeliveryState) {
+private fun MessageDeliveryStatus(
+    state: RemodexMessageDeliveryState,
+    createdAtEpochMs: Long?,
+) {
     val chrome = remodexConversationChrome()
+    val context = LocalContext.current
     val label = when (state) {
         RemodexMessageDeliveryState.PENDING -> "sending..."
         RemodexMessageDeliveryState.FAILED -> "send failed"
-        RemodexMessageDeliveryState.CONFIRMED -> null
+        RemodexMessageDeliveryState.CONFIRMED -> createdAtEpochMs?.let { epochMs ->
+            DateFormat.getTimeFormat(context).format(Date(epochMs))
+        }
     }
     if (label != null) {
         Text(

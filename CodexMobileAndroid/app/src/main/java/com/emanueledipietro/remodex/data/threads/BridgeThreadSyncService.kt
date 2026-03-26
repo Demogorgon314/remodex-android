@@ -53,6 +53,7 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentRef
 import com.emanueledipietro.remodex.model.RemodexSubagentState
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
@@ -97,6 +98,8 @@ class BridgeThreadSyncService(
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private val runningThreadFallbackIds = mutableSetOf<String>()
+    private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
+    private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
     private val resumedThreadIds = mutableSetOf<String>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
@@ -123,6 +126,8 @@ class BridgeThreadSyncService(
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
                     runningThreadFallbackIds.clear()
+                    latestTurnTerminalStateByThread.clear()
+                    stoppedTurnIdsByThread.clear()
                     resumedThreadIds.clear()
                     backingCommandExecutionDetails.value = emptyMap()
                 }
@@ -152,6 +157,9 @@ class BridgeThreadSyncService(
                         existing = existing?.runtimeConfig,
                         incoming = incoming.runtimeConfig,
                     ),
+                ).withResolvedLiveThreadState(
+                    threadId = incoming.id,
+                    isRunning = threadHasKnownRunningState(incoming.id),
                 )
             }
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
@@ -208,17 +216,21 @@ class BridgeThreadSyncService(
     }
 
     private fun upsertThreadSnapshot(refreshedSnapshot: ThreadSyncSnapshot) {
+        val normalizedSnapshot = refreshedSnapshot.withResolvedLiveThreadState(
+            threadId = refreshedSnapshot.id,
+            isRunning = refreshedSnapshot.isRunning,
+        )
         val currentThreads = backingThreads.value
-        val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == refreshedSnapshot.id }) {
+        val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == normalizedSnapshot.id }) {
             currentThreads.map { snapshot ->
-                if (snapshot.id == refreshedSnapshot.id) {
-                    refreshedSnapshot
+                if (snapshot.id == normalizedSnapshot.id) {
+                    normalizedSnapshot
                 } else {
                     snapshot
                 }
             }
         } else {
-            currentThreads + refreshedSnapshot
+            currentThreads + normalizedSnapshot
         }
         backingThreads.value = updatedThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
@@ -819,7 +831,10 @@ class BridgeThreadSyncService(
         clearThreadRunningState(threadId)
         backingThreads.value = backingThreads.value.map { snapshot ->
             if (snapshot.id == threadId) {
-                snapshot.copy(isRunning = false)
+                snapshot.withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = false,
+                )
             } else {
                 snapshot
             }
@@ -1337,6 +1352,11 @@ class BridgeThreadSyncService(
         if (turnId != null) {
             threadIdByTurnId[turnId] = threadId
         }
+        setLatestTurnTerminalState(
+            threadId = threadId,
+            state = RemodexTurnTerminalState.COMPLETED,
+            turnId = turnId,
+        )
         clearThreadRunningState(threadId)
         completeStreamingItemsForThread(threadId = threadId, turnId = turnId)
         touchThread(threadId = threadId, isRunning = false)
@@ -1368,6 +1388,7 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "inprogress"
                 || normalizedStatus == "started"
                 || normalizedStatus == "pending" -> {
+                latestTurnTerminalStateByThread.remove(threadId)
                 if (activeTurnIdByThread[threadId] == null) {
                     markThreadAsRunningFallback(threadId)
                 }
@@ -1381,8 +1402,19 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "finished"
                 || normalizedStatus == "stopped"
                 || normalizedStatus == "systemerror" -> {
-                if (activeTurnIdByThread[threadId] != null || hasStreamingMessage(threadId)) {
+                if (
+                    activeTurnIdByThread[threadId] != null ||
+                    runningThreadFallbackIds.contains(threadId) ||
+                    hasStreamingMessage(threadId)
+                ) {
                     return
+                }
+                terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
+                    setLatestTurnTerminalState(
+                        threadId = threadId,
+                        state = state,
+                        turnId = activeTurnIdByThread[threadId],
+                    )
                 }
                 clearThreadRunningState(threadId)
                 touchThread(threadId = threadId, isRunning = false)
@@ -2170,7 +2202,9 @@ class BridgeThreadSyncService(
                 snapshot.copy(
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
-                    isRunning = isRunning ?: snapshot.isRunning,
+                ).withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = isRunning,
                 )
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
@@ -2196,7 +2230,9 @@ class BridgeThreadSyncService(
                     },
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
-                    isRunning = isRunning ?: snapshot.isRunning,
+                ).withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = isRunning,
                 )
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
@@ -2340,8 +2376,7 @@ class BridgeThreadSyncService(
                     preview = derivePreview(existing, nextMutations),
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
-                    isRunning = threadHasKnownRunningState(threadId),
-                )
+                ).withResolvedLiveThreadState(threadId = threadId)
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
@@ -2377,7 +2412,7 @@ class BridgeThreadSyncService(
                     timelineMutations = existing.timelineMutations + completionMutations,
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
-                )
+                ).withResolvedLiveThreadState(threadId = threadId)
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
@@ -2979,6 +3014,9 @@ class BridgeThreadSyncService(
             parentThreadId = threadObject.firstString("parentThreadId", "parent_thread_id") ?: existing?.parentThreadId,
             agentNickname = threadObject.firstString("agentNickname", "agent_nickname") ?: existing?.agentNickname,
             agentRole = threadObject.firstString("agentRole", "agent_role") ?: existing?.agentRole,
+            activeTurnId = activeTurnIdByThread[id],
+            latestTurnTerminalState = latestTurnTerminalStateByThread[id],
+            stoppedTurnIds = stoppedTurnIdsByThread[id].orEmpty(),
             runtimeConfig = runtimeConfig,
             timelineMutations = existing?.timelineMutations.orEmpty(),
         )
@@ -3127,6 +3165,7 @@ class BridgeThreadSyncService(
                             kind = kind,
                             turnId = turnId,
                             itemId = itemId,
+                            createdAtEpochMs = resolvedTimestampMs.takeIf { it > 0L },
                             attachments = attachments,
                             planState = planState,
                             subagentAction = subagentAction,
@@ -3693,6 +3732,39 @@ class BridgeThreadSyncService(
         return activeTurnIdByThread.containsKey(threadId) || runningThreadFallbackIds.contains(threadId)
     }
 
+    private fun ThreadSyncSnapshot.withResolvedLiveThreadState(
+        threadId: String,
+        isRunning: Boolean? = null,
+    ): ThreadSyncSnapshot {
+        return copy(
+            isRunning = isRunning ?: threadHasKnownRunningState(threadId),
+            activeTurnId = activeTurnIdByThread[threadId],
+            latestTurnTerminalState = latestTurnTerminalStateByThread[threadId],
+            stoppedTurnIds = stoppedTurnIdsByThread[threadId].orEmpty(),
+        )
+    }
+
+    private fun terminalStateForNormalizedStatus(normalizedStatus: String): RemodexTurnTerminalState? {
+        return when (normalizedStatus) {
+            "completed", "done", "finished", "idle", "notloaded" -> RemodexTurnTerminalState.COMPLETED
+            "stopped" -> RemodexTurnTerminalState.STOPPED
+            "systemerror" -> RemodexTurnTerminalState.FAILED
+            else -> null
+        }
+    }
+
+    private fun setLatestTurnTerminalState(
+        threadId: String,
+        state: RemodexTurnTerminalState,
+        turnId: String?,
+    ) {
+        latestTurnTerminalStateByThread[threadId] = state
+        if (state == RemodexTurnTerminalState.STOPPED && !turnId.isNullOrBlank()) {
+            stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() + turnId
+        }
+        syncThreadLifecycleState(threadId = threadId)
+    }
+
     private fun setActiveTurnId(
         threadId: String,
         turnId: String,
@@ -3700,16 +3772,38 @@ class BridgeThreadSyncService(
         activeTurnIdByThread[threadId] = turnId
         threadIdByTurnId[turnId] = threadId
         runningThreadFallbackIds.remove(threadId)
+        latestTurnTerminalStateByThread.remove(threadId)
+        stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() - turnId
+        syncThreadLifecycleState(threadId = threadId, isRunning = true)
     }
 
     private fun markThreadAsRunningFallback(threadId: String) {
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.add(threadId)
+        latestTurnTerminalStateByThread.remove(threadId)
+        syncThreadLifecycleState(threadId = threadId, isRunning = true)
     }
 
     private fun clearThreadRunningState(threadId: String) {
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.remove(threadId)
+        syncThreadLifecycleState(threadId = threadId, isRunning = false)
+    }
+
+    private fun syncThreadLifecycleState(
+        threadId: String,
+        isRunning: Boolean? = null,
+    ) {
+        backingThreads.value = backingThreads.value.map { snapshot ->
+            if (snapshot.id == threadId) {
+                snapshot.withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = isRunning,
+                )
+            } else {
+                snapshot
+            }
+        }
     }
 
     private fun buildTurnStartParams(
@@ -3794,6 +3888,7 @@ class BridgeThreadSyncService(
                                 }
                             },
                             deliveryState = RemodexMessageDeliveryState.PENDING,
+                            createdAtEpochMs = now,
                             attachments = attachments.map { attachment ->
                                 RemodexConversationAttachment(
                                     id = attachment.id,
@@ -3804,6 +3899,9 @@ class BridgeThreadSyncService(
                             orderIndex = orderIndex,
                         ),
                     ),
+                ).withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = true,
                 )
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)

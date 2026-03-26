@@ -36,6 +36,7 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -284,7 +285,12 @@ class AppViewModelTest {
         repository.snapshot.value = repository.snapshot.value.copy(
             threads = listOf(
                 threadSummary(id = "thread-active", title = "Current chat"),
-                threadSummary(id = "thread-finished", title = "Finished chat", isRunning = false),
+                threadSummary(
+                    id = "thread-finished",
+                    title = "Finished chat",
+                    isRunning = false,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                ),
             ),
             selectedThreadId = "thread-active",
         )
@@ -292,6 +298,60 @@ class AppViewModelTest {
 
         assertEquals("thread-finished", viewModel.uiState.value.threadCompletionBanner?.threadId)
         assertEquals("Finished chat", viewModel.uiState.value.threadCompletionBanner?.title)
+    }
+
+    @Test
+    fun `composer clears running controls when selected thread already has terminal completion state`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(
+                    id = "thread-active",
+                    title = "Current chat",
+                    isRunning = true,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                ),
+            ),
+            selectedThreadId = "thread-active",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals("Send", viewModel.uiState.value.composer.sendLabel)
+        assertFalse(viewModel.uiState.value.composer.canStop)
+    }
+
+    @Test
+    fun `completion haptic signal increments when foreground thread run completes`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(
+                    id = "thread-active",
+                    title = "Current chat",
+                    isRunning = true,
+                ),
+            ),
+            selectedThreadId = "thread-active",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(
+                    id = "thread-active",
+                    title = "Current chat",
+                    isRunning = false,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                ),
+            ),
+            selectedThreadId = "thread-active",
+        )
+        advanceUntilIdle()
+
+        assertEquals(1L, viewModel.uiState.value.completionHapticSignal)
     }
 
     @Test
@@ -894,6 +954,7 @@ class AppViewModelTest {
         id: String,
         title: String,
         isRunning: Boolean = false,
+        latestTurnTerminalState: RemodexTurnTerminalState? = null,
         messages: List<RemodexConversationItem> = emptyList(),
     ): com.emanueledipietro.remodex.model.RemodexThreadSummary {
         return com.emanueledipietro.remodex.model.RemodexThreadSummary(
@@ -903,6 +964,7 @@ class AppViewModelTest {
             projectPath = "/tmp/remodex",
             lastUpdatedLabel = "Updated just now",
             isRunning = isRunning,
+            latestTurnTerminalState = latestTurnTerminalState,
             queuedDrafts = 0,
             runtimeLabel = "Auto, medium reasoning",
             messages = messages,

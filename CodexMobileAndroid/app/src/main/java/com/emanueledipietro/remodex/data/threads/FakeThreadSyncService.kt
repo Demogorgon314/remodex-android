@@ -641,6 +641,9 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,
         agentRole = agentRole,
+        activeTurnId = activeTurnId,
+        latestTurnTerminalState = latestTurnTerminalState,
+        stoppedTurnIds = stoppedTurnIds,
         runtimeConfig = runtimeConfig,
         timelineItems = TurnTimelineReducer.reduceProjected(timelineMutations),
     )

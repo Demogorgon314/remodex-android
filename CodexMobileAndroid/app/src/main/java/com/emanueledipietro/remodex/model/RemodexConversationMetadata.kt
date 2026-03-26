@@ -10,6 +10,13 @@ enum class RemodexMessageDeliveryState {
 }
 
 @Serializable
+enum class RemodexTurnTerminalState {
+    COMPLETED,
+    FAILED,
+    STOPPED,
+}
+
+@Serializable
 data class RemodexConversationAttachment(
     val id: String,
     val uriString: String,
