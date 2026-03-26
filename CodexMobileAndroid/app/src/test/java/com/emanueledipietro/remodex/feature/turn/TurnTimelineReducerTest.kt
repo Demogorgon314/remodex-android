@@ -258,6 +258,34 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project prunes completed empty thinking placeholders`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "thinking-placeholder",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Final answer",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("assistant-1"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `project removes duplicate assistant echoes when history repeats the same text`() {
         val projected = TurnTimelineReducer.project(
             listOf(

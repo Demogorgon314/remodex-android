@@ -22,7 +22,8 @@ object TurnTimelineReducer {
         }
         val reordered = enforceIntraTurnOrder(items)
         val collapsedThinking = collapseThinkingMessages(reordered)
-        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(collapsedThinking)
+        val withoutCompletedThinkingPlaceholders = removeCompletedThinkingPlaceholders(collapsedThinking)
+        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(withoutCompletedThinkingPlaceholders)
         val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutCommandThinkingEchoes)
         val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
         return removeDuplicateAssistantMessages(dedupedSubagentActions)
@@ -475,6 +476,12 @@ object TurnTimelineReducer {
         return result
     }
 
+    private fun removeCompletedThinkingPlaceholders(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        return items.filterNot(::shouldPruneThinkingRowAfterCompletion)
+    }
+
     private fun latestReusableThinkingIndex(
         items: List<RemodexConversationItem>,
         incoming: RemodexConversationItem,
@@ -549,13 +556,26 @@ object TurnTimelineReducer {
         val previousText = normalizedThinkingContent(previous.text)
         val incomingText = normalizedThinkingContent(incoming.text)
         if (previousText.isEmpty() || incomingText.isEmpty()) {
-            return previousText.isEmpty() || incomingText.isEmpty()
+        return previousText.isEmpty() || incomingText.isEmpty()
         }
         val previousLower = previousText.lowercase()
         val incomingLower = incomingText.lowercase()
         return previousLower == incomingLower ||
             previousLower.contains(incomingLower) ||
             incomingLower.contains(previousLower)
+    }
+
+    private fun shouldPruneThinkingRowAfterCompletion(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (item.speaker != ConversationSpeaker.SYSTEM || item.kind != ConversationItemKind.REASONING || item.isStreaming) {
+            return false
+        }
+        val trimmedText = item.text.trim()
+        if (trimmedText.isEmpty()) {
+            return true
+        }
+        return normalizedThinkingContent(trimmedText).isEmpty()
     }
 
     private fun mergeThinkingText(

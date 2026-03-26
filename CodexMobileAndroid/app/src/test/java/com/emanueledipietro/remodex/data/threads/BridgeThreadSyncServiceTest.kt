@@ -11,6 +11,7 @@ import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.connection.firstArray
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
+import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -453,6 +454,115 @@ class BridgeThreadSyncServiceTest {
             assertEquals(0, details?.exitCode)
             assertEquals(1450, details?.durationMs)
             assertEquals("M app/src/Main.kt", details?.outputTail)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread decodes reasoning summary and content fields`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-reasoning-history",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-reasoning"))
+                                            put("title", JsonPrimitive("Reasoning thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-reasoning"))
+                                            put("updatedAt", JsonPrimitive(1_713_333_333))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-reasoning"))
+                                put("title", JsonPrimitive("Reasoning thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-reasoning"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-reasoning"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("reasoning-item-1"))
+                                                                put("type", JsonPrimitive("reasoning"))
+                                                                put("summary", JsonPrimitive("Investigating timeline merge"))
+                                                                put(
+                                                                    "content",
+                                                                    buildJsonArray {
+                                                                        add(JsonPrimitive("running rg -n \"reasoning\" app/src/main/java"))
+                                                                        add(JsonPrimitive("opened BridgeThreadSyncService.kt"))
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-reasoning")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-reasoning" }
+            val reasoningItem = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+                .first { item -> item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.REASONING }
+            assertTrue(reasoningItem.text.contains("Investigating timeline merge"))
+            assertTrue(reasoningItem.text.contains("running rg -n \"reasoning\" app/src/main/java"))
+            assertTrue(reasoningItem.text.contains("opened BridgeThreadSyncService.kt"))
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

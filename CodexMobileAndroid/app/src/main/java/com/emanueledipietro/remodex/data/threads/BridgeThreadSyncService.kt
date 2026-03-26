@@ -55,8 +55,10 @@ import com.emanueledipietro.remodex.model.RemodexSubagentRef
 import com.emanueledipietro.remodex.model.RemodexSubagentState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
+import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -81,6 +83,7 @@ class BridgeThreadSyncService(
     private val appVersionName: String = "1.0",
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) : ThreadSyncService, ThreadCommandService, ThreadHydrationService {
+    private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
@@ -150,19 +153,26 @@ class BridgeThreadSyncService(
             return
         }
 
+        val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
         val response = runThreadRead(threadId) ?: return
         val resultObject = response.result?.jsonObjectOrNull ?: return
         val threadObject = resultObject.firstObject("thread") ?: return
         indexTurnIds(threadId = threadId, threadObject = threadObject)
         val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
+        val mergedHistoryItems = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty(),
+            history = TurnTimelineReducer.reduce(historyItems),
+            threadIsActive = activeTurnIdByThread[threadId] != null,
+            threadIsRunning = existingSnapshot?.isRunning == true,
+        )
         val refreshedSnapshot = parseThreadSnapshot(
             threadObject = threadObject,
             syncState = currentSyncState(threadId),
-            existing = backingThreads.value.firstOrNull { it.id == threadId },
+            existing = existingSnapshot,
         )?.copy(
-            timelineMutations = historyItems,
+            timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
             isRunning = resolveInterruptibleTurnId(threadObject)?.also { activeTurnIdByThread[threadId] = it } != null
-                || backingThreads.value.firstOrNull { it.id == threadId }?.isRunning == true,
+                || existingSnapshot?.isRunning == true,
         ) ?: return
 
         backingThreads.value = backingThreads.value
@@ -1089,11 +1099,14 @@ class BridgeThreadSyncService(
             "thread/name/updated" -> refreshThreads()
             "turn/started" -> paramsObject?.let(::handleTurnStartedNotification)
             "turn/completed" -> paramsObject?.let(::handleTurnCompletedNotification)
+            "turn/plan/updated" -> paramsObject?.let(::handleTurnPlanUpdatedNotification)
             "thread/status/changed" -> paramsObject?.let(::handleThreadStatusChangedNotification)
 
             "item/agentMessage/delta",
             "codex/event/agent_message_content_delta",
             "codex/event/agent_message_delta" -> paramsObject?.let(::appendAssistantDelta)
+
+            "item/plan/delta" -> paramsObject?.let(::appendPlanDelta)
 
             "item/reasoning/summaryTextDelta",
             "item/reasoning/summaryPartAdded",
@@ -1161,6 +1174,9 @@ class BridgeThreadSyncService(
         scope.launch {
             refreshThreads()
             hydrateThread(threadId)
+            if (shouldContinueTurnCompletionCatchup(threadId = threadId, turnId = turnId)) {
+                postTurnCompletionCatchup(threadId = threadId, turnId = turnId)
+            }
         }
     }
 
@@ -1200,6 +1216,20 @@ class BridgeThreadSyncService(
                 touchThread(threadId = threadId, isRunning = false)
             }
         }
+    }
+
+    private fun handleTurnPlanUpdatedNotification(paramsObject: JsonObject) {
+        val turnId = extractTurnId(paramsObject)?.takeIf(String::isNotBlank) ?: return
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        threadIdByTurnId[turnId] = threadId
+        upsertPlanMessage(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = null,
+            text = null,
+            planState = decodeHistoryPlanState(paramsObject),
+            isStreaming = true,
+        )
     }
 
     private fun appendAssistantDelta(paramsObject: JsonObject) {
@@ -1283,6 +1313,17 @@ class BridgeThreadSyncService(
                 ),
             ),
             isRunning = true,
+        )
+    }
+
+    private fun appendPlanDelta(paramsObject: JsonObject) {
+        val turnId = extractTurnId(paramsObject)?.takeIf(String::isNotBlank) ?: return
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        threadIdByTurnId[turnId] = threadId
+        appendSystemTextDelta(
+            paramsObject = paramsObject,
+            kind = ConversationItemKind.PLAN,
+            fallbackPrefix = "plan",
         )
     }
 
@@ -1663,7 +1704,17 @@ class BridgeThreadSyncService(
             item = timelineItem(
                 id = messageId,
                 speaker = ConversationSpeaker.SYSTEM,
-                text = subagentAction?.summaryText ?: body.ifBlank { kind.name.replace('_', ' ') },
+                text = when {
+                    subagentAction != null -> subagentAction.summaryText
+                    kind == ConversationItemKind.REASONING && existingItem != null -> {
+                        ThreadHistoryReconciler.mergeStreamingSnapshotText(
+                            existingText = existingItem.text,
+                            incomingText = body.ifBlank { existingItem.text },
+                        )
+                    }
+
+                    else -> body.ifBlank { kind.name.replace('_', ' ') }
+                },
                 kind = kind,
                 turnId = resolvedTurnId,
                 itemId = itemId,
@@ -1683,6 +1734,65 @@ class BridgeThreadSyncService(
             isRunning = !isCompleted || activeTurnIdByThread[threadId] != null,
         )
         return true
+    }
+
+    private fun upsertPlanMessage(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        text: String?,
+        planState: RemodexPlanState?,
+        isStreaming: Boolean,
+    ) {
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = turnId,
+            fallbackPrefix = "plan",
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = messageId,
+            turnId = turnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN,
+        )
+        val resolvedPlanState = when {
+            existingItem?.planState == null -> planState
+            planState == null -> existingItem.planState
+            else -> existingItem.planState.copy(
+                explanation = planState.explanation ?: existingItem.planState.explanation,
+                steps = if (planState.steps.isNotEmpty()) planState.steps else existingItem.planState.steps,
+            )
+        }
+        val resolvedText = text?.trim()?.takeIf(String::isNotEmpty)
+            ?: resolvedPlanState?.explanation?.trim()?.takeIf(String::isNotEmpty)
+            ?: resolvedPlanState?.steps?.firstOrNull()?.step?.trim()?.takeIf(String::isNotEmpty)
+            ?: existingItem?.text?.takeIf(String::isNotBlank)
+            ?: if (isStreaming) "Planning..." else "Plan updated."
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = resolvedText,
+                kind = ConversationItemKind.PLAN,
+                turnId = turnId,
+                itemId = itemId,
+                isStreaming = isStreaming,
+                planState = resolvedPlanState,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = turnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.PLAN,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+            ),
+            isRunning = true,
+        )
     }
 
     private fun appendSystemTextDelta(
@@ -2043,6 +2153,41 @@ class BridgeThreadSyncService(
                 )
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private suspend fun postTurnCompletionCatchup(
+        threadId: String,
+        turnId: String?,
+    ) {
+        for (delayMs in postTurnCatchupDelaysMs) {
+            if (!shouldContinueTurnCompletionCatchup(threadId = threadId, turnId = turnId)) {
+                return
+            }
+            delay(delayMs)
+            refreshThreads()
+            hydrateThread(threadId)
+        }
+    }
+
+    private fun shouldContinueTurnCompletionCatchup(
+        threadId: String,
+        turnId: String?,
+    ): Boolean {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return false
+        val projected = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+        val hasAssistantForTurn = projected.any { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.text.isNotBlank() &&
+                (turnId == null || item.turnId == turnId)
+        }
+        val hasCompletedThinkingPlaceholder = projected.any { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.REASONING &&
+                !item.isStreaming &&
+                (turnId == null || item.turnId == turnId || item.turnId.isNullOrBlank()) &&
+                ThinkingDisclosureParser.normalizedThinkingContent(item.text).isEmpty()
+        }
+        return !hasAssistantForTurn || hasCompletedThinkingPlaceholder
     }
 
     private fun supportsStructuredLifecycleItem(itemType: String): Boolean {
@@ -2694,6 +2839,7 @@ class BridgeThreadSyncService(
                 }
                 val resolvedText = when {
                     kind == ConversationItemKind.PLAN -> decodePlanItemText(itemObject)
+                    kind == ConversationItemKind.REASONING -> decodeHistoryReasoningBody(itemObject)
                     itemType == "toolcall" -> decodeToolCallActivityBody(
                         itemObject = itemObject,
                         isCompleted = true,
@@ -2763,6 +2909,16 @@ class BridgeThreadSyncService(
         }
 
         return mutations
+    }
+
+    private fun decodeHistoryReasoningBody(itemObject: JsonObject): String {
+        val summary = decodeStringParts(itemObject.firstValue("summary")).joinToString(separator = "\n")
+        val content = decodeStringParts(itemObject.firstValue("content")).joinToString(separator = "\n\n")
+        return listOf(summary, content)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .joinToString(separator = "\n\n")
+            .ifBlank { "Thinking..." }
     }
 
     private fun decodeImageAttachments(itemObject: JsonObject): List<RemodexConversationAttachment> {
