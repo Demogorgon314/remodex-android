@@ -276,9 +276,6 @@ class DefaultRemodexAppRepository(
         sessionState.update { snapshot ->
             snapshot.copy(selectedThreadId = createdThread.id)
         }
-        runHydrationSafely {
-            hydrationService()?.hydrateThread(createdThread.id)
-        }
     }
 
     override suspend fun renameThread(
@@ -815,6 +812,9 @@ class DefaultRemodexAppRepository(
             return thread
         }
         val resumeService = resumeService() ?: return thread
+        if (resumeService.isThreadResumedLocally(thread.id)) {
+            return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
+        }
         resumeService.resumeThread(
             threadId = thread.id,
             preferredProjectPath = thread.projectPath.ifBlank { null },
@@ -850,9 +850,6 @@ class DefaultRemodexAppRepository(
         appPreferencesRepository.setSelectedThreadId(createdThread.id)
         sessionState.update { snapshot ->
             snapshot.copy(selectedThreadId = createdThread.id)
-        }
-        runHydrationSafely {
-            hydrationService()?.hydrateThread(createdThread.id)
         }
         refreshBaseThreadsFromSync()
         return createdThread.id

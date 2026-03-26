@@ -485,6 +485,7 @@ class BridgeThreadSyncServiceTest {
         )
         val threadStartServiceTiers = mutableListOf<String?>()
         val turnStartServiceTiers = mutableListOf<String?>()
+        var threadReadCalls = 0
         val relayFactory = ScriptedRpcRelayWebSocketFactory(
             macDeviceId = payload.macDeviceId,
             macIdentity = macIdentity,
@@ -538,6 +539,7 @@ class BridgeThreadSyncServiceTest {
                     }
                 },
                 "thread/read" to {
+                    threadReadCalls += 1
                     buildJsonObject {
                         put(
                             "thread",
@@ -587,6 +589,8 @@ class BridgeThreadSyncServiceTest {
             assertEquals(listOf("fast", null), threadStartServiceTiers)
             assertEquals(RemodexServiceTier.FAST, createdThread?.runtimeConfig?.serviceTier)
             assertEquals(listOf(RemodexServiceTier.FAST), createdThread?.runtimeConfig?.availableServiceTiers)
+            assertEquals(0, threadReadCalls)
+            assertTrue(service.isThreadResumedLocally("thread-fast"))
 
             service.sendPrompt(
                 threadId = "thread-fast",

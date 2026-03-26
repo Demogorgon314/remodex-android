@@ -1077,7 +1077,7 @@ class AppViewModel(
         if (completedThread != null) {
             threadCompletionBannerState.value = ThreadCompletionBannerUiState(
                 threadId = completedThread.id,
-                title = completedThread.title,
+                title = completedThread.displayTitle,
             )
         }
         previousThreadsById = snapshot.threads.associateBy(RemodexThreadSummary::id)

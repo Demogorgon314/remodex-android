@@ -47,6 +47,24 @@ class SidebarThreadGroupingTest {
         assertTrue(groups.single().threads.single().preview.contains("composer"))
     }
 
+    @Test
+    fun `search query uses iOS display title instead of generic placeholders`() {
+        val groups = SidebarThreadGrouping.makeGroups(
+            threads = listOf(
+                thread(
+                    id = "1",
+                    title = "Conversation",
+                    preview = "sidebar parity follow up",
+                    projectPath = "/tmp/alpha",
+                ),
+            ),
+            query = "follow",
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals("1", groups.single().threads.single().id)
+    }
+
     private fun thread(
         id: String,
         title: String,

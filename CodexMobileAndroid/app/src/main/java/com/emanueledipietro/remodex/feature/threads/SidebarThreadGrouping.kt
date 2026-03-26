@@ -28,7 +28,7 @@ object SidebarThreadGrouping {
         } else {
             threads.filter { thread ->
                 buildString {
-                    append(thread.title)
+                    append(thread.displayTitle)
                     append(' ')
                     append(thread.preview)
                     append(' ')

@@ -150,6 +150,8 @@ interface ThreadResumeService {
         preferredProjectPath: String? = null,
         modelIdentifier: String? = null,
     ): ThreadSyncSnapshot?
+
+    fun isThreadResumedLocally(threadId: String): Boolean = false
 }
 
 interface ThreadLocalTimelineService {

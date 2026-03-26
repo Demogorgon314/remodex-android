@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.feature.threads
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -817,24 +818,26 @@ private fun ProjectHeaderActionButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    IconButton(
-        modifier = modifier,
-        onClick = onClick,
+    Surface(
+        modifier = modifier.size(30.dp),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    onClickLabel = contentDescription,
+                    onClick = onClick,
+                ),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier.padding(8.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = contentDescription,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+            Icon(
+                modifier = Modifier.size(12.dp),
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }
@@ -1000,7 +1003,7 @@ private fun ThreadRow(
 ) {
     var menuExpanded by remember(thread.id) { mutableStateOf(false) }
     var renameExpanded by remember(thread.id) { mutableStateOf(false) }
-    var renameDraft by remember(thread.id, thread.title) { mutableStateOf(thread.title) }
+    var renameDraft by remember(thread.id, thread.displayTitle) { mutableStateOf(thread.displayTitle) }
     var menuOffset by remember(thread.id) { mutableStateOf(DpOffset.Zero) }
     val timingLabel = compactTimingLabel(thread.lastUpdatedLabel)
     val density = LocalDensity.current
@@ -1346,15 +1349,5 @@ private fun compactTimingLabel(lastUpdatedLabel: String): String? {
 }
 
 private fun threadDisplayTitle(thread: RemodexThreadSummary): String {
-    if (!thread.agentNickname.isNullOrBlank()) {
-        return buildString {
-            append(thread.agentNickname)
-            thread.agentRole?.takeIf(String::isNotBlank)?.let { role ->
-                append(" [")
-                append(role)
-                append(']')
-            }
-        }
-    }
-    return thread.title
+    return thread.displayTitle
 }

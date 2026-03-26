@@ -493,7 +493,7 @@ private fun MainPane(
     ) {
         ShellTopBar(
             shellRoute = shellRoute,
-            selectedThreadTitle = uiState.selectedThread?.title,
+            selectedThreadTitle = uiState.selectedThread?.displayTitle,
             selectedThreadProjectPath = uiState.selectedThread?.projectPath,
             compact = compact,
             repoDiffTotals = repoDiffTotals,

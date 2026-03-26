@@ -41,6 +41,7 @@ class FakeThreadSyncService(
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val resumedThreadIds = mutableSetOf<String>()
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
     }.toMutableMap()
@@ -78,6 +79,7 @@ class FakeThreadSyncService(
         backingThreads.update { threads ->
             (listOf(snapshot) + threads).sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         }
+        resumedThreadIds.add(snapshot.id)
         return snapshot
     }
 
@@ -86,7 +88,15 @@ class FakeThreadSyncService(
         preferredProjectPath: String?,
         modelIdentifier: String?,
     ): ThreadSyncSnapshot? {
-        return backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        val snapshot = backingThreads.value.firstOrNull { candidate -> candidate.id == threadId }
+        if (snapshot != null) {
+            resumedThreadIds.add(threadId)
+        }
+        return snapshot
+    }
+
+    override fun isThreadResumedLocally(threadId: String): Boolean {
+        return threadId in resumedThreadIds
     }
 
     override suspend fun appendLocalSystemMessage(

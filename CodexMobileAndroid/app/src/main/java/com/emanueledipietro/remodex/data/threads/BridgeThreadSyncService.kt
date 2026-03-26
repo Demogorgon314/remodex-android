@@ -91,6 +91,7 @@ class BridgeThreadSyncService(
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private val runningThreadFallbackIds = mutableSetOf<String>()
+    private val resumedThreadIds = mutableSetOf<String>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
 
@@ -116,6 +117,7 @@ class BridgeThreadSyncService(
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
                     runningThreadFallbackIds.clear()
+                    resumedThreadIds.clear()
                     backingCommandExecutionDetails.value = emptyMap()
                 }
             }
@@ -191,6 +193,7 @@ class BridgeThreadSyncService(
             existingSnapshot = existingSnapshot,
             syncState = RemodexThreadSyncState.LIVE,
         ) ?: existingSnapshot
+        resumedThreadIds.add(threadId)
         if (refreshedSnapshot != null) {
             backingThreads.value = backingThreads.value
                 .map { snapshot -> if (snapshot.id == threadId) refreshedSnapshot else snapshot }
@@ -198,6 +201,10 @@ class BridgeThreadSyncService(
                 .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         }
         return refreshedSnapshot
+    }
+
+    override fun isThreadResumedLocally(threadId: String): Boolean {
+        return threadId in resumedThreadIds
     }
 
     private fun applyThreadSnapshotResponse(
@@ -295,7 +302,7 @@ class BridgeThreadSyncService(
         backingThreads.value = (backingThreads.value + snapshot)
             .distinctBy(ThreadSyncSnapshot::id)
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
-        hydrateThread(snapshot.id)
+        resumedThreadIds.add(snapshot.id)
         return backingThreads.value.firstOrNull { it.id == snapshot.id } ?: snapshot
     }
 
@@ -346,6 +353,9 @@ class BridgeThreadSyncService(
                 },
             )
         }
+        if (!unarchive) {
+            resumedThreadIds.remove(threadId)
+        }
     }
 
     override suspend fun deleteThread(threadId: String) {
@@ -359,6 +369,7 @@ class BridgeThreadSyncService(
             },
         )
         activeTurnIdByThread.remove(threadId)
+        resumedThreadIds.remove(threadId)
         backingThreads.value = backingThreads.value.filterNot { snapshot -> snapshot.id == threadId }
     }
 

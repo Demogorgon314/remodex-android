@@ -149,6 +149,38 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `newly created thread sends first prompt without an extra resume`() = runTest {
+        val syncService = NewlyCreatedThreadTrackingSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.createThread("/tmp/new-project")
+        advanceUntilIdle()
+
+        val createdThreadId = repository.session.value.selectedThreadId
+        assertTrue(createdThreadId != null)
+
+        repository.sendPrompt(
+            threadId = createdThreadId!!,
+            prompt = "Open the brand new Android chat immediately.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        assertEquals(0, syncService.resumeCalls)
+        assertEquals(createdThreadId, syncService.lastSendThreadId)
+        assertTrue(repository.session.value.selectedThread?.isRunning == true)
+    }
+
+    @Test
     fun `sending while a turn is running persists a queued follow up`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = FakeThreadSyncService()
@@ -591,6 +623,10 @@ class DefaultRemodexAppRepositoryTest {
             return delegate.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
         }
 
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+
         override suspend fun sendPrompt(
             threadId: String,
             prompt: String,
@@ -655,6 +691,10 @@ class DefaultRemodexAppRepositoryTest {
             return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
         }
 
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+
         override suspend fun sendPrompt(
             threadId: String,
             prompt: String,
@@ -662,6 +702,38 @@ class DefaultRemodexAppRepositoryTest {
             attachments: List<RemodexComposerAttachment>,
         ) {
             lastSuccessfulSendThreadId = threadId
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class NewlyCreatedThreadTrackingSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var resumeCalls: Int = 0
+            private set
+        var lastSendThreadId: String? = null
+            private set
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            lastSendThreadId = threadId
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
         }
     }
