@@ -11,8 +11,11 @@ import com.emanueledipietro.remodex.data.threads.CachedThreadRecord
 import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.data.threads.ThreadCacheStore
 import com.emanueledipietro.remodex.data.threads.ThreadHydrationService
+import com.emanueledipietro.remodex.data.threads.ThreadLocalTimelineService
+import com.emanueledipietro.remodex.data.threads.ThreadResumeService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
+import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
 import com.emanueledipietro.remodex.data.threads.toCachedThreadRecord
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
@@ -40,6 +43,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -158,10 +162,18 @@ class DefaultRemodexAppRepository(
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             secureConnectionCoordinator.state.collectLatest { secureConnection ->
                 if (secureConnection.secureState == SecureConnectionState.ENCRYPTED) {
-                    threadHydrationService?.refreshThreads()
-                    sessionState.value.selectedThreadId?.let { selectedThreadId ->
-                        threadHydrationService?.hydrateThread(selectedThreadId)
+                    runHydrationSafely {
+                        hydrationService()?.refreshThreads()
                     }
+                    sessionState.value.selectedThreadId
+                        ?.takeIf { selectedThreadId ->
+                            threadSyncService.threads.value.any { thread -> thread.id == selectedThreadId }
+                        }
+                        ?.let { selectedThreadId ->
+                            runHydrationSafely {
+                                hydrationService()?.hydrateThread(selectedThreadId)
+                            }
+                        }
                 }
             }
         }
@@ -171,6 +183,51 @@ class DefaultRemodexAppRepository(
                 secureConnectionCoordinator.retryConnection()
             }
         }
+    }
+
+    private suspend fun runHydrationSafely(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (!shouldTreatAsThreadNotFoundValue(error)) {
+                return
+            }
+        }
+    }
+
+    private fun hydrationService(): ThreadHydrationService? {
+        return threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
+    }
+
+    private fun localTimelineService(): ThreadLocalTimelineService? {
+        return threadSyncService as? ThreadLocalTimelineService
+    }
+
+    private fun resumeService(): ThreadResumeService? {
+        return threadSyncService as? ThreadResumeService
+    }
+
+    private suspend fun copyContinuationRuntimeOverride(
+        sourceThreadId: String,
+        destinationThreadId: String,
+    ) {
+        val sourceOverride = preferencesState.value.runtimeOverridesByThread[sourceThreadId] ?: return
+        appPreferencesRepository.setRuntimeOverrides(
+            threadId = destinationThreadId,
+            overrides = sourceOverride,
+        )
+        applyPreferencesLocally(
+            preferencesState.value.copy(
+                runtimeOverridesByThread = preferencesState.value.runtimeOverridesByThread
+                    .toMutableMap()
+                    .apply {
+                        this[destinationThreadId] = sourceOverride
+                    }
+            ),
+        )
     }
 
     override suspend fun completeOnboarding() {
@@ -184,13 +241,15 @@ class DefaultRemodexAppRepository(
         if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
             return
         }
-        val hydrationService = threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
-        hydrationService?.refreshThreads()
+        runHydrationSafely {
+            hydrationService()?.refreshThreads()
+        }
     }
 
     override suspend fun hydrateThread(threadId: String) {
-        val hydrationService = threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
-        hydrationService?.hydrateThread(threadId)
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(threadId)
+        }
     }
 
     override suspend fun selectThread(threadId: String) {
@@ -201,7 +260,9 @@ class DefaultRemodexAppRepository(
             sessionState.update { snapshot ->
                 snapshot.copy(selectedThreadId = threadId)
             }
-            threadHydrationService?.hydrateThread(threadId)
+            runHydrationSafely {
+                hydrationService()?.hydrateThread(threadId)
+            }
         }
     }
 
@@ -215,7 +276,9 @@ class DefaultRemodexAppRepository(
         sessionState.update { snapshot ->
             snapshot.copy(selectedThreadId = createdThread.id)
         }
-        threadHydrationService?.hydrateThread(createdThread.id)
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(createdThread.id)
+        }
     }
 
     override suspend fun renameThread(
@@ -318,7 +381,32 @@ class DefaultRemodexAppRepository(
         if (trimmedPrompt.isEmpty() && attachments.isEmpty()) {
             return
         }
-        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        if (!thread.isRunning) {
+            try {
+                thread = resumeThreadBeforeSend(thread = thread)
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (!shouldTreatAsThreadNotFoundValue(error)) {
+                    throw error
+                }
+                val continuationThreadId = continueMissingThread(thread)
+                val continuationThread = sessionState.value.threads.firstOrNull { candidate ->
+                    candidate.id == continuationThreadId
+                } ?: thread
+                val resumedContinuationThread = resumeThreadBeforeSend(thread = continuationThread)
+                threadCommandService.sendPrompt(
+                    threadId = continuationThreadId,
+                    prompt = trimmedPrompt,
+                    runtimeConfig = resumedContinuationThread.runtimeConfig,
+                    attachments = attachments,
+                )
+                refreshBaseThreadsFromSync()
+                return
+            }
+        }
         if (thread.isRunning) {
             val nextDrafts = thread.queuedDraftItems + RemodexQueuedDraft(
                 id = "draft-${UUID.randomUUID()}",
@@ -339,12 +427,32 @@ class DefaultRemodexAppRepository(
             return
         }
 
-        threadCommandService.sendPrompt(
-            threadId = threadId,
-            prompt = trimmedPrompt,
-            runtimeConfig = thread.runtimeConfig,
-            attachments = attachments,
-        )
+        try {
+            threadCommandService.sendPrompt(
+                threadId = threadId,
+                prompt = trimmedPrompt,
+                runtimeConfig = thread.runtimeConfig,
+                attachments = attachments,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (!shouldTreatAsThreadNotFoundValue(error)) {
+                throw error
+            }
+            val continuationThreadId = continueMissingThread(thread)
+            val continuationThread = sessionState.value.threads.firstOrNull { candidate ->
+                candidate.id == continuationThreadId
+            } ?: thread
+            val resumedContinuationThread = resumeThreadBeforeSend(thread = continuationThread)
+            threadCommandService.sendPrompt(
+                threadId = continuationThreadId,
+                prompt = trimmedPrompt,
+                runtimeConfig = resumedContinuationThread.runtimeConfig,
+                attachments = attachments,
+            )
+        }
         refreshBaseThreadsFromSync()
     }
 
@@ -533,11 +641,53 @@ class DefaultRemodexAppRepository(
         target: RemodexComposerReviewTarget,
         baseBranch: String?,
     ) {
-        threadCommandService.startCodeReview(
-            threadId = threadId,
-            target = target,
-            baseBranch = baseBranch,
-        )
+        var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        try {
+            thread = resumeThreadBeforeSend(thread = thread)
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (!shouldTreatAsThreadNotFoundValue(error)) {
+                throw error
+            }
+            val continuationThreadId = continueMissingThread(thread)
+            val continuationThread = sessionState.value.threads.firstOrNull { candidate ->
+                candidate.id == continuationThreadId
+            } ?: thread
+            resumeThreadBeforeSend(thread = continuationThread)
+            threadCommandService.startCodeReview(
+                threadId = continuationThreadId,
+                target = target,
+                baseBranch = baseBranch,
+            )
+            refreshBaseThreadsFromSync()
+            return
+        }
+        try {
+            threadCommandService.startCodeReview(
+                threadId = threadId,
+                target = target,
+                baseBranch = baseBranch,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (!shouldTreatAsThreadNotFoundValue(error)) {
+                throw error
+            }
+            val continuationThreadId = continueMissingThread(thread)
+            val continuationThread = sessionState.value.threads.firstOrNull { candidate ->
+                candidate.id == continuationThreadId
+            } ?: thread
+            resumeThreadBeforeSend(thread = continuationThread)
+            threadCommandService.startCodeReview(
+                threadId = continuationThreadId,
+                target = target,
+                baseBranch = baseBranch,
+            )
+        }
         refreshBaseThreadsFromSync()
     }
 
@@ -653,17 +803,69 @@ class DefaultRemodexAppRepository(
         val cachedThreads = snapshots
             .map(ThreadSyncSnapshot::toCachedThreadRecord)
             .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+        val mergedBaseThreads = mergeBaseThreadsFromSync(cachedThreads.map(CachedThreadRecord::toBaseThreadSummary))
         threadCacheStore.replaceThreads(cachedThreads)
-        refreshThreadsLocally(cachedThreads.map(CachedThreadRecord::toBaseThreadSummary))
+        refreshThreadsLocally(mergedBaseThreads)
+    }
+
+    private suspend fun resumeThreadBeforeSend(
+        thread: RemodexThreadSummary,
+    ): RemodexThreadSummary {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            return thread
+        }
+        val resumeService = resumeService() ?: return thread
+        resumeService.resumeThread(
+            threadId = thread.id,
+            preferredProjectPath = thread.projectPath.ifBlank { null },
+            modelIdentifier = thread.runtimeConfig.selectedModelId,
+        )
+        refreshBaseThreadsFromSync()
+        return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
+    }
+
+    private suspend fun continueMissingThread(thread: RemodexThreadSummary): String {
+        val archivedThreads = baseThreadsState.value.map { existing ->
+            if (existing.id == thread.id) {
+                existing.copy(
+                    syncState = RemodexThreadSyncState.ARCHIVED_LOCAL,
+                    isRunning = false,
+                )
+            } else {
+                existing
+            }
+        }
+        refreshThreadsLocally(archivedThreads)
+
+        val createdThread = threadCommandService.createThread(
+            preferredProjectPath = thread.projectPath.ifBlank { null },
+            runtimeDefaults = preferencesState.value.runtimeDefaults,
+        ) ?: throw IllegalStateException("Could not create a continuation thread.")
+        copyContinuationRuntimeOverride(sourceThreadId = thread.id, destinationThreadId = createdThread.id)
+        localTimelineService()?.appendLocalSystemMessage(
+            threadId = createdThread.id,
+            text = "Continued from archived thread `${thread.id}`",
+        )
+        refreshBaseThreadsFromSync()
+        appPreferencesRepository.setSelectedThreadId(createdThread.id)
+        sessionState.update { snapshot ->
+            snapshot.copy(selectedThreadId = createdThread.id)
+        }
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(createdThread.id)
+        }
+        refreshBaseThreadsFromSync()
+        return createdThread.id
     }
 
     private fun refreshBaseThreadsFromSync() {
-        refreshThreadsLocally(
+        val mergedBaseThreads = mergeBaseThreadsFromSync(
             threadSyncService.threads.value
-            .map(ThreadSyncSnapshot::toCachedThreadRecord)
-            .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
-            .map(CachedThreadRecord::toBaseThreadSummary),
+                .map(ThreadSyncSnapshot::toCachedThreadRecord)
+                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+                .map(CachedThreadRecord::toBaseThreadSummary),
         )
+        refreshThreadsLocally(mergedBaseThreads)
     }
 
     private fun applyPreferencesLocally(preferences: AppPreferences) {
@@ -726,6 +928,33 @@ class DefaultRemodexAppRepository(
                 thread.runtimeConfig.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
             }
             ?: sessionState.value.availableModels
+    }
+
+    private fun mergeBaseThreadsFromSync(
+        syncedThreads: List<RemodexThreadSummary>,
+    ): List<RemodexThreadSummary> {
+        val localById = baseThreadsState.value.associateBy(RemodexThreadSummary::id)
+        val mergedById = linkedMapOf<String, RemodexThreadSummary>()
+        syncedThreads.forEach { syncedThread ->
+            val localThread = localById[syncedThread.id]
+            mergedById[syncedThread.id] = if (localThread != null) {
+                syncedThread.copy(
+                    syncState = if (localThread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
+                        RemodexThreadSyncState.ARCHIVED_LOCAL
+                    } else {
+                        syncedThread.syncState
+                    },
+                )
+            } else {
+                syncedThread
+            }
+        }
+        baseThreadsState.value.forEach { localThread ->
+            if (mergedById[localThread.id] == null) {
+                mergedById[localThread.id] = localThread
+            }
+        }
+        return mergedById.values.toList()
     }
 }
 

@@ -37,7 +37,7 @@ import java.util.UUID
 
 class FakeThreadSyncService(
     initialThreads: List<ThreadSyncSnapshot> = seededThreadSnapshots(),
-) : ThreadSyncService, ThreadCommandService {
+) : ThreadSyncService, ThreadCommandService, ThreadResumeService, ThreadLocalTimelineService {
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
@@ -79,6 +79,45 @@ class FakeThreadSyncService(
             (listOf(snapshot) + threads).sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         }
         return snapshot
+    }
+
+    override suspend fun resumeThread(
+        threadId: String,
+        preferredProjectPath: String?,
+        modelIdentifier: String?,
+    ): ThreadSyncSnapshot? {
+        return backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+    }
+
+    override suspend fun appendLocalSystemMessage(
+        threadId: String,
+        text: String,
+    ) {
+        val normalizedText = text.trim()
+        if (normalizedText.isEmpty()) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        backingThreads.update { threads ->
+            threads.map { snapshot ->
+                if (snapshot.id != threadId) {
+                    snapshot
+                } else {
+                    snapshot.copy(
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = now,
+                        timelineMutations = snapshot.timelineMutations + TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "system-${UUID.randomUUID()}",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                text = normalizedText,
+                                orderIndex = nextOrderIndex(snapshot),
+                            ),
+                        ),
+                    )
+                }
+            }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
     }
 
     override suspend fun renameThread(

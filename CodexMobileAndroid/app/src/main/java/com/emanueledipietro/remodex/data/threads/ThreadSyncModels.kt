@@ -144,6 +144,21 @@ interface ThreadHydrationService {
     suspend fun hydrateThread(threadId: String)
 }
 
+interface ThreadResumeService {
+    suspend fun resumeThread(
+        threadId: String,
+        preferredProjectPath: String? = null,
+        modelIdentifier: String? = null,
+    ): ThreadSyncSnapshot?
+}
+
+interface ThreadLocalTimelineService {
+    suspend fun appendLocalSystemMessage(
+        threadId: String,
+        text: String,
+    )
+}
+
 sealed interface TimelineMutation {
     data class Upsert(
         val item: RemodexConversationItem,

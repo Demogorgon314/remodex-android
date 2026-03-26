@@ -34,6 +34,38 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class BridgeThreadSyncServiceTest {
     @Test
+    fun `approval policy fallback only retries compatibility-shaped rpc errors`() {
+        assertTrue(
+            shouldRetryWithApprovalPolicyFallbackValue(
+                RpcError(
+                    code = -32600,
+                    message = "Invalid params: unknown field `approvalPolicy`",
+                ),
+            ),
+        )
+        assertFalse(
+            shouldRetryWithApprovalPolicyFallbackValue(
+                RpcError(
+                    code = -32600,
+                    message = "Invalid request: unknown variant `onRequest`, expected one of `untrusted`, `on-failure`, `on-request`, `granular`, `never`",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `approval policy fallback skips thread lookup errors`() {
+        assertFalse(
+            shouldRetryWithApprovalPolicyFallbackValue(
+                RpcError(
+                    code = -32602,
+                    message = "Unknown thread: thread-missing",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `preview recompute only tracks chat upserts`() {
         assertTrue(
             mutationAffectsThreadPreviewValue(
@@ -216,6 +248,225 @@ class BridgeThreadSyncServiceTest {
             assertTrue(
                 relayFactory.receivedRequests.any { request ->
                     request.method == "thread/read"
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread marks thread running when interruptible turn has no id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-running-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-running-fallback"))
+                                        put("title", JsonPrimitive("Long running thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-running"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_333))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-running-fallback"))
+                                put("title", JsonPrimitive("Long running thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-running"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("status", JsonPrimitive("running"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-live"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Still streaming without a stable turn id yet."))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-running-fallback")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-running-fallback" }
+            assertTrue(thread.isRunning)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `resume thread uses thread resume and refreshes snapshot history`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-resume",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-resume"))
+                                        put("title", JsonPrimitive("Resume target"))
+                                        put("cwd", JsonPrimitive("/tmp/project-resume"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_444))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/resume" to { request ->
+                    val params = request.params?.jsonObjectOrNull
+                    assertEquals("thread-resume", params?.firstString("threadId"))
+                    assertEquals("/tmp/project-resume", params?.firstString("cwd"))
+                    assertEquals("gpt-5.4", params?.firstString("model"))
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-resume"))
+                                put("title", JsonPrimitive("Resume target"))
+                                put("preview", JsonPrimitive("Resumed from bridge."))
+                                put("cwd", JsonPrimitive("/tmp/project-resume"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-resume"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-resume"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Resume hydrated the conversation history."))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            val resumed = service.resumeThread(
+                threadId = "thread-resume",
+                preferredProjectPath = "/tmp/project-resume",
+                modelIdentifier = "gpt-5.4",
+            )
+            advanceUntilIdle()
+
+            assertNotNull(resumed)
+            val thread = service.threads.value.first { it.id == "thread-resume" }
+            assertTrue(
+                TurnTimelineReducer.reduce(thread.timelineMutations).any { item ->
+                    item.text.contains("Resume hydrated the conversation history.")
+                },
+            )
+            assertTrue(
+                relayFactory.receivedRequests.any { request ->
+                    request.method == "thread/resume"
                 },
             )
         } finally {

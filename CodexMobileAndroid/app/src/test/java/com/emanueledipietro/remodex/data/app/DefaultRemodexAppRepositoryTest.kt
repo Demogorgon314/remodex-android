@@ -3,26 +3,49 @@ package com.emanueledipietro.remodex.data.app
 import com.emanueledipietro.remodex.data.connection.InMemorySecureStore
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.SuccessfulQrBootstrapRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnexpectedRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnusedTrustedSessionResolver
+import com.emanueledipietro.remodex.data.connection.createTestMacIdentity
+import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.preferences.AppPreferences
 import com.emanueledipietro.remodex.data.preferences.AppPreferencesRepository
 import com.emanueledipietro.remodex.data.threads.FakeThreadSyncService
 import com.emanueledipietro.remodex.data.threads.InMemoryThreadCacheStore
+import com.emanueledipietro.remodex.data.threads.ThreadHydrationService
+import com.emanueledipietro.remodex.data.threads.ThreadLocalTimelineService
+import com.emanueledipietro.remodex.data.threads.ThreadResumeService
+import com.emanueledipietro.remodex.data.threads.ThreadSyncService
+import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
+import com.emanueledipietro.remodex.data.connection.RpcError
+import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
+import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -154,6 +177,154 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals(
             1,
             preferencesRepository.preferencesState.value.queuedDraftsByThread["thread-android-client"]?.size,
+        )
+    }
+
+    @Test
+    fun `send prompt resumes thread state before sending and queues when resume reveals a running turn`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ResumeReportsRunningSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Queue after resume detects the remote run.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertEquals("thread-notifications", selectedThread?.id)
+        assertTrue(selectedThread?.isRunning == true)
+        assertEquals(1, syncService.resumeCalls)
+        assertEquals(0, syncService.sendPromptCalls)
+        assertEquals(1, selectedThread?.queuedDrafts)
+        assertEquals(
+            "Queue after resume detects the remote run.",
+            selectedThread?.queuedDraftItems?.firstOrNull()?.text,
+        )
+        assertEquals(
+            "Completion and attention-needed alerts still need Android plumbing.",
+            selectedThread?.preview,
+        )
+        assertFalse(
+            selectedThread?.messages.orEmpty().any { item ->
+                item.text.contains("Queue after resume detects the remote run.")
+            },
+        )
+    }
+
+    @Test
+    fun `send prompt creates a continuation thread when the original thread is missing`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = FakeThreadSyncService()
+        val commandService = MissingThreadContinuationCommandService(syncService)
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = commandService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        repository.setDefaultModelId("gpt-5.3-codex")
+        repository.setDefaultReasoningEffort("medium")
+        repository.setDefaultAccessMode(RemodexAccessMode.ON_REQUEST)
+        repository.setPlanningMode("thread-notifications", RemodexPlanningMode.PLAN)
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Continue from the missing conversation.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertTrue(selectedThread != null)
+        assertTrue(selectedThread?.id != "thread-notifications")
+        assertEquals(selectedThread?.id, repository.session.value.selectedThreadId)
+        assertEquals(selectedThread?.id, commandService.lastSuccessfulSendThreadId)
+        assertTrue(
+            selectedThread?.messages.orEmpty().any { item ->
+                item.text.contains("Continued from archived thread `thread-notifications`")
+            },
+        )
+        assertTrue(
+            selectedThread?.messages.orEmpty().any { item ->
+                item.text.contains("Continue from the missing conversation.")
+            },
+        )
+        assertEquals("gpt-5.3-codex", selectedThread?.runtimeConfig?.selectedModelId)
+        assertEquals("medium", selectedThread?.runtimeConfig?.reasoningEffort)
+        assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
+        assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
+        assertEquals(
+            RemodexThreadSyncState.ARCHIVED_LOCAL,
+            repository.session.value.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
+        )
+        assertEquals(
+            "/Users/emanueledipietro/Developer/remodex/CodexMobileAndroid",
+            selectedThread?.projectPath,
+        )
+    }
+
+    @Test
+    fun `send prompt creates a continuation thread when resume reports the original thread missing`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = MissingThreadOnResumeSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Continue after resume says the thread is gone.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertTrue(selectedThread != null)
+        assertTrue(selectedThread?.id != "thread-notifications")
+        assertEquals(selectedThread?.id, repository.session.value.selectedThreadId)
+        assertEquals(selectedThread?.id, syncService.lastSuccessfulSendThreadId)
+        assertEquals(1, syncService.resumeCalls)
+        assertTrue(
+            selectedThread?.messages.orEmpty().any { item ->
+                item.text.contains("Continued from archived thread `thread-notifications`")
+            },
+        )
+        assertEquals(
+            RemodexThreadSyncState.ARCHIVED_LOCAL,
+            repository.session.value.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
         )
     }
 
@@ -354,5 +525,144 @@ class DefaultRemodexAppRepositoryTest {
             relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
             scope = scope,
         )
+    }
+
+    private suspend fun TestScope.createConnectedSecureCoordinator(): SecureConnectionCoordinator {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        return coordinator
+    }
+
+    private suspend fun TestScope.awaitSecureState(
+        coordinator: SecureConnectionCoordinator,
+        expectedState: SecureConnectionState,
+    ) {
+        repeat(40) {
+            advanceUntilIdle()
+            if (coordinator.state.value.secureState == expectedState) {
+                return
+            }
+            Thread.sleep(10)
+        }
+        fail("Expected $expectedState but was ${coordinator.state.value.secureState}")
+    }
+
+    private class ResumeReportsRunningSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var resumeCalls: Int = 0
+            private set
+        var sendPromptCalls: Int = 0
+            private set
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            if (threadId == "thread-notifications") {
+                resumeCalls += 1
+                delegate.updateThreads(
+                    delegate.threads.value.map { snapshot ->
+                        if (snapshot.id == threadId) {
+                            snapshot.copy(isRunning = true)
+                        } else {
+                            snapshot
+                        }
+                    },
+                )
+            }
+            return delegate.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            sendPromptCalls += 1
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class MissingThreadContinuationCommandService(
+        private val syncService: FakeThreadSyncService,
+    ) : ThreadCommandService by syncService {
+        var lastSuccessfulSendThreadId: String? = null
+            private set
+        private var firstMissingThreadId: String? = null
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            if (firstMissingThreadId == null && threadId == "thread-notifications") {
+                firstMissingThreadId = threadId
+                throw RpcError(
+                    code = -32600,
+                    message = "thread not found: $threadId",
+                )
+            }
+            lastSuccessfulSendThreadId = threadId
+            syncService.sendPrompt(
+                threadId = threadId,
+                prompt = prompt,
+                runtimeConfig = runtimeConfig,
+                attachments = attachments,
+            )
+        }
+    }
+
+    private class MissingThreadOnResumeSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var resumeCalls: Int = 0
+            private set
+        var lastSuccessfulSendThreadId: String? = null
+            private set
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            if (threadId == "thread-notifications") {
+                resumeCalls += 1
+                throw RpcError(
+                    code = -32600,
+                    message = "thread not found: $threadId",
+                )
+            }
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            lastSuccessfulSendThreadId = threadId
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
     }
 }

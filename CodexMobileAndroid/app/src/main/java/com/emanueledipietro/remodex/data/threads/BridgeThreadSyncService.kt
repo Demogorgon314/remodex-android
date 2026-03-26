@@ -82,7 +82,7 @@ class BridgeThreadSyncService(
     private val scope: CoroutineScope,
     private val appVersionName: String = "1.0",
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
-) : ThreadSyncService, ThreadCommandService, ThreadHydrationService {
+) : ThreadSyncService, ThreadCommandService, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService {
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
@@ -90,6 +90,7 @@ class BridgeThreadSyncService(
         MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
+    private val runningThreadFallbackIds = mutableSetOf<String>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
 
@@ -114,6 +115,7 @@ class BridgeThreadSyncService(
                     supportsServiceTier = true
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
+                    runningThreadFallbackIds.clear()
                     backingCommandExecutionDetails.value = emptyMap()
                 }
             }
@@ -136,7 +138,7 @@ class BridgeThreadSyncService(
             .map { incoming ->
                 val existing = existingById[incoming.id]
                 incoming.copy(
-                    isRunning = activeTurnIdByThread.containsKey(incoming.id) || existing?.isRunning == true,
+                    isRunning = threadHasKnownRunningState(incoming.id) || existing?.isRunning == true,
                     timelineMutations = existing?.timelineMutations ?: incoming.timelineMutations,
                     runtimeConfig = mergeRuntimeConfig(
                         existing = existing?.runtimeConfig,
@@ -155,30 +157,99 @@ class BridgeThreadSyncService(
 
         val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
         val response = runThreadRead(threadId) ?: return
-        val resultObject = response.result?.jsonObjectOrNull ?: return
-        val threadObject = resultObject.firstObject("thread") ?: return
-        indexTurnIds(threadId = threadId, threadObject = threadObject)
-        val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
-        val mergedHistoryItems = ThreadHistoryReconciler.mergeHistoryItems(
-            existing = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty(),
-            history = TurnTimelineReducer.reduce(historyItems),
-            threadIsActive = activeTurnIdByThread[threadId] != null,
-            threadIsRunning = existingSnapshot?.isRunning == true,
-        )
-        val refreshedSnapshot = parseThreadSnapshot(
-            threadObject = threadObject,
+        val refreshedSnapshot = applyThreadSnapshotResponse(
+            threadId = threadId,
+            response = response,
+            existingSnapshot = existingSnapshot,
             syncState = currentSyncState(threadId),
-            existing = existingSnapshot,
-        )?.copy(
-            timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
-            isRunning = resolveInterruptibleTurnId(threadObject)?.also { activeTurnIdByThread[threadId] = it } != null
-                || existingSnapshot?.isRunning == true,
         ) ?: return
 
         backingThreads.value = backingThreads.value
             .map { snapshot -> if (snapshot.id == threadId) refreshedSnapshot else snapshot }
             .ifEmpty { listOf(refreshedSnapshot) }
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    override suspend fun resumeThread(
+        threadId: String,
+        preferredProjectPath: String?,
+        modelIdentifier: String?,
+    ): ThreadSyncSnapshot? {
+        if (!isConnected() || threadId.isBlank()) {
+            return null
+        }
+
+        val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
+        val response = runThreadResume(
+            threadId = threadId,
+            preferredProjectPath = preferredProjectPath,
+            modelIdentifier = modelIdentifier,
+        ) ?: return existingSnapshot
+        val refreshedSnapshot = applyThreadSnapshotResponse(
+            threadId = threadId,
+            response = response,
+            existingSnapshot = existingSnapshot,
+            syncState = RemodexThreadSyncState.LIVE,
+        ) ?: existingSnapshot
+        if (refreshedSnapshot != null) {
+            backingThreads.value = backingThreads.value
+                .map { snapshot -> if (snapshot.id == threadId) refreshedSnapshot else snapshot }
+                .ifEmpty { listOf(refreshedSnapshot) }
+                .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
+        return refreshedSnapshot
+    }
+
+    private fun applyThreadSnapshotResponse(
+        threadId: String,
+        response: RpcMessage,
+        existingSnapshot: ThreadSyncSnapshot?,
+        syncState: RemodexThreadSyncState,
+    ): ThreadSyncSnapshot? {
+        val resultObject = response.result?.jsonObjectOrNull ?: return null
+        val threadObject = resultObject.firstObject("thread") ?: return null
+        indexTurnIds(threadId = threadId, threadObject = threadObject)
+        val turnReadState = resolveTurnReadState(threadObject)
+        applyTurnReadState(threadId = threadId, turnReadState = turnReadState)
+        val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
+        val mergedHistoryItems = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty(),
+            history = TurnTimelineReducer.reduce(historyItems),
+            threadIsActive = threadHasKnownRunningState(threadId),
+            threadIsRunning = threadHasKnownRunningState(threadId) || existingSnapshot?.isRunning == true,
+        )
+        val refreshedSnapshot = parseThreadSnapshot(
+            threadObject = threadObject,
+            syncState = syncState,
+            existing = existingSnapshot,
+        )?.copy(
+            timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
+            isRunning = threadHasKnownRunningState(threadId) || existingSnapshot?.isRunning == true,
+        ) ?: return null
+        return refreshedSnapshot
+    }
+
+    override suspend fun appendLocalSystemMessage(
+        threadId: String,
+        text: String,
+    ) {
+        val normalizedThreadId = threadId.trim()
+        val normalizedText = text.trim()
+        val snapshot = backingThreads.value.firstOrNull { existing -> existing.id == normalizedThreadId } ?: return
+        if (normalizedThreadId.isEmpty() || normalizedText.isEmpty()) {
+            return
+        }
+        appendTimelineMutation(
+            threadId = normalizedThreadId,
+            mutation = TimelineMutation.Upsert(
+                timelineItem(
+                    id = "system-${UUID.randomUUID()}",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    text = normalizedText,
+                    orderIndex = nextOrderIndex(snapshot),
+                ),
+            ),
+        )
     }
 
     override suspend fun createThread(
@@ -305,6 +376,7 @@ class BridgeThreadSyncService(
         if (trimmedPrompt.isEmpty() && attachments.isEmpty()) {
             return
         }
+        val hadRunningState = threadHasKnownRunningState(threadId)
 
         optimisticAppendUserMessage(
             threadId = threadId,
@@ -312,25 +384,44 @@ class BridgeThreadSyncService(
             attachments = attachments,
             runtimeConfig = runtimeConfig,
         )
+        if (!hadRunningState) {
+            markThreadAsRunningFallback(threadId)
+        }
 
-        val response = sendRequestWithServiceTierFallback(
-            method = "turn/start",
-            accessMode = runtimeConfig.accessMode,
-            includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
-            buildBaseParams = { includeServiceTier ->
-                buildTurnStartParams(
+        val response = try {
+            sendRequestWithServiceTierFallback(
+                method = "turn/start",
+                accessMode = runtimeConfig.accessMode,
+                includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
+                buildBaseParams = { includeServiceTier ->
+                    buildTurnStartParams(
+                        threadId = threadId,
+                        prompt = trimmedPrompt,
+                        attachments = attachments,
+                        runtimeConfig = runtimeConfig,
+                        includeServiceTier = includeServiceTier,
+                    )
+                },
+            )
+        } catch (error: Throwable) {
+            if (!hadRunningState) {
+                clearThreadRunningState(threadId)
+                touchThread(threadId = threadId, isRunning = false)
+            }
+            if (shouldTreatAsThreadNotFound(error)) {
+                removeLatestPendingUserMessage(
                     threadId = threadId,
-                    prompt = trimmedPrompt,
-                    attachments = attachments,
-                    runtimeConfig = runtimeConfig,
-                    includeServiceTier = includeServiceTier,
+                    matchingText = trimmedPrompt,
+                    matchingAttachments = attachments,
                 )
-            },
-        )
+            }
+            throw error
+        }
         val turnId = extractTurnId(response.result)
         if (turnId != null) {
-            activeTurnIdByThread[threadId] = turnId
-            threadIdByTurnId[turnId] = threadId
+            setActiveTurnId(threadId = threadId, turnId = turnId)
+        } else {
+            markThreadAsRunningFallback(threadId)
         }
         refreshThreads()
         hydrateThread(threadId)
@@ -358,12 +449,16 @@ class BridgeThreadSyncService(
         }
         val runtimeConfig = backingThreads.value.firstOrNull { it.id == threadId }?.runtimeConfig
             ?: RemodexRuntimeConfig()
+        val hadRunningState = threadHasKnownRunningState(threadId)
         optimisticAppendUserMessage(
             threadId = threadId,
             prompt = prompt,
             attachments = emptyList(),
             runtimeConfig = runtimeConfig,
         )
+        if (!hadRunningState) {
+            markThreadAsRunningFallback(threadId)
+        }
         val targetObject = when (target) {
             RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> buildJsonObject {
                 put("type", JsonPrimitive("uncommittedChanges"))
@@ -374,19 +469,33 @@ class BridgeThreadSyncService(
                 baseBranch?.trim()?.takeIf(String::isNotEmpty)?.let { put("branch", JsonPrimitive(it)) }
             }
         }
-        val response = sendRequestWithApprovalPolicyFallback(
-            method = "review/start",
-            baseParams = buildJsonObject {
-                put("threadId", JsonPrimitive(threadId))
-                put("delivery", JsonPrimitive("inline"))
-                put("target", targetObject)
-            },
-            accessMode = runtimeConfig.accessMode,
-        )
-        extractTurnId(response.result)?.let { turnId ->
-            activeTurnIdByThread[threadId] = turnId
-            threadIdByTurnId[turnId] = threadId
+        val response = try {
+            sendRequestWithApprovalPolicyFallback(
+                method = "review/start",
+                baseParams = buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                    put("delivery", JsonPrimitive("inline"))
+                    put("target", targetObject)
+                },
+                accessMode = runtimeConfig.accessMode,
+            )
+        } catch (error: Throwable) {
+            if (!hadRunningState) {
+                clearThreadRunningState(threadId)
+                touchThread(threadId = threadId, isRunning = false)
+            }
+            if (shouldTreatAsThreadNotFound(error)) {
+                removeLatestPendingUserMessage(
+                    threadId = threadId,
+                    matchingText = prompt,
+                    matchingAttachments = emptyList(),
+                )
+            }
+            throw error
         }
+        extractTurnId(response.result)?.let { turnId ->
+            setActiveTurnId(threadId = threadId, turnId = turnId)
+        } ?: markThreadAsRunningFallback(threadId)
         refreshThreads()
         hydrateThread(threadId)
     }
@@ -678,7 +787,7 @@ class BridgeThreadSyncService(
             method = "turn/interrupt",
             params = params,
         )
-        activeTurnIdByThread.remove(threadId)
+        clearThreadRunningState(threadId)
         backingThreads.value = backingThreads.value.map { snapshot ->
             if (snapshot.id == threadId) {
                 snapshot.copy(isRunning = false)
@@ -800,6 +909,22 @@ class BridgeThreadSyncService(
                 },
             )
         }.getOrNull()
+    }
+
+    private suspend fun runThreadResume(
+        threadId: String,
+        preferredProjectPath: String?,
+        modelIdentifier: String?,
+    ): RpcMessage? {
+        val params = buildJsonObject {
+            put("threadId", JsonPrimitive(threadId))
+            preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+            modelIdentifier?.trim()?.takeIf(String::isNotEmpty)?.let { put("model", JsonPrimitive(it)) }
+        }
+        return secureConnectionCoordinator.sendRequest(
+            method = "thread/resume",
+            params = params,
+        )
     }
 
     private suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
@@ -1027,12 +1152,18 @@ class BridgeThreadSyncService(
         accessMode: RemodexAccessMode,
     ): RpcMessage {
         var lastError: Throwable? = null
-        for (policy in accessMode.approvalPolicyCandidates) {
+        val policies = accessMode.approvalPolicyCandidates
+        for ((index, policy) in policies.withIndex()) {
             val params = JsonObject(baseParams + ("approvalPolicy" to JsonPrimitive(policy)))
             try {
                 return secureConnectionCoordinator.sendRequest(method = method, params = params)
             } catch (error: Throwable) {
                 lastError = error
+                val hasMorePolicies = index < (policies.lastIndex)
+                if (hasMorePolicies && shouldRetryWithApprovalPolicyFallback(error)) {
+                    continue
+                }
+                throw error
             }
         }
         throw lastError ?: IllegalStateException("$method failed without a concrete transport error.")
@@ -1090,6 +1221,14 @@ class BridgeThreadSyncService(
             || message.contains("unrecognized field")
             || message.contains("invalid param")
             || message.contains("invalid params")
+    }
+
+    private fun shouldRetryWithApprovalPolicyFallback(error: Throwable): Boolean {
+        return shouldRetryWithApprovalPolicyFallbackValue(error)
+    }
+
+    private fun shouldTreatAsThreadNotFound(error: Throwable): Boolean {
+        return shouldTreatAsThreadNotFoundValue(error)
     }
 
     private suspend fun handleNotification(message: RpcMessage) {
@@ -1153,9 +1292,10 @@ class BridgeThreadSyncService(
         val threadId = resolveThreadId(paramsObject)
         val turnId = extractTurnIdForTurnLifecycleEvent(paramsObject)
         if (threadId != null && turnId != null) {
-            activeTurnIdByThread[threadId] = turnId
-            threadIdByTurnId[turnId] = threadId
+            setActiveTurnId(threadId = threadId, turnId = turnId)
             confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
+        } else if (threadId != null) {
+            markThreadAsRunningFallback(threadId)
         }
         threadId?.let { id ->
             touchThread(threadId = id, isRunning = true)
@@ -1168,7 +1308,7 @@ class BridgeThreadSyncService(
         if (turnId != null) {
             threadIdByTurnId[turnId] = threadId
         }
-        activeTurnIdByThread.remove(threadId)
+        clearThreadRunningState(threadId)
         completeStreamingItemsForThread(threadId = threadId, turnId = turnId)
         touchThread(threadId = threadId, isRunning = false)
         scope.launch {
@@ -1199,6 +1339,9 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "inprogress"
                 || normalizedStatus == "started"
                 || normalizedStatus == "pending" -> {
+                if (activeTurnIdByThread[threadId] == null) {
+                    markThreadAsRunningFallback(threadId)
+                }
                 touchThread(threadId = threadId, isRunning = true)
             }
 
@@ -1212,7 +1355,7 @@ class BridgeThreadSyncService(
                 if (activeTurnIdByThread[threadId] != null || hasStreamingMessage(threadId)) {
                     return
                 }
-                activeTurnIdByThread.remove(threadId)
+                clearThreadRunningState(threadId)
                 touchThread(threadId = threadId, isRunning = false)
             }
         }
@@ -2130,6 +2273,50 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun removeLatestPendingUserMessage(
+        threadId: String,
+        matchingText: String,
+        matchingAttachments: List<RemodexComposerAttachment>,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val targetItem = TurnTimelineReducer.reduce(snapshot.timelineMutations)
+            .asReversed()
+            .firstOrNull { item ->
+                item.speaker == ConversationSpeaker.USER &&
+                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
+                    item.text == matchingText.ifBlank {
+                        when (matchingAttachments.size) {
+                            0 -> "Sent a prompt from Android."
+                            1 -> "Shared 1 image from Android."
+                            else -> "Shared ${matchingAttachments.size} images from Android."
+                        }
+                    } &&
+                    item.attachments.map(RemodexConversationAttachment::uriString) ==
+                    matchingAttachments.map(RemodexComposerAttachment::uriString)
+            } ?: return
+        val nextMutations = snapshot.timelineMutations.filterNot { mutation ->
+            when (mutation) {
+                is TimelineMutation.Upsert -> mutation.item.id == targetItem.id
+                is TimelineMutation.Complete -> mutation.messageId == targetItem.id
+                else -> false
+            }
+        }
+        val now = nowEpochMs()
+        backingThreads.value = backingThreads.value.map { existing ->
+            if (existing.id != threadId) {
+                existing
+            } else {
+                existing.copy(
+                    timelineMutations = nextMutations,
+                    preview = derivePreview(existing, nextMutations),
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                    isRunning = threadHasKnownRunningState(threadId),
+                )
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
     private fun mutationAffectsThreadPreview(mutation: TimelineMutation): Boolean {
         return mutationAffectsThreadPreviewValue(mutation)
     }
@@ -2695,6 +2882,11 @@ class BridgeThreadSyncService(
         val payloadObject: JsonObject,
     )
 
+    private data class TurnReadState(
+        val interruptibleTurnId: String?,
+        val hasInterruptibleTurnWithoutId: Boolean,
+    )
+
     private data class CommandExecutionRunState(
         val itemId: String?,
         val phase: CommandExecutionRunPhase,
@@ -2753,7 +2945,7 @@ class BridgeThreadSyncService(
             projectPath = projectPath,
             lastUpdatedLabel = relativeUpdatedLabel(updatedEpochMs),
             lastUpdatedEpochMs = updatedEpochMs,
-            isRunning = activeTurnIdByThread.containsKey(id) || existing?.isRunning == true,
+            isRunning = threadHasKnownRunningState(id) || existing?.isRunning == true,
             syncState = syncState,
             parentThreadId = threadObject.firstString("parentThreadId", "parent_thread_id") ?: existing?.parentThreadId,
             agentNickname = threadObject.firstString("agentNickname", "agent_nickname") ?: existing?.agentNickname,
@@ -3368,8 +3560,13 @@ class BridgeThreadSyncService(
     }
 
     private fun resolveInterruptibleTurnId(threadObject: JsonObject): String? {
+        return resolveTurnReadState(threadObject).interruptibleTurnId
+    }
+
+    private fun resolveTurnReadState(threadObject: JsonObject): TurnReadState {
         val turns = threadObject.firstArray("turns").orEmpty()
-        return turns.reversed().firstNotNullOfOrNull { element ->
+        var hasInterruptibleTurnWithoutId = false
+        val interruptibleTurnId = turns.reversed().firstNotNullOfOrNull { element ->
             val turnObject = element.jsonObjectOrNull ?: return@firstNotNullOfOrNull null
             val normalizedStatus = normalizeStatus(
                 turnObject.firstString("status", "turnStatus", "turn_status").orEmpty(),
@@ -3384,8 +3581,58 @@ class BridgeThreadSyncService(
                 null
             } else {
                 turnObject.firstString("id", "turnId", "turn_id")
+                    ?: run {
+                        hasInterruptibleTurnWithoutId = true
+                        null
+                    }
             }
         }
+        return TurnReadState(
+            interruptibleTurnId = interruptibleTurnId,
+            hasInterruptibleTurnWithoutId = hasInterruptibleTurnWithoutId,
+        )
+    }
+
+    private fun applyTurnReadState(
+        threadId: String,
+        turnReadState: TurnReadState,
+    ) {
+        when {
+            turnReadState.interruptibleTurnId != null -> {
+                setActiveTurnId(threadId = threadId, turnId = turnReadState.interruptibleTurnId)
+            }
+
+            turnReadState.hasInterruptibleTurnWithoutId -> {
+                markThreadAsRunningFallback(threadId)
+            }
+
+            else -> {
+                clearThreadRunningState(threadId)
+            }
+        }
+    }
+
+    private fun threadHasKnownRunningState(threadId: String): Boolean {
+        return activeTurnIdByThread.containsKey(threadId) || runningThreadFallbackIds.contains(threadId)
+    }
+
+    private fun setActiveTurnId(
+        threadId: String,
+        turnId: String,
+    ) {
+        activeTurnIdByThread[threadId] = turnId
+        threadIdByTurnId[turnId] = threadId
+        runningThreadFallbackIds.remove(threadId)
+    }
+
+    private fun markThreadAsRunningFallback(threadId: String) {
+        activeTurnIdByThread.remove(threadId)
+        runningThreadFallbackIds.add(threadId)
+    }
+
+    private fun clearThreadRunningState(threadId: String) {
+        activeTurnIdByThread.remove(threadId)
+        runningThreadFallbackIds.remove(threadId)
     }
 
     private fun buildTurnStartParams(
@@ -3636,4 +3883,34 @@ class BridgeThreadSyncService(
     companion object {
         private const val MaxPatchSearchDepth = 4
     }
+}
+
+internal fun shouldRetryWithApprovalPolicyFallbackValue(error: Throwable): Boolean {
+    val rpcError = error as? RpcError ?: return false
+    if (rpcError.code != -32600 && rpcError.code != -32602) {
+        return false
+    }
+    val message = rpcError.message.lowercase(Locale.ROOT)
+    if (message.contains("thread not found") || message.contains("unknown thread")) {
+        return false
+    }
+    return message.contains("invalid params")
+        || message.contains("invalid param")
+        || message.contains("unknown field")
+        || message.contains("unexpected field")
+        || message.contains("unrecognized field")
+        || message.contains("failed to parse")
+        || message.contains("unsupported")
+}
+
+internal fun shouldTreatAsThreadNotFoundValue(error: Throwable): Boolean {
+    val message = when (error) {
+        is RpcError -> error.message
+        else -> error.message ?: error.localizedMessage ?: error.toString()
+    }.lowercase(Locale.ROOT)
+
+    if (message.contains("not materialized") || message.contains("not yet materialized")) {
+        return false
+    }
+    return message.contains("thread not found") || message.contains("unknown thread")
 }
