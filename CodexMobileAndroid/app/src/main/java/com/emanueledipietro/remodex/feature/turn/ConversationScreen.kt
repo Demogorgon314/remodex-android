@@ -820,49 +820,15 @@ private fun ConversationMarkdownText(
     modifier: Modifier = Modifier,
     style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
     color: Color = remodexConversationChrome().bodyText,
+    enablesSelection: Boolean = false,
 ) {
-    val chrome = remodexConversationChrome()
-    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily
-    val blocks = remember(text) { parseConversationTextBlocks(text) }
-
-    Column(
+    ConversationRichMarkdownContent(
+        text = text,
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        blocks.forEach { block ->
-            when (block.kind) {
-                ConversationTextBlockKind.PROSE -> Text(
-                    text = buildConversationAnnotatedString(
-                        text = block.text,
-                        chrome = chrome,
-                        monoFamily = monoFamily,
-                    ),
-                    style = style,
-                    color = color,
-                )
-
-                ConversationTextBlockKind.CODE -> {
-                    Surface(
-                        color = chrome.mutedSurface,
-                        shape = RemodexConversationShapes.nestedCard,
-                        border = BorderStroke(1.dp, chrome.subtleBorder),
-                        shadowElevation = 0.dp,
-                        tonalElevation = 0.dp,
-                    ) {
-                        Text(
-                            text = block.text,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                lineHeight = 18.sp,
-                                fontFamily = monoFamily,
-                            ),
-                            color = chrome.bodyText,
-                        )
-                    }
-                }
-            }
-        }
-    }
+        style = style,
+        color = color,
+        enablesSelection = enablesSelection,
+    )
 }
 
 private enum class ConversationTextBlockKind {
@@ -3959,13 +3925,12 @@ private fun SelectableMessageTextSheet(
                         .padding(16.dp),
                 ) {
                     if (state.usesMarkdownSelection) {
-                        SelectionContainer {
-                            ConversationMarkdownText(
-                                text = state.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = chrome.bodyText,
-                            )
-                        }
+                        ConversationMarkdownText(
+                            text = state.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                            enablesSelection = true,
+                        )
                     } else {
                         SelectionContainer {
                             Text(
