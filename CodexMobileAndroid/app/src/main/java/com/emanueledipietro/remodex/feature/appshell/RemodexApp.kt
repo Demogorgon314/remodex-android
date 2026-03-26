@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -87,8 +88,12 @@ import com.emanueledipietro.remodex.feature.settings.ArchivedChatsScreen
 import com.emanueledipietro.remodex.feature.settings.SettingsScreen
 import com.emanueledipietro.remodex.feature.threads.ThreadsScreen
 import com.emanueledipietro.remodex.feature.turn.ConversationScreen
+import com.emanueledipietro.remodex.feature.turn.FileChangeDetailSheet
+import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
+import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.platform.media.resolveComposerAttachments
@@ -473,6 +478,14 @@ private fun MainPane(
     }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    var repositoryDiffSheetPresentation by remember(uiState.selectedThread?.id) {
+        mutableStateOf<FileChangeSheetPresentation?>(null)
+    }
+    val repoDiffTotals = if (shellRoute == ShellRoute.CONTENT) {
+        uiState.composer.gitState.sync?.diffTotals
+    } else {
+        null
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -483,6 +496,17 @@ private fun MainPane(
             selectedThreadTitle = uiState.selectedThread?.title,
             selectedThreadProjectPath = uiState.selectedThread?.projectPath,
             compact = compact,
+            repoDiffTotals = repoDiffTotals,
+            isLoadingRepoDiff = shellRoute == ShellRoute.CONTENT && uiState.composer.gitState.isLoading,
+            onOpenRepoDiff = if (shellRoute == ShellRoute.CONTENT && repoDiffTotals != null) {
+                {
+                    viewModel.loadRepositoryDiff { diff ->
+                        repositoryDiffSheetPresentation = buildRepositoryDiffSheetPresentation(diff.patch)
+                    }
+                }
+            } else {
+                null
+            },
             onMenu = {
                 focusManager.clearFocus(force = true)
                 keyboardController?.hide()
@@ -587,6 +611,16 @@ private fun MainPane(
                 }
             }
         }
+
+        repositoryDiffSheetPresentation?.let { presentation ->
+            FileChangeDetailSheet(
+                title = presentation.title,
+                messageId = presentation.messageId,
+                renderState = presentation.renderState,
+                diffChunks = presentation.diffChunks,
+                onDismiss = { repositoryDiffSheetPresentation = null },
+            )
+        }
     }
 }
 
@@ -596,6 +630,9 @@ private fun ShellTopBar(
     selectedThreadTitle: String?,
     selectedThreadProjectPath: String?,
     compact: Boolean,
+    repoDiffTotals: RemodexGitDiffTotals?,
+    isLoadingRepoDiff: Boolean,
+    onOpenRepoDiff: (() -> Unit)?,
     onMenu: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -675,7 +712,15 @@ private fun ShellTopBar(
             }
         }
 
-        Spacer(modifier = Modifier.size(40.dp))
+        if (shellRoute == ShellRoute.CONTENT && repoDiffTotals != null) {
+            ShellTopBarDiffTotalsButton(
+                totals = repoDiffTotals,
+                isLoading = isLoadingRepoDiff,
+                onClick = onOpenRepoDiff,
+            )
+        } else {
+            Spacer(modifier = Modifier.size(40.dp))
+        }
     }
 }
 
@@ -700,6 +745,57 @@ private fun ShellTopBarButton(
         ) {
             content()
         }
+    }
+}
+
+@Composable
+private fun ShellTopBarDiffTotalsButton(
+    totals: RemodexGitDiffTotals,
+    isLoading: Boolean,
+    onClick: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    val content: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.6.dp,
+                    color = chrome.secondaryText,
+                )
+            }
+            Text(
+                text = "+${totals.additions}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF22A653),
+            )
+            Text(
+                text = "-${totals.deletions}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFE04646),
+            )
+            if (totals.binaryFiles > 0) {
+                Text(
+                    text = "B${totals.binaryFiles}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = chrome.secondaryText,
+                )
+            }
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .clickable(enabled = onClick != null && !isLoading) { onClick?.invoke() },
+        color = chrome.mutedSurface,
+        shape = RoundedCornerShape(999.dp),
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+    ) {
+        content()
     }
 }
 

@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -328,6 +329,26 @@ class FakeThreadSyncService(
 
     override suspend fun loadGitState(threadId: String): RemodexGitState {
         return gitStateByThreadId[threadId] ?: RemodexGitState()
+    }
+
+    override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
+        val sync = gitStateByThreadId[threadId]?.sync ?: return RemodexGitRepoDiff()
+        val patch = buildString {
+            sync.files.forEachIndexed { index, file ->
+                if (index > 0) {
+                    append('\n')
+                }
+                appendLine("diff --git a/${file.path} b/${file.path}")
+                appendLine("index 1111111..2222222 100644")
+                appendLine("--- a/${file.path}")
+                appendLine("+++ b/${file.path}")
+                appendLine("@@ -1 +1,2 @@")
+                appendLine("-old")
+                appendLine("+new")
+                appendLine("+more")
+            }
+        }.trim()
+        return RemodexGitRepoDiff(patch = patch)
     }
 
     override suspend fun checkoutGitBranch(

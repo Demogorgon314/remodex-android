@@ -10,6 +10,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -94,6 +95,8 @@ interface ThreadCommandService {
     ): List<RemodexSkillMetadata>
 
     suspend fun loadGitState(threadId: String): RemodexGitState
+
+    suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()
 
     suspend fun checkoutGitBranch(
         threadId: String,

@@ -28,6 +28,7 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
@@ -491,6 +492,19 @@ class BridgeThreadSyncService(
         return RemodexGitState(
             sync = loadGitSync(threadId),
             branches = loadGitBranches(threadId),
+        )
+    }
+
+    override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
+        if (!isConnected()) {
+            return RemodexGitRepoDiff()
+        }
+        val resultObject = runGitRequest(threadId = threadId, method = "git/diff")
+            .result
+            ?.jsonObjectOrNull
+            ?: return RemodexGitRepoDiff()
+        return RemodexGitRepoDiff(
+            patch = resultObject.firstString("patch").orEmpty(),
         )
     }
 

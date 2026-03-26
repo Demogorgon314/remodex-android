@@ -29,6 +29,10 @@ data class RemodexGitRepoSync(
     val diffTotals: RemodexGitDiffTotals? = null,
 )
 
+data class RemodexGitRepoDiff(
+    val patch: String = "",
+)
+
 data class RemodexGitBranches(
     val branches: List<String> = emptyList(),
     val branchesCheckedOutElsewhere: Set<String> = emptySet(),

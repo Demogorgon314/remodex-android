@@ -62,6 +62,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -162,6 +163,8 @@ private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
 private val FileAutocompleteRowHeight = 50.dp
 private val ConversationBottomAnchorHeight = 1.dp
+private val FileChangeAddedColor = Color(0xFF22A653)
+private val FileChangeDeletedColor = Color(0xFFE04646)
 
 private data class TimelineBottomAnchorRequest(
     val targetIndex: Int,
@@ -186,7 +189,35 @@ internal const val ConversationRunningIndicatorTag = "conversation_running_indic
 
 private data class ConversationBlockAccessoryState(
     val showsRunningIndicator: Boolean = false,
+    val blockDiffText: String? = null,
+    val blockDiffEntries: List<FileChangeSummaryEntry>? = null,
+    val blockRevertPresentation: RemodexAssistantRevertPresentation? = null,
 )
+
+internal data class FileChangeSheetPresentation(
+    val title: String = "Changes",
+    val messageId: String,
+    val renderState: FileChangeRenderState,
+    val diffChunks: List<PerFileDiffChunk>,
+)
+
+internal fun buildRepositoryDiffSheetPresentation(rawPatch: String): FileChangeSheetPresentation? {
+    val normalizedPatch = rawPatch.trim()
+    if (normalizedPatch.isEmpty()) {
+        return null
+    }
+    val renderState = FileChangeRenderParser.renderState(normalizedPatch)
+    val diffChunks = FileChangeRenderParser.diffChunks(
+        bodyText = normalizedPatch,
+        entries = renderState.summary?.entries.orEmpty(),
+    )
+    return FileChangeSheetPresentation(
+        title = "Repository Changes",
+        messageId = "repo-diff-${normalizedPatch.hashCode()}",
+        renderState = renderState.copy(bodyText = normalizedPatch),
+        diffChunks = diffChunks,
+    )
+}
 
 @Composable
 fun ConversationScreen(
@@ -238,13 +269,19 @@ fun ConversationScreen(
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
+    var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
     val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
-    val blockAccessories = remember(timelineItems, thread.isRunning) {
+    val blockAccessories = remember(
+        timelineItems,
+        thread.isRunning,
+        uiState.assistantRevertStatesByMessageId,
+    ) {
         buildConversationBlockAccessories(
             items = timelineItems,
             isThreadRunning = thread.isRunning,
+            assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
         )
     }
     val timelineState = rememberLazyListState()
@@ -311,7 +348,6 @@ fun ConversationScreen(
             ?.map(::parseCommandExecutionStatus)
             ?.firstOrNull { status -> status != null }
     }
-
     LaunchedEffect(thread.id, lastTimelineItemId) {
         if (!initialScrollApplied && timelineItems.isNotEmpty()) {
             withFrameNanos { }
@@ -402,6 +438,9 @@ fun ConversationScreen(
                                     assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
                                     onTapAssistantRevert = onStartAssistantRevertPreview,
                                     commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
+                                    onOpenFileChangeDetails = { presentation ->
+                                        fileChangeSheetPresentation = presentation
+                                    },
                                     onOpenCommandExecutionDetails = { messageId ->
                                         commandDetailsMessageId = messageId
                                     },
@@ -562,6 +601,16 @@ fun ConversationScreen(
                 status = selectedCommandExecutionStatus,
                 details = selectedCommandExecutionItem.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
                 onDismiss = { commandDetailsMessageId = null },
+            )
+        }
+
+        fileChangeSheetPresentation?.let { presentation ->
+                FileChangeDetailSheet(
+                title = presentation.title,
+                messageId = presentation.messageId,
+                renderState = presentation.renderState,
+                diffChunks = presentation.diffChunks,
+                onDismiss = { fileChangeSheetPresentation = null },
             )
         }
 
@@ -2895,6 +2944,7 @@ private fun ConversationBubble(
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
     commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
 ) {
     when (item.speaker) {
@@ -2904,11 +2954,13 @@ private fun ConversationBubble(
             accessoryState = accessoryState,
             assistantRevertPresentation = assistantRevertPresentation,
             onTapAssistantRevert = onTapAssistantRevert,
+            onOpenFileChangeDetails = onOpenFileChangeDetails,
         )
         ConversationSpeaker.SYSTEM -> SystemConversationRow(
             item = item,
             accessoryState = accessoryState,
             commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+            onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
         )
     }
@@ -2959,8 +3011,41 @@ private fun AssistantConversationRow(
     accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val blockDiffPresentation = remember(
+        item.id,
+        accessoryState?.blockDiffText,
+        accessoryState?.blockDiffEntries,
+    ) {
+        val blockDiffText = accessoryState?.blockDiffText?.trim().orEmpty()
+        val blockDiffEntries = accessoryState?.blockDiffEntries.orEmpty()
+        if (blockDiffText.isBlank() || blockDiffEntries.isEmpty()) {
+            null
+        } else {
+            val renderState = FileChangeRenderState(
+                summary = FileChangeSummary(blockDiffEntries),
+                actionEntries = blockDiffEntries.filter { entry -> entry.action != null },
+                bodyText = blockDiffText,
+            )
+            val diffChunks = FileChangeRenderParser.diffChunks(
+                bodyText = blockDiffText,
+                entries = blockDiffEntries,
+            )
+            if (diffChunks.isEmpty()) {
+                null
+            } else {
+                FileChangeSheetPresentation(
+                    title = "Changes",
+                    messageId = item.id,
+                    renderState = renderState,
+                    diffChunks = diffChunks,
+                )
+            }
+        }
+    }
+    val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
     Column(
         modifier = Modifier.fillMaxWidth(0.94f),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -2982,10 +3067,16 @@ private fun AssistantConversationRow(
         if (accessoryState?.showsRunningIndicator == true) {
             TerminalRunningIndicator()
         }
-        if (assistantRevertPresentation != null) {
+        if (revertPresentation != null) {
             AssistantRevertAction(
-                presentation = assistantRevertPresentation,
+                presentation = revertPresentation,
                 onTap = { onTapAssistantRevert(item.id) },
+            )
+        }
+        if (blockDiffPresentation != null) {
+            AssistantBlockDiffAction(
+                entries = blockDiffPresentation.renderState.summary?.entries.orEmpty(),
+                onTap = { onOpenFileChangeDetails(blockDiffPresentation) },
             )
         }
     }
@@ -2996,6 +3087,7 @@ private fun SystemConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
     commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
 ) {
     when (item.kind) {
@@ -3010,6 +3102,7 @@ private fun SystemConversationRow(
         ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
             item = item,
             accessoryState = accessoryState,
+            onOpenDetails = onOpenFileChangeDetails,
         )
         ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
             item = item,
@@ -3276,8 +3369,45 @@ private fun ThinkingDisclosureContentView(
 private fun FileChangeConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    onOpenDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val renderState = remember(item.text) {
+        FileChangeRenderParser.renderState(item.text)
+    }
+    val summaryEntries = remember(renderState) {
+        if (renderState.actionEntries.isNotEmpty()) {
+            renderState.actionEntries
+        } else {
+            renderState.summary?.entries.orEmpty()
+        }
+    }
+    val groupedEntries = remember(summaryEntries) {
+        FileChangeRenderParser.grouped(summaryEntries)
+    }
+    val diffChunks = remember(item.text, renderState.summary?.entries) {
+        FileChangeRenderParser.diffChunks(
+            bodyText = item.text,
+            entries = renderState.summary?.entries.orEmpty(),
+        )
+    }
+    val detailsPresentation = remember(item.id, renderState, diffChunks) {
+        if (diffChunks.isEmpty()) {
+            null
+        } else {
+            FileChangeSheetPresentation(
+                title = "Changes",
+                messageId = item.id,
+                renderState = renderState,
+                diffChunks = diffChunks,
+            )
+        }
+    }
+    val openDetailsModifier = if (detailsPresentation != null) {
+        Modifier.clickable { onOpenDetails(detailsPresentation) }
+    } else {
+        Modifier
+    }
     Surface(
         color = chrome.panelSurface,
         shape = RemodexConversationShapes.card,
@@ -3288,15 +3418,18 @@ private fun FileChangeConversationRow(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(openDetailsModifier)
                 .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = "File changes",
-                style = MaterialTheme.typography.labelMedium,
-                color = chrome.secondaryText,
-            )
-            if (item.text.isNotBlank()) {
+            if (groupedEntries.isNotEmpty()) {
+                groupedEntries.forEach { group ->
+                    FileChangeInlineGroup(
+                        group = group,
+                        chrome = chrome,
+                    )
+                }
+            } else if (item.text.isNotBlank()) {
                 ConversationMarkdownText(
                     text = item.text,
                     style = MaterialTheme.typography.bodyMedium,
@@ -3316,6 +3449,334 @@ private fun FileChangeConversationRow(
                 StreamingIndicator(label = "Running")
             }
         }
+    }
+}
+
+@Composable
+private fun FileChangeInlineGroup(
+    group: FileChangeGroup,
+    chrome: RemodexConversationChrome,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = group.key,
+            style = MaterialTheme.typography.labelSmall,
+            color = chrome.secondaryText.copy(alpha = 0.72f),
+        )
+        group.entries.forEach { entry ->
+            FileChangeInlineActionRow(
+                entry = entry,
+                showActionLabel = false,
+                chrome = chrome,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FileChangeInlineActionRow(
+    entry: FileChangeSummaryEntry,
+    showActionLabel: Boolean,
+    chrome: RemodexConversationChrome,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        if (showActionLabel) {
+            Text(
+                text = entry.action?.label ?: FileChangeAction.EDITED.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText.copy(alpha = 0.72f),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = entry.compactPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = chrome.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                entry.fullDirectoryPath?.let { directoryPath ->
+                    Text(
+                        text = directoryPath,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = chrome.tertiaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            FileChangeDiffCounts(
+                additions = entry.additions,
+                deletions = entry.deletions,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FileChangeDiffCounts(
+    additions: Int,
+    deletions: Int,
+) {
+    if (additions <= 0 && deletions <= 0) {
+        return
+    }
+
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (additions > 0) {
+            Text(
+                text = "+$additions",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                color = FileChangeAddedColor,
+            )
+        }
+        if (deletions > 0) {
+            Text(
+                text = "-$deletions",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                color = FileChangeDeletedColor,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun FileChangeDetailSheet(
+    title: String = "Changes",
+    messageId: String,
+    renderState: FileChangeRenderState,
+    diffChunks: List<PerFileDiffChunk>,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    var expandedChunkIds by rememberSaveable(messageId) { mutableStateOf(emptyList<String>()) }
+    val allExpanded = remember(diffChunks, expandedChunkIds) {
+        diffChunks.isNotEmpty() && diffChunks.all { chunk -> chunk.id in expandedChunkIds }
+    }
+
+    LaunchedEffect(messageId, diffChunks) {
+        expandedChunkIds = diffChunks.map(PerFileDiffChunk::id)
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.accent,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${diffChunks.size} file${if (diffChunks.size == 1) "" else "s"} changed",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (diffChunks.size > 1) {
+                        TextButton(
+                            onClick = {
+                                expandedChunkIds = if (allExpanded) {
+                                    emptyList()
+                                } else {
+                                    diffChunks.map(PerFileDiffChunk::id)
+                                }
+                            },
+                        ) {
+                            Text(if (allExpanded) "Collapse All" else "Expand All")
+                        }
+                    }
+                }
+            }
+
+            diffChunks.forEach { chunk ->
+                FileChangeDetailFileCard(
+                    chunk = chunk,
+                    isExpanded = chunk.id in expandedChunkIds,
+                    onToggleExpanded = {
+                        expandedChunkIds = if (chunk.id in expandedChunkIds) {
+                            expandedChunkIds - chunk.id
+                        } else {
+                            expandedChunkIds + chunk.id
+                        }
+                    },
+                )
+            }
+
+            if (diffChunks.isEmpty() && renderState.bodyText.isNotBlank()) {
+                Surface(
+                    color = chrome.mutedSurface,
+                    shape = RemodexConversationShapes.card,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    ConversationMarkdownText(
+                        text = renderState.bodyText,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = chrome.bodyText,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun FileChangeDetailFileCard(
+    chunk: PerFileDiffChunk,
+    isExpanded: Boolean,
+    onToggleExpanded: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val actionColor = fileChangeActionColor(
+        action = chunk.action,
+        chrome = chrome,
+    )
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+
+    Surface(
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpanded)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ExpandMore,
+                        contentDescription = null,
+                        tint = chrome.secondaryText,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .graphicsLayer { rotationZ = if (isExpanded) 0f else -90f },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(color = actionColor, shape = CircleShape),
+                    )
+                    Text(
+                        text = chunk.compactPath,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                        fontWeight = FontWeight.Medium,
+                        color = chrome.bodyText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = chunk.action.label,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                        color = actionColor,
+                        modifier = Modifier
+                            .background(
+                                color = actionColor.copy(alpha = 0.12f),
+                                shape = RemodexConversationShapes.pill,
+                            )
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                    FileChangeDiffCounts(
+                        additions = chunk.additions,
+                        deletions = chunk.deletions,
+                    )
+                }
+
+                chunk.fullDirectoryPath?.let { directoryPath ->
+                    Text(
+                        text = directoryPath,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                        color = chrome.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 22.dp),
+                    )
+                }
+            }
+
+            if (isExpanded && chunk.diffCode.isNotBlank()) {
+                HorizontalDivider(color = chrome.subtleBorder)
+                Surface(
+                    color = chrome.mutedSurface,
+                    shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = chunk.diffCode,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                            color = chrome.bodyText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun fileChangeActionColor(
+    action: FileChangeAction,
+    chrome: RemodexConversationChrome,
+): Color {
+    return when (action) {
+        FileChangeAction.ADDED -> FileChangeAddedColor
+        FileChangeAction.DELETED -> FileChangeDeletedColor
+        FileChangeAction.RENAMED -> chrome.accent
+        FileChangeAction.EDITED -> chrome.warning
     }
 }
 
@@ -3840,8 +4301,9 @@ private fun TerminalRunningIndicator() {
 private fun buildConversationBlockAccessories(
     items: List<RemodexConversationItem>,
     isThreadRunning: Boolean,
+    assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
 ): Map<String, ConversationBlockAccessoryState> {
-    if (!isThreadRunning || items.isEmpty()) {
+    if (items.isEmpty()) {
         return emptyMap()
     }
 
@@ -3871,8 +4333,28 @@ private fun buildConversationBlockAccessories(
         val blockTurnId = items.subList(blockStart, blockEnd + 1)
             .asReversed()
             .firstNotNullOfOrNull { item -> item.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        val fileChangeMessages = items.subList(blockStart, blockEnd + 1).filter { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.FILE_CHANGE &&
+                !item.isStreaming
+        }
+        val blockDiffEntries = fileChangeMessages
+            .flatMap { message ->
+                FileChangeRenderParser.renderState(message.text).summary?.entries.orEmpty()
+            }
+            .takeIf(List<FileChangeSummaryEntry>::isNotEmpty)
+        val blockDiffText = fileChangeMessages
+            .map(RemodexConversationItem::text)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .joinToString(separator = "\n\n")
+            .takeIf(String::isNotBlank)
+        val blockRevertPresentation = items.subList(blockStart, blockEnd + 1)
+            .asReversed()
+            .firstNotNullOfOrNull { item -> assistantRevertStatesByMessageId[item.id] }
 
         val showsRunningIndicator = when {
+            !isThreadRunning -> false
             activeTurnId != null && blockTurnId != null -> activeTurnId == blockTurnId
             else -> blockEnd == latestBlockEnd
         }
@@ -3880,6 +4362,16 @@ private fun buildConversationBlockAccessories(
         if (showsRunningIndicator) {
             accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
                 showsRunningIndicator = true,
+                blockDiffText = blockDiffText,
+                blockDiffEntries = blockDiffEntries,
+                blockRevertPresentation = blockRevertPresentation,
+            )
+        } else if (blockDiffEntries != null || blockRevertPresentation != null) {
+            accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
+                showsRunningIndicator = false,
+                blockDiffText = blockDiffText,
+                blockDiffEntries = blockDiffEntries,
+                blockRevertPresentation = blockRevertPresentation,
             )
         }
 
@@ -4421,6 +4913,53 @@ private fun AssistantRevertAction(
                 text = helperText,
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AssistantBlockDiffAction(
+    entries: List<FileChangeSummaryEntry>,
+    onTap: () -> Unit,
+) {
+    if (entries.isEmpty()) {
+        return
+    }
+
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+    val totalAdditions = remember(entries) { entries.sumOf(FileChangeSummaryEntry::additions) }
+    val totalDeletions = remember(entries) { entries.sumOf(FileChangeSummaryEntry::deletions) }
+
+    Surface(
+        color = chrome.nestedSurface,
+        shape = RemodexConversationShapes.nestedCard,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .clickable(onClick = onTap)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Search,
+                contentDescription = null,
+                tint = chrome.secondaryText,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = "Diff",
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                color = chrome.bodyText,
+            )
+            FileChangeDiffCounts(
+                additions = totalAdditions,
+                deletions = totalDeletions,
             )
         }
     }

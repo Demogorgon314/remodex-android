@@ -21,7 +21,10 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -454,6 +457,86 @@ class AppViewModelTest {
         assertEquals("Bridge down", viewModel.uiState.value.composer.composerMessage)
     }
 
+    @Test
+    fun `load repository diff exposes loading state and returns patch to caller`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Diff thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    repoRoot = "/tmp/remodex",
+                    diffTotals = RemodexGitDiffTotals(additions = 4, deletions = 2),
+                ),
+            )
+            gitDiffDelayMs = 100
+            gitDiffResult = RemodexGitRepoDiff(
+                patch = """
+                    diff --git a/app/src/main.kt b/app/src/main.kt
+                    --- a/app/src/main.kt
+                    +++ b/app/src/main.kt
+                    @@ -1 +1 @@
+                    -old
+                    +new
+                """.trimIndent(),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        var loadedDiff: RemodexGitRepoDiff? = null
+        viewModel.loadRepositoryDiff { diff ->
+            loadedDiff = diff
+        }
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.composer.gitState.isLoading)
+        assertEquals(1, repository.gitDiffRequests)
+
+        advanceTimeBy(100)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.composer.gitState.isLoading)
+        assertEquals(repository.gitDiffResult.patch, loadedDiff?.patch)
+        assertEquals(null, viewModel.uiState.value.composer.gitState.errorMessage)
+    }
+
+    @Test
+    fun `load repository diff keeps sheet closed when patch is empty`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Diff thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    repoRoot = "/tmp/remodex",
+                    diffTotals = RemodexGitDiffTotals(additions = 1, deletions = 0),
+                ),
+            )
+            gitDiffResult = RemodexGitRepoDiff()
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        var callbackCount = 0
+        viewModel.loadRepositoryDiff {
+            callbackCount += 1
+        }
+        advanceUntilIdle()
+
+        assertEquals(0, callbackCount)
+        assertEquals(
+            "There are no repository changes to show.",
+            viewModel.uiState.value.composer.gitState.errorMessage,
+        )
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
@@ -466,6 +549,10 @@ class AppViewModelTest {
         var refreshDelayMs = 1_000L
         var sendPromptDelayMs = 0L
         var sendPromptError: Throwable? = null
+        var gitDiffRequests = 0
+        var gitDiffDelayMs = 0L
+        var gitDiffResult = RemodexGitRepoDiff()
+        var gitStateResult = RemodexGitState()
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -575,7 +662,15 @@ class AppViewModelTest {
             baseBranch: String?,
         ): String? = null
 
-        override suspend fun loadGitState(threadId: String): RemodexGitState = RemodexGitState()
+        override suspend fun loadGitState(threadId: String): RemodexGitState = gitStateResult
+
+        override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
+            gitDiffRequests += 1
+            if (gitDiffDelayMs > 0) {
+                delay(gitDiffDelayMs)
+            }
+            return gitDiffResult
+        }
 
         override suspend fun checkoutGitBranch(
             threadId: String,

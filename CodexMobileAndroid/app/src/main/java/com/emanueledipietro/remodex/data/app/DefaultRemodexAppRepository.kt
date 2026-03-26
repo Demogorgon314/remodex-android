@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
@@ -555,6 +556,10 @@ class DefaultRemodexAppRepository(
 
     override suspend fun loadGitState(threadId: String): RemodexGitState {
         return threadCommandService.loadGitState(threadId)
+    }
+
+    override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
+        return threadCommandService.loadGitDiff(threadId)
     }
 
     override suspend fun checkoutGitBranch(

@@ -27,6 +27,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
@@ -773,6 +774,39 @@ class AppViewModel(
 
     fun refreshGitState() {
         uiState.value.selectedThread?.id?.let(::refreshGitState)
+    }
+
+    fun loadRepositoryDiff(onLoaded: (RemodexGitRepoDiff) -> Unit) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        viewModelScope.launch {
+            updateGitState(threadId) { currentState ->
+                currentState.copy(isLoading = true, errorMessage = null)
+            }
+            runCatching { repository.loadGitDiff(threadId) }
+                .onSuccess { diff ->
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(
+                            isLoading = false,
+                            errorMessage = if (diff.patch.isBlank()) {
+                                "There are no repository changes to show."
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                    if (diff.patch.isNotBlank()) {
+                        onLoaded(diff)
+                    }
+                }
+                .onFailure { error ->
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(
+                            isLoading = false,
+                            errorMessage = error.message ?: "Could not load repository changes.",
+                        )
+                    }
+                }
+        }
     }
 
     fun checkoutGitBranch(branch: String) {
