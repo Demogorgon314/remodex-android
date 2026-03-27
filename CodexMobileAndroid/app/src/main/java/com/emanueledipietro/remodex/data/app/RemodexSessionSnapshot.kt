@@ -22,7 +22,14 @@ data class RemodexSessionSnapshot(
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val threads: List<RemodexThreadSummary> = emptyList(),
     val selectedThreadId: String? = null,
+    val selectedThreadSnapshot: RemodexThreadSummary? = null,
 ) {
     val selectedThread: RemodexThreadSummary?
-        get() = threads.firstOrNull { it.id == selectedThreadId } ?: threads.firstOrNull()
+        get() {
+            val snapshot = selectedThreadSnapshot
+            if (snapshot != null && (selectedThreadId == null || snapshot.id == selectedThreadId)) {
+                return snapshot
+            }
+            return threads.firstOrNull { it.id == selectedThreadId } ?: threads.firstOrNull()
+        }
 }

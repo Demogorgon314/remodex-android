@@ -184,7 +184,7 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
-    fun `streaming thread updates reach session state before cache persistence finishes`() = runTest {
+    fun `streaming selected thread updates reach session state before cache persistence finishes`() = runTest {
         val syncService = FakeThreadSyncService()
         val cacheStore = BlockingThreadCacheStore()
         val repository = DefaultRemodexAppRepository(
@@ -196,6 +196,8 @@ class DefaultRemodexAppRepositoryTest {
             threadHydrationService = null,
             scope = backgroundScope,
         )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
         cacheStore.blockWrites()
@@ -216,11 +218,49 @@ class DefaultRemodexAppRepositoryTest {
 
         assertEquals(
             "Streaming title from sync",
-            repository.session.value.threads.firstOrNull { it.id == "thread-notifications" }?.title,
+            repository.session.value.selectedThread?.title,
         )
 
         cacheStore.allowWrites()
         advanceUntilIdle()
+    }
+
+    @Test
+    fun `selected thread projection updates immediately during streaming and thread list catches up afterwards`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = syncService,
+        )
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-notifications") {
+                    snapshot.copy(
+                        title = "Streaming title only for the active conversation",
+                        isRunning = true,
+                    )
+                } else {
+                    snapshot
+                }
+            },
+        )
+
+        runCurrent()
+
+        assertEquals(
+            "Streaming title only for the active conversation",
+            repository.session.value.selectedThread?.title,
+        )
+
+        advanceUntilIdle()
+
+        assertEquals(
+            "Streaming title only for the active conversation",
+            repository.session.value.threads.firstOrNull { thread -> thread.id == "thread-notifications" }?.title,
+        )
     }
 
     @Test
