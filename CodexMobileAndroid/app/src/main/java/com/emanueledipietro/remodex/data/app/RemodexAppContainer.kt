@@ -23,7 +23,9 @@ import java.util.concurrent.TimeUnit
 class RemodexAppContainer(
     context: Context,
 ) {
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    // App-level sync and notification flows can process large thread snapshots.
+    // Keep that work off the UI thread so turn completion does not ANR MainActivity.
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val appPreferencesRepository = DataStoreAppPreferencesRepository(context.applicationContext)
     private val threadCacheDatabase = Room.databaseBuilder(
         context.applicationContext,
