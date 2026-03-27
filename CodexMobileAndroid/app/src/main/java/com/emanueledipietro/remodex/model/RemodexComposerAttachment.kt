@@ -7,4 +7,5 @@ data class RemodexComposerAttachment(
     val id: String,
     val uriString: String,
     val displayName: String,
+    val payloadDataUrl: String? = null,
 )

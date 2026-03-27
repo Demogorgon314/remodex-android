@@ -106,6 +106,18 @@ internal object ThreadHistoryReconciler {
 
         if (historyItem.speaker == ConversationSpeaker.USER) {
             val turnId = normalizedIdentifier(historyItem.turnId)
+            if (turnId != null) {
+                merged.indexOfLast { candidate ->
+                    candidate.speaker == ConversationSpeaker.USER &&
+                        candidate.deliveryState != RemodexMessageDeliveryState.FAILED &&
+                        normalizedText(candidate.text) == normalizedText(historyItem.text) &&
+                        normalizedIdentifier(candidate.turnId) == turnId &&
+                        userAttachmentsCompatible(
+                            localAttachments = candidate.attachments,
+                            serverAttachments = historyItem.attachments,
+                        )
+                }.takeIf { it >= 0 }?.let { return it }
+            }
             merged.indexOfLast { candidate ->
                 candidate.speaker == ConversationSpeaker.USER &&
                     candidate.deliveryState != RemodexMessageDeliveryState.FAILED &&
@@ -195,7 +207,10 @@ internal object ThreadHistoryReconciler {
                 candidate.speaker == ConversationSpeaker.USER &&
                     candidate.deliveryState == RemodexMessageDeliveryState.PENDING &&
                     normalizedText(candidate.text) == normalizedText(historyItem.text) &&
-                    attachmentSignature(candidate.attachments) == attachmentSignature(historyItem.attachments)
+                    userAttachmentsCompatible(
+                        localAttachments = candidate.attachments,
+                        serverAttachments = historyItem.attachments,
+                    )
             }.takeIf { it >= 0 }?.let { return it }
         }
 
@@ -329,6 +344,35 @@ internal object ThreadHistoryReconciler {
         return attachments.joinToString(separator = "|") { attachment ->
             listOf(attachment.id, attachment.uriString, attachment.displayName).joinToString(separator = ":")
         }
+    }
+
+    private fun userAttachmentsCompatible(
+        localAttachments: List<RemodexConversationAttachment>,
+        serverAttachments: List<RemodexConversationAttachment>,
+    ): Boolean {
+        if (attachmentSignature(localAttachments) == attachmentSignature(serverAttachments)) {
+            return true
+        }
+        if (localAttachments.isEmpty() || serverAttachments.isEmpty()) {
+            return false
+        }
+        if (localAttachments.size != serverAttachments.size) {
+            return false
+        }
+        return localAttachments.any(::looksLikeInlineOrLocalImageAttachment) &&
+            serverAttachments.any(::looksLikeHistoryImageReferenceAttachment)
+    }
+
+    private fun looksLikeInlineOrLocalImageAttachment(attachment: RemodexConversationAttachment): Boolean {
+        val value = attachment.uriString.trim().lowercase()
+        return value.startsWith("content://") ||
+            value.startsWith("file://") ||
+            value.startsWith("data:image")
+    }
+
+    private fun looksLikeHistoryImageReferenceAttachment(attachment: RemodexConversationAttachment): Boolean {
+        val value = attachment.uriString.trim().lowercase()
+        return value == "remodex://history-image-elided" || value.startsWith("data:image")
     }
 
     private fun normalizedText(value: String): String = value.trim()

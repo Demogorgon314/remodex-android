@@ -118,6 +118,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
@@ -209,6 +210,8 @@ import kotlinx.coroutines.delay
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
 private val ComposerLeadingIconTapTarget = 24.dp
+private val ComposerAttachmentThumbnailSize = 70.dp
+private val ComposerAttachmentRemoveButtonSize = 22.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
 private val FileAutocompleteRowHeight = 50.dp
@@ -2343,8 +2346,8 @@ private fun ComposerCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(top = 6.dp, bottom = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (composer.attachments.isNotEmpty() ||
                 composer.mentionedFiles.isNotEmpty() ||
@@ -2595,13 +2598,13 @@ private fun ComposerAccessoryStrip(
     val composer = uiState.composer
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (composer.attachments.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 composer.attachments.forEach { attachment ->
@@ -2662,7 +2665,7 @@ private fun AccessoryChipRow(
     Row(
         modifier = Modifier
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         content = content,
     )
@@ -3364,46 +3367,62 @@ private fun AttachmentPreviewCard(
     onRemoveAttachment: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    Surface(
-        modifier = Modifier.width(140.dp),
-        color = chrome.nestedSurface,
-        shape = RemodexConversationShapes.nestedCard,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+    Box(
+        modifier = Modifier
+            .size(ComposerAttachmentThumbnailSize + 8.dp)
+            .padding(top = 4.dp, end = 4.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+        Surface(
+            modifier = Modifier.size(ComposerAttachmentThumbnailSize),
+            color = chrome.nestedSurface,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
-            AsyncImage(
-                model = attachment.uriString,
-                contentDescription = attachment.displayName,
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(76.dp),
-                contentScale = ContentScale.Crop,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp)),
             ) {
-                Text(
-                    text = attachment.displayName,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.titleText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Icon(
+                    imageVector = Icons.Outlined.AddPhotoAlternate,
+                    contentDescription = null,
+                    tint = chrome.secondaryText,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(20.dp),
                 )
-                IconButton(onClick = { onRemoveAttachment(attachment.id) }) {
-                    Icon(
-                        imageVector = Icons.Outlined.Close,
-                        contentDescription = "Remove attachment",
-                        tint = chrome.secondaryText,
-                    )
-                }
+                AsyncImage(
+                    model = attachment.uriString,
+                    contentDescription = attachment.displayName,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset(x = 6.dp, y = (-6).dp)
+                .size(ComposerAttachmentRemoveButtonSize),
+            shape = CircleShape,
+            color = Color.Black.copy(alpha = 0.68f),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(onClick = { onRemoveAttachment(attachment.id) }),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = "Remove attachment",
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
             }
         }
     }

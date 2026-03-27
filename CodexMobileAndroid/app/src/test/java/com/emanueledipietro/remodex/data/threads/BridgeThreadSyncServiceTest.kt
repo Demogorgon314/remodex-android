@@ -15,13 +15,16 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeAction
 import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -29,6 +32,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -62,6 +66,26 @@ class BridgeThreadSyncServiceTest {
                 RpcError(
                     code = -32602,
                     message = "Unknown thread: thread-missing",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `image url fallback only retries compatibility-shaped rpc errors`() {
+        assertTrue(
+            shouldRetryWithImageUrlFieldFallbackValue(
+                RpcError(
+                    code = -32600,
+                    message = "Invalid request: missing field `image_url`",
+                ),
+            ),
+        )
+        assertFalse(
+            shouldRetryWithImageUrlFieldFallbackValue(
+                RpcError(
+                    code = -32603,
+                    message = "backend unavailable",
                 ),
             ),
         )
@@ -796,6 +820,179 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
 
             assertEquals(listOf(null), turnStartServiceTiers)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt encodes image attachments as url data payloads`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-image-url",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var capturedImageItem: JsonObject? = null
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-image-url"))
+                                put("title", JsonPrimitive("Image thread"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    capturedImageItem = message.params
+                        ?.jsonObjectOrNull
+                        ?.firstArray("input")
+                        ?.firstOrNull()
+                        ?.jsonObjectOrNull
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-image-url"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.sendPrompt(
+                threadId = "thread-image-url",
+                prompt = "",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = listOf(
+                    RemodexComposerAttachment(
+                        id = "attachment-1",
+                        uriString = "content://media/external/images/media/1",
+                        displayName = "photo.jpg",
+                        payloadDataUrl = "data:image/jpeg;base64,AAAA",
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals("image", capturedImageItem?.firstString("type"))
+            assertEquals("data:image/jpeg;base64,AAAA", capturedImageItem?.firstString("url"))
+            assertNull(capturedImageItem?.firstString("image_url"))
+            assertNull(capturedImageItem?.firstString("name"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt falls back to image_url for legacy runtimes`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-image-url-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val imageFieldKeys = mutableListOf<String?>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-image-url-fallback"))
+                                put("title", JsonPrimitive("Legacy image thread"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    val imageItem = message.params
+                        ?.jsonObjectOrNull
+                        ?.firstArray("input")
+                        ?.firstOrNull()
+                        ?.jsonObjectOrNull
+                    imageFieldKeys += when {
+                        imageItem?.containsKey("url") == true -> "url"
+                        imageItem?.containsKey("image_url") == true -> "image_url"
+                        else -> null
+                    }
+                    if (imageFieldKeys.size == 1) {
+                        throw RpcError(code = -32600, message = "Invalid request: missing field `image_url`")
+                    }
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-image-url-fallback"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.sendPrompt(
+                threadId = "thread-image-url-fallback",
+                prompt = "",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = listOf(
+                    RemodexComposerAttachment(
+                        id = "attachment-1",
+                        uriString = "content://media/external/images/media/1",
+                        displayName = "photo.jpg",
+                        payloadDataUrl = "data:image/jpeg;base64,BBBB",
+                    ),
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals(listOf("url", "image_url"), imageFieldKeys)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

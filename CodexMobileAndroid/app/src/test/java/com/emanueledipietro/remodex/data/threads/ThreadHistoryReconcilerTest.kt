@@ -2,7 +2,9 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -178,5 +180,54 @@ class ThreadHistoryReconcilerTest {
         assertEquals(1, merged.size)
         assertEquals("command-item-local", merged.single().itemId)
         assertEquals(3L, merged.single().orderIndex)
+    }
+
+    @Test
+    fun `merge history items collapses image sends when relay elides inline history images`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local-image",
+                speaker = ConversationSpeaker.USER,
+                text = "这是什么",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "local-attachment",
+                        uriString = "content://media/external/images/media/1",
+                        displayName = "1000012658.jpg",
+                    ),
+                ),
+                orderIndex = 20L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history-image",
+                speaker = ConversationSpeaker.USER,
+                text = "这是什么",
+                turnId = "turn-1",
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "history-attachment",
+                        uriString = "remodex://history-image-elided",
+                        displayName = "history-image-elided",
+                    ),
+                ),
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("user-local-image", merged.single().id)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
+        assertEquals("turn-1", merged.single().turnId)
     }
 }

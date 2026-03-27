@@ -443,21 +443,38 @@ class BridgeThreadSyncService(
             markThreadAsRunningFallback(threadId)
         }
 
+        var imageUrlKey = "url"
+        var turnStartResponse: RpcMessage? = null
         val response = try {
-            sendRequestWithServiceTierFallback(
-                method = "turn/start",
-                accessMode = runtimeConfig.accessMode,
-                includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
-                buildBaseParams = { includeServiceTier ->
-                    buildTurnStartParams(
-                        threadId = threadId,
-                        prompt = trimmedPrompt,
-                        attachments = attachments,
-                        runtimeConfig = runtimeConfig,
-                        includeServiceTier = includeServiceTier,
+            while (turnStartResponse == null) {
+                try {
+                    turnStartResponse = sendRequestWithServiceTierFallback(
+                        method = "turn/start",
+                        accessMode = runtimeConfig.accessMode,
+                        includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
+                        buildBaseParams = { includeServiceTier ->
+                            buildTurnStartParams(
+                                threadId = threadId,
+                                prompt = trimmedPrompt,
+                                attachments = attachments,
+                                runtimeConfig = runtimeConfig,
+                                includeServiceTier = includeServiceTier,
+                                imageUrlKey = imageUrlKey,
+                            )
+                        },
                     )
-                },
-            )
+                } catch (error: Throwable) {
+                    if (imageUrlKey == "url" &&
+                        attachments.isNotEmpty() &&
+                        shouldRetryWithImageUrlFieldFallback(error)
+                    ) {
+                        imageUrlKey = "image_url"
+                        continue
+                    }
+                    throw error
+                }
+            }
+            turnStartResponse ?: error("turn/start retry loop exited without a response")
         } catch (error: Throwable) {
             if (!hadRunningState) {
                 clearThreadRunningState(threadId)
@@ -1284,6 +1301,10 @@ class BridgeThreadSyncService(
 
     private fun shouldRetryWithApprovalPolicyFallback(error: Throwable): Boolean {
         return shouldRetryWithApprovalPolicyFallbackValue(error)
+    }
+
+    private fun shouldRetryWithImageUrlFieldFallback(error: Throwable): Boolean {
+        return shouldRetryWithImageUrlFieldFallbackValue(error)
     }
 
     private fun shouldTreatAsThreadNotFound(error: Throwable): Boolean {
@@ -4386,22 +4407,30 @@ class BridgeThreadSyncService(
         attachments: List<RemodexComposerAttachment>,
         runtimeConfig: RemodexRuntimeConfig,
         includeServiceTier: Boolean,
+        imageUrlKey: String,
     ): JsonObject {
         val inputItems = buildJsonArray {
+            attachments.forEach { attachment ->
+                val payloadDataUrl = attachment.payloadDataUrl
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?: attachment.uriString
+                        .takeIf { uri -> uri.startsWith("data:image", ignoreCase = true) }
+                if (payloadDataUrl == null) {
+                    return@forEach
+                }
+                add(
+                    buildJsonObject {
+                        put("type", JsonPrimitive("image"))
+                        put(imageUrlKey, JsonPrimitive(payloadDataUrl))
+                    },
+                )
+            }
             if (prompt.isNotBlank()) {
                 add(
                     buildJsonObject {
                         put("type", JsonPrimitive("text"))
                         put("text", JsonPrimitive(prompt))
-                    },
-                )
-            }
-            attachments.forEach { attachment ->
-                add(
-                    buildJsonObject {
-                        put("type", JsonPrimitive("image"))
-                        put("image_url", JsonPrimitive(attachment.uriString))
-                        put("name", JsonPrimitive(attachment.displayName))
                     },
                 )
             }
@@ -4650,6 +4679,21 @@ internal fun shouldRetryWithApprovalPolicyFallbackValue(error: Throwable): Boole
         || message.contains("unrecognized field")
         || message.contains("failed to parse")
         || message.contains("unsupported")
+}
+
+internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolean {
+    val rpcError = error as? RpcError ?: return false
+    if (rpcError.code != -32600 && rpcError.code != -32602) {
+        return false
+    }
+    val message = rpcError.message.lowercase(Locale.ROOT)
+    if (!message.contains("image_url")) {
+        return false
+    }
+    return message.contains("missing")
+        || message.contains("unknown field")
+        || message.contains("expected")
+        || message.contains("invalid")
 }
 
 internal fun shouldTreatAsThreadNotFoundValue(error: Throwable): Boolean {
