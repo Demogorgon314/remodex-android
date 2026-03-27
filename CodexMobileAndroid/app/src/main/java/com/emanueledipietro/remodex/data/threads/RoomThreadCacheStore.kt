@@ -28,6 +28,7 @@ import kotlinx.serialization.json.Json
 data class CachedThreadEntity(
     @PrimaryKey val id: String,
     val title: String,
+    val name: String?,
     val preview: String,
     val projectPath: String,
     val lastUpdatedLabel: String,
@@ -94,7 +95,7 @@ interface ThreadCacheDao {
 
 @Database(
     entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class RemodexThreadCacheDatabase : RoomDatabase() {
@@ -114,6 +115,7 @@ class RoomThreadCacheStore(
                 CachedThreadRecord(
                     id = record.thread.id,
                     title = record.thread.title,
+                    name = record.thread.name,
                     preview = record.thread.preview,
                     projectPath = record.thread.projectPath,
                     lastUpdatedLabel = record.thread.lastUpdatedLabel,
@@ -158,6 +160,7 @@ private fun CachedThreadRecord.toEntity(): CachedThreadEntity {
     return CachedThreadEntity(
         id = id,
         title = title,
+        name = name,
         preview = preview,
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,

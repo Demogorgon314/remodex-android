@@ -54,6 +54,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -803,6 +804,19 @@ private fun MainPane(
                 renderState = presentation.renderState,
                 diffChunks = presentation.diffChunks,
                 onDismiss = { repositoryDiffSheetPresentation = null },
+            )
+        }
+
+        uiState.gitSyncAlert?.let { alert ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissGitSyncAlert,
+                confirmButton = {
+                    TextButton(onClick = viewModel::dismissGitSyncAlert) {
+                        Text("OK")
+                    }
+                },
+                title = { Text(alert.title) },
+                text = { Text(alert.message) },
             )
         }
     }

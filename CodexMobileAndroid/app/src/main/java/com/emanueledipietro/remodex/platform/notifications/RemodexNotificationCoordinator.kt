@@ -74,11 +74,12 @@ fun detectThreadNotificationEvents(
             val previousThread = previousThreadsById[currentThread.id] ?: return@forEach
 
             if (previousThread.isRunning && !currentThread.isRunning) {
+                val displayTitle = currentThread.displayTitle
                 add(
                     RemodexThreadNotificationEvent(
                         threadId = currentThread.id,
-                        threadTitle = currentThread.title,
-                        title = "${currentThread.title} is ready",
+                        threadTitle = displayTitle,
+                        title = "$displayTitle is ready",
                         body = currentThread.preview,
                         type = RemodexThreadNotificationType.TURN_COMPLETED,
                     ),
@@ -86,11 +87,12 @@ fun detectThreadNotificationEvents(
             }
 
             detectAttentionMessage(previousThread, currentThread)?.let { attentionMessage ->
+                val displayTitle = currentThread.displayTitle
                 add(
                     RemodexThreadNotificationEvent(
                         threadId = currentThread.id,
-                        threadTitle = currentThread.title,
-                        title = "${currentThread.title} needs attention",
+                        threadTitle = displayTitle,
+                        title = "$displayTitle needs attention",
                         body = attentionMessage.text,
                         type = RemodexThreadNotificationType.ATTENTION_NEEDED,
                     ),

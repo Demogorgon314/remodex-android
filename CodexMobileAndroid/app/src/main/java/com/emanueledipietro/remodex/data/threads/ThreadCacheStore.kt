@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 data class CachedThreadRecord(
     val id: String,
     val title: String,
+    val name: String? = null,
     val preview: String,
     val projectPath: String,
     val lastUpdatedLabel: String,

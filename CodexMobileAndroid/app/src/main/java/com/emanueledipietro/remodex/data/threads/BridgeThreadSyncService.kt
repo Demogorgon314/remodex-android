@@ -53,6 +53,7 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentRef
 import com.emanueledipietro.remodex.model.RemodexSubagentState
+import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
@@ -360,6 +361,7 @@ class BridgeThreadSyncService(
         updateThread(threadId) { snapshot ->
             snapshot.copy(
                 title = trimmedName,
+                name = trimmedName,
             )
         }
         runCatching {
@@ -567,7 +569,8 @@ class BridgeThreadSyncService(
             RemodexComposerForkDestination.LOCAL -> sourceThread.projectPath
             RemodexComposerForkDestination.NEW_WORKTREE -> {
                 val defaultBranch = loadGitBranches(threadId).defaultBranch
-                val branchName = defaultForkBranchName(sourceThread.title)
+                val threadLabel = sourceThread.name?.trim()?.takeIf(String::isNotEmpty) ?: sourceThread.title
+                val branchName = defaultForkBranchName(threadLabel)
                 createWorktree(
                     threadId = threadId,
                     name = branchName,
@@ -1291,7 +1294,7 @@ class BridgeThreadSyncService(
         val method = message.method?.trim().orEmpty()
         val paramsObject = message.params?.jsonObjectOrNull
         when (method) {
-            "thread/name/updated" -> refreshThreads()
+            "thread/name/updated" -> paramsObject?.let(::handleThreadNameUpdatedNotification)
             "turn/started" -> paramsObject?.let(::handleTurnStartedNotification)
             "turn/completed" -> paramsObject?.let(::handleTurnCompletedNotification)
             "turn/plan/updated" -> paramsObject?.let(::handleTurnPlanUpdatedNotification)
@@ -1341,6 +1344,42 @@ class BridgeThreadSyncService(
                     return
                 }
             }
+        }
+    }
+
+    private fun handleThreadNameUpdatedNotification(paramsObject: JsonObject) {
+        val threadId = resolveThreadId(paramsObject) ?: return
+        val eventObject = envelopeEventObject(paramsObject)
+        val renameKeys = arrayOf("threadName", "thread_name", "name", "title")
+        val hasExplicitRenameField = paramsObject.firstValue(*renameKeys) != null ||
+            eventObject?.firstValue(*renameKeys) != null
+        val normalizedThreadName = paramsObject.firstString(*renameKeys)
+            ?: eventObject?.firstString(*renameKeys)
+
+        when {
+            !normalizedThreadName.isNullOrBlank() -> {
+                updateThread(threadId) { snapshot ->
+                    snapshot.copy(
+                        title = normalizedThreadName,
+                        name = normalizedThreadName,
+                    )
+                }
+            }
+
+            hasExplicitRenameField -> {
+                updateThread(threadId) { snapshot ->
+                    snapshot.copy(
+                        title = RemodexThreadSummary.defaultDisplayTitle,
+                        name = null,
+                    )
+                }
+            }
+
+            else -> return
+        }
+
+        scope.launch {
+            hydrateThread(threadId)
         }
     }
 
@@ -3489,9 +3528,11 @@ class BridgeThreadSyncService(
         existing: ThreadSyncSnapshot?,
     ): ThreadSyncSnapshot? {
         val id = threadObject.firstString("id") ?: return null
-        val title = threadObject.firstString("name", "title")
+        val title = threadObject.firstString("title")
             ?: existing?.title
             ?: "Conversation"
+        val name = threadObject.firstString("name")
+            ?: existing?.name
         val preview = threadObject.firstString("preview")
             ?: existing?.preview
             ?: ""
@@ -3518,6 +3559,7 @@ class BridgeThreadSyncService(
         return ThreadSyncSnapshot(
             id = id,
             title = title,
+            name = name,
             preview = preview,
             projectPath = projectPath,
             lastUpdatedLabel = relativeUpdatedLabel(updatedEpochMs),

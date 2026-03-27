@@ -165,12 +165,13 @@ class BridgeThreadSyncServiceTest {
                                 "data",
                                 buildJsonArray {
                                     add(
-                                        buildJsonObject {
-                                            put("id", JsonPrimitive("thread-live"))
-                                            put("title", JsonPrimitive("Live thread"))
-                                            put("preview", JsonPrimitive("Bridge-backed preview"))
-                                            put("cwd", JsonPrimitive("/tmp/project-a"))
-                                            put("updatedAt", JsonPrimitive(1_713_111_111))
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-live"))
+                                        put("title", JsonPrimitive("Live thread"))
+                                        put("name", JsonPrimitive("Live project"))
+                                        put("preview", JsonPrimitive("Bridge-backed preview"))
+                                        put("cwd", JsonPrimitive("/tmp/project-a"))
+                                        put("updatedAt", JsonPrimitive(1_713_111_111))
                                         },
                                     )
                                 },
@@ -244,6 +245,7 @@ class BridgeThreadSyncServiceTest {
             val liveThread = service.threads.value.first { it.id == "thread-live" }
             val archivedThread = service.threads.value.first { it.id == "thread-archived" }
             assertEquals("Live thread", liveThread.title)
+            assertEquals("Live project", liveThread.name)
             assertEquals("/tmp/project-a", liveThread.projectPath)
             assertFalse(liveThread.timelineMutations.isEmpty())
             assertEquals(RemodexThreadSyncState.ARCHIVED_LOCAL, archivedThread.syncState)

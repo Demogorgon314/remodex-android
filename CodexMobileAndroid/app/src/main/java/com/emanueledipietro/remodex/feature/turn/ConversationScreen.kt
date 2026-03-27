@@ -1474,13 +1474,6 @@ private fun GitContextCard(
                     color = chrome.accent,
                 )
             }
-            gitState.errorMessage?.let { error ->
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.destructive,
-                )
-            }
             RuntimeControlsSection(
                 title = "Compare Against",
                 options = gitState.branches.branches,

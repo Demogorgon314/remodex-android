@@ -11,6 +11,30 @@ import org.junit.Test
 
 class RemodexNotificationCoordinatorTest {
     @Test
+    fun `completion notifications use display title instead of raw fallback title`() {
+        val events = detectThreadNotificationEvents(
+            previousSnapshot = sessionSnapshot(
+                thread(
+                    title = "Conversation",
+                    name = "Local project",
+                    isRunning = true,
+                ),
+            ),
+            currentSnapshot = sessionSnapshot(
+                thread(
+                    title = "Conversation",
+                    name = "Local project",
+                    isRunning = false,
+                ),
+            ),
+        )
+
+        assertEquals(1, events.size)
+        assertEquals("Local project", events.single().threadTitle)
+        assertEquals("Local project is ready", events.single().title)
+    }
+
+    @Test
     fun `notification permission denial keeps completion events in-app without posting`() {
         val permissionChecker = FakePermissionChecker(enabled = false)
         val poster = RecordingPoster()
@@ -96,12 +120,14 @@ private fun sessionSnapshot(vararg threads: RemodexThreadSummary): RemodexSessio
 private fun thread(
     id: String = "thread-1",
     title: String = "Android notifications",
+    name: String? = null,
     isRunning: Boolean = false,
     messages: List<RemodexConversationItem> = emptyList(),
 ): RemodexThreadSummary {
     return RemodexThreadSummary(
         id = id,
         title = title,
+        name = name,
         preview = "Preview",
         projectPath = "/tmp/remodex",
         lastUpdatedLabel = "Updated just now",

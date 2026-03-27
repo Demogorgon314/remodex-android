@@ -8,6 +8,7 @@ enum class RemodexThreadSyncState {
 data class RemodexThreadSummary(
     val id: String,
     val title: String,
+    val name: String? = null,
     val preview: String,
     val projectPath: String,
     val lastUpdatedLabel: String,
@@ -44,12 +45,17 @@ data class RemodexThreadSummary(
     val displayTitle: String
         get() {
             val cleanedTitle = title.trim().takeIf { it.isNotEmpty() }
+            val cleanedName = name?.trim()?.takeIf { it.isNotEmpty() }
             val cleanedPreview = preview.trim().takeIf { it.isNotEmpty() }
             val cleanedAgentLabel = agentDisplayLabel
             val effectiveTitle = if (isGenericPlaceholderTitle(cleanedTitle)) {
                 null
             } else {
                 cleanedTitle
+            }
+
+            if (!cleanedName.isNullOrBlank()) {
+                return cleanedName
             }
 
             if (!cleanedAgentLabel.isNullOrBlank() && cleanedTitle == null) {

@@ -99,6 +99,7 @@ data class AppUiState(
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
     val composer: ComposerUiState = ComposerUiState(),
     val conversationBanner: String? = null,
+    val gitSyncAlert: RemodexGitSyncAlertUiState? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
     val completionHapticSignal: Long = 0L,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
@@ -112,6 +113,11 @@ data class AppUiState(
 data class ThreadCompletionBannerUiState(
     val threadId: String,
     val title: String,
+)
+
+data class RemodexGitSyncAlertUiState(
+    val title: String = "Git Error",
+    val message: String,
 )
 
 private data class ComposerRenderStateA(
@@ -141,6 +147,12 @@ private data class SettingsRenderState(
     val gptAccountErrorMessage: String? = null,
     val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
+)
+
+private data class GitUiTransientState(
+    val revertedMessageIds: Set<String> = emptySet(),
+    val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
+    val gitSyncAlertsByThread: Map<String, RemodexGitSyncAlertUiState> = emptyMap(),
 )
 
 private data class AutoReconnectUiState(
@@ -174,6 +186,7 @@ class AppViewModel(
     private val autocompleteState = MutableStateFlow(RemodexComposerAutocompleteState())
     private val revertedAssistantMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
+    private val gitSyncAlerts = MutableStateFlow<Map<String, RemodexGitSyncAlertUiState>>(emptyMap())
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val isRefreshingThreadsState = MutableStateFlow(false)
@@ -277,14 +290,26 @@ class AppViewModel(
             )
         }
 
+    private val gitUiTransientState =
+        combine(
+            revertedAssistantMessageIds,
+            assistantRevertSheetState,
+            gitSyncAlerts,
+        ) { revertedMessageIds, revertSheetState, gitSyncAlertsByThread ->
+            GitUiTransientState(
+                revertedMessageIds = revertedMessageIds,
+                assistantRevertSheet = revertSheetState,
+                gitSyncAlertsByThread = gitSyncAlertsByThread,
+            )
+        }
+
     private val baseUiState =
         combine(
             sessionRenderState,
             composerRenderStateA,
             composerRenderStateB,
-            revertedAssistantMessageIds,
-            assistantRevertSheetState,
-        ) { sessionRenderState, renderStateA, renderStateB, revertedMessageIds, revertSheetState ->
+            gitUiTransientState,
+        ) { sessionRenderState, renderStateA, renderStateB, gitUiState ->
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
@@ -340,15 +365,15 @@ class AppViewModel(
                 conversationBanner = conversationBanner(
                     selectedThread = selectedThread,
                     secureConnection = snapshot.secureConnection,
-                    gitState = gitState,
                 ),
+                gitSyncAlert = selectedThread?.id?.let(gitUiState.gitSyncAlertsByThread::get),
                 assistantRevertStatesByMessageId = assistantRevertPresentations(
                     threads = snapshot.threads,
                     selectedThread = selectedThread,
                     secureConnection = snapshot.secureConnection,
-                    revertedMessageIds = revertedMessageIds,
+                    revertedMessageIds = gitUiState.revertedMessageIds,
                 ),
-                assistantRevertSheet = revertSheetState,
+                assistantRevertSheet = gitUiState.assistantRevertSheet,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
             )
         }
@@ -933,6 +958,7 @@ class AppViewModel(
     fun loadRepositoryDiff(onLoaded: (RemodexGitRepoDiff) -> Unit) {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
+            clearGitSyncAlert(threadId)
             updateGitState(threadId) { currentState ->
                 currentState.copy(isLoading = true, errorMessage = null)
             }
@@ -941,92 +967,111 @@ class AppViewModel(
                     updateGitState(threadId) { currentState ->
                         currentState.copy(
                             isLoading = false,
-                            errorMessage = if (diff.patch.isBlank()) {
-                                "There are no repository changes to show."
-                            } else {
-                                null
-                            },
+                            errorMessage = null,
                         )
                     }
                     if (diff.patch.isNotBlank()) {
                         onLoaded(diff)
+                    } else {
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            message = "There are no repository changes to show.",
+                        )
                     }
                 }
                 .onFailure { error ->
                     updateGitState(threadId) { currentState ->
                         currentState.copy(
                             isLoading = false,
-                            errorMessage = error.message ?: "Could not load repository changes.",
+                            errorMessage = null,
                         )
                     }
+                    showGitSyncAlert(
+                        threadId = threadId,
+                        message = error.message ?: "Could not load repository changes.",
+                    )
                 }
         }
     }
 
     fun checkoutGitBranch(branch: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.checkoutGitBranch(threadId, branch)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Branch Switch Failed",
+            fallbackMessage = "Could not switch branch.",
+        ) {
+            repository.checkoutGitBranch(threadId, branch)
         }
     }
 
     fun createGitBranch(branch: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.createGitBranch(threadId, branch)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Branch Creation Failed",
+            fallbackMessage = "Could not create branch.",
+        ) {
+            repository.createGitBranch(threadId, branch)
         }
     }
 
     fun createGitWorktree(name: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.createGitWorktree(
+        launchGitAction(
+            threadId = threadId,
+            title = "Worktree Creation Failed",
+            fallbackMessage = "Could not create worktree.",
+        ) {
+            repository.createGitWorktree(
                 threadId = threadId,
                 name = name,
                 baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null },
             )
-            updateGitState(threadId) { nextState }
         }
     }
 
     fun commitGitChanges(message: String? = null) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.commitGitChanges(threadId, message)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Git Error",
+            fallbackMessage = "Operation failed.",
+        ) {
+            repository.commitGitChanges(threadId, message)
         }
     }
 
     fun pullGitChanges() {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.pullGitChanges(threadId)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Pull Failed",
+            fallbackMessage = "Operation failed.",
+        ) {
+            repository.pullGitChanges(threadId)
         }
     }
 
     fun pushGitChanges() {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.pushGitChanges(threadId)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Push Failed",
+            fallbackMessage = "Operation failed.",
+        ) {
+            repository.pushGitChanges(threadId)
         }
     }
 
     fun discardRuntimeChangesAndSync() {
         val threadId = uiState.value.selectedThread?.id ?: return
-        viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
-            val nextState = repository.discardRuntimeChangesAndSync(threadId)
-            updateGitState(threadId) { nextState }
+        launchGitAction(
+            threadId = threadId,
+            title = "Git Error",
+            fallbackMessage = "Operation failed.",
+        ) {
+            repository.discardRuntimeChangesAndSync(threadId)
         }
     }
 
@@ -1155,6 +1200,11 @@ class AppViewModel(
 
     fun dismissAssistantRevertSheet() {
         assistantRevertSheetState.value = null
+    }
+
+    fun dismissGitSyncAlert() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        clearGitSyncAlert(threadId)
     }
 
     fun setDefaultModelId(modelId: String?) {
@@ -1712,7 +1762,7 @@ class AppViewModel(
                     updateGitState(threadId) { currentState ->
                         currentState.copy(
                             isLoading = false,
-                            errorMessage = error.message ?: "Could not load local git state.",
+                            errorMessage = null,
                         )
                     }
                 }
@@ -1874,7 +1924,6 @@ class AppViewModel(
     private fun conversationBanner(
         selectedThread: RemodexThreadSummary?,
         secureConnection: SecureConnectionSnapshot,
-        gitState: RemodexGitState,
     ): String? {
         if (selectedThread == null) {
             return null
@@ -1883,9 +1932,69 @@ class AppViewModel(
             secureConnection.secureState != SecureConnectionState.ENCRYPTED && selectedThread.isRunning -> {
                 "This turn will resume when the trusted connection comes back."
             }
-
-            gitState.errorMessage != null -> gitState.errorMessage
             else -> null
+        }
+    }
+
+    private fun showGitSyncAlert(
+        threadId: String,
+        message: String,
+        title: String = "Git Error",
+    ) {
+        val trimmedMessage = message.trim()
+        if (trimmedMessage.isEmpty()) {
+            return
+        }
+        gitSyncAlerts.update { alertsByThread ->
+            alertsByThread.toMutableMap().apply {
+                this[threadId] = RemodexGitSyncAlertUiState(
+                    title = title,
+                    message = trimmedMessage,
+                )
+            }
+        }
+    }
+
+    private fun clearGitSyncAlert(threadId: String) {
+        gitSyncAlerts.update { alertsByThread ->
+            if (!alertsByThread.containsKey(threadId)) {
+                alertsByThread
+            } else {
+                alertsByThread.toMutableMap().apply {
+                    remove(threadId)
+                }
+            }
+        }
+    }
+
+    private fun launchGitAction(
+        threadId: String,
+        title: String,
+        fallbackMessage: String,
+        action: suspend () -> RemodexGitState,
+    ) {
+        viewModelScope.launch {
+            clearGitSyncAlert(threadId)
+            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
+            runCatching { action() }
+                .onSuccess { nextState ->
+                    updateGitState(threadId) {
+                        nextState.copy(errorMessage = null)
+                    }
+                }
+                .onFailure { error ->
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(
+                            isLoading = false,
+                            errorMessage = null,
+                        )
+                    }
+                    showGitSyncAlert(
+                        threadId = threadId,
+                        title = title,
+                        message = error.message ?: fallbackMessage,
+                    )
+                }
         }
     }
 

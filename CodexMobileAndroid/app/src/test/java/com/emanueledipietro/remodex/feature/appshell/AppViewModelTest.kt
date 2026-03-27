@@ -723,8 +723,60 @@ class AppViewModelTest {
         assertEquals(0, callbackCount)
         assertEquals(
             "There are no repository changes to show.",
-            viewModel.uiState.value.composer.gitState.errorMessage,
+            viewModel.uiState.value.gitSyncAlert?.message,
         )
+    }
+
+    @Test
+    fun `passive git state refresh errors are swallowed without a banner or alert`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateError = IllegalStateException(
+                "fatal: not a git repository (or any of the parent directories): .git",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.uiState.value.conversationBanner)
+        assertEquals(null, viewModel.uiState.value.gitSyncAlert)
+        assertFalse(viewModel.uiState.value.composer.gitState.isLoading)
+        assertEquals(null, viewModel.uiState.value.composer.gitState.errorMessage)
+    }
+
+    @Test
+    fun `active git actions surface a dismissible git alert`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            checkoutGitBranchError = IllegalStateException(
+                "Cannot switch branches: this branch is already open in another worktree.",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.checkoutGitBranch("feature/test")
+        advanceUntilIdle()
+
+        assertEquals("Branch Switch Failed", viewModel.uiState.value.gitSyncAlert?.title)
+        assertEquals(
+            "Cannot switch branches: this branch is already open in another worktree.",
+            viewModel.uiState.value.gitSyncAlert?.message,
+        )
+
+        viewModel.dismissGitSyncAlert()
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.uiState.value.gitSyncAlert)
     }
 
     private class TestRemodexAppRepository : RemodexAppRepository {
@@ -750,6 +802,8 @@ class AppViewModelTest {
         var gitDiffDelayMs = 0L
         var gitDiffResult = RemodexGitRepoDiff()
         var gitStateResult = RemodexGitState()
+        var gitStateError: Throwable? = null
+        var checkoutGitBranchError: Throwable? = null
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -877,7 +931,10 @@ class AppViewModelTest {
             baseBranch: String?,
         ): String? = null
 
-        override suspend fun loadGitState(threadId: String): RemodexGitState = gitStateResult
+        override suspend fun loadGitState(threadId: String): RemodexGitState {
+            gitStateError?.let { throw it }
+            return gitStateResult
+        }
 
         override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
             gitDiffRequests += 1
@@ -890,7 +947,10 @@ class AppViewModelTest {
         override suspend fun checkoutGitBranch(
             threadId: String,
             branch: String,
-        ): RemodexGitState = RemodexGitState()
+        ): RemodexGitState {
+            checkoutGitBranchError?.let { throw it }
+            return RemodexGitState()
+        }
 
         override suspend fun createGitBranch(
             threadId: String,

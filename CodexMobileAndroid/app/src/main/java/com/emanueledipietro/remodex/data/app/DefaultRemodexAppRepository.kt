@@ -356,7 +356,7 @@ class DefaultRemodexAppRepository(
         refreshThreadsLocally(
             baseThreadsState.value.map { thread ->
                 if (thread.id == threadId) {
-                    thread.copy(title = trimmedName)
+                    thread.copy(title = trimmedName, name = trimmedName)
                 } else {
                     thread
                 }
@@ -1319,6 +1319,7 @@ private fun ThreadSyncSnapshot.toCachedThreadRecord(
     return CachedThreadRecord(
         id = id,
         title = title,
+        name = name,
         preview = preview,
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,
@@ -1394,6 +1395,7 @@ private fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
     return RemodexThreadSummary(
         id = id,
         title = title,
+        name = name,
         preview = preview,
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,

@@ -141,7 +141,7 @@ class FakeThreadSyncService(
         backingThreads.update { threads ->
             threads.map { snapshot ->
                 if (snapshot.id == threadId) {
-                    snapshot.copy(title = trimmedName)
+                    snapshot.copy(title = trimmedName, name = trimmedName)
                 } else {
                     snapshot
                 }
@@ -632,6 +632,7 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
     return CachedThreadRecord(
         id = id,
         title = title,
+        name = name,
         preview = preview,
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,

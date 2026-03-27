@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 data class ThreadSyncSnapshot(
     val id: String,
     val title: String,
+    val name: String? = null,
     val preview: String,
     val projectPath: String,
     val lastUpdatedLabel: String,
