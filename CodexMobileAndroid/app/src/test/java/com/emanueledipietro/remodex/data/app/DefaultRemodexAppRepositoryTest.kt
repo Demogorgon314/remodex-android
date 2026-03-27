@@ -37,11 +37,13 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -179,6 +181,46 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals(0, syncService.resumeCalls)
         assertEquals(createdThreadId, syncService.lastSendThreadId)
         assertTrue(repository.session.value.selectedThread?.isRunning == true)
+    }
+
+    @Test
+    fun `streaming thread updates reach session state before cache persistence finishes`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val cacheStore = BlockingThreadCacheStore()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = cacheStore,
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        cacheStore.blockWrites()
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-notifications") {
+                    snapshot.copy(
+                        title = "Streaming title from sync",
+                        isRunning = true,
+                    )
+                } else {
+                    snapshot
+                }
+            },
+        )
+
+        runCurrent()
+
+        assertEquals(
+            "Streaming title from sync",
+            repository.session.value.threads.firstOrNull { it.id == "thread-notifications" }?.title,
+        )
+
+        cacheStore.allowWrites()
+        advanceUntilIdle()
     }
 
     @Test
@@ -565,6 +607,31 @@ class DefaultRemodexAppRepositoryTest {
             threadHydrationService = null,
             scope = scope,
         )
+    }
+
+    private class BlockingThreadCacheStore : com.emanueledipietro.remodex.data.threads.ThreadCacheStore {
+        private val backingThreads = MutableStateFlow<List<com.emanueledipietro.remodex.data.threads.CachedThreadRecord>>(emptyList())
+        override val threads: Flow<List<com.emanueledipietro.remodex.data.threads.CachedThreadRecord>> = backingThreads
+
+        private var gate = CompletableDeferred<Unit>()
+        private var shouldBlock = false
+
+        fun blockWrites() {
+            shouldBlock = true
+            gate = CompletableDeferred()
+        }
+
+        fun allowWrites() {
+            shouldBlock = false
+            gate.complete(Unit)
+        }
+
+        override suspend fun replaceThreads(threads: List<com.emanueledipietro.remodex.data.threads.CachedThreadRecord>) {
+            if (shouldBlock) {
+                gate.await()
+            }
+            backingThreads.value = threads
+        }
     }
 
     private fun createSecureCoordinator(scope: CoroutineScope): SecureConnectionCoordinator {

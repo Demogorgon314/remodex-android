@@ -555,24 +555,43 @@ fun ConversationScreen(
                                 }
                             } else {
                                 items(timelineItems, key = { it.id }) { message ->
-                                    ConversationBubble(
-                                        item = message,
-                                        accessoryState = blockAccessories[message.id],
-                                        assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
-                                        onTapAssistantRevert = onStartAssistantRevertPreview,
-                                        commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
-                                        onOpenFileChangeDetails = { presentation ->
-                                            fileChangeSheetPresentation = presentation
-                                        },
-                                        onOpenCommandExecutionDetails = { messageId ->
-                                            commandDetailsMessageId = messageId
-                                        },
-                                        parentThreadId = thread.id,
-                                        threads = uiState.threads,
-                                        parentThreadMessages = thread.messages,
-                                        onOpenSubagentThread = onOpenSubagentThread,
-                                        onHydrateSubagentThread = onHydrateSubagentThread,
-                                    )
+                                    when (message.speaker) {
+                                        ConversationSpeaker.USER -> UserConversationRow(item = message)
+                                        ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
+                                            item = message,
+                                            accessoryState = blockAccessories[message.id],
+                                            assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
+                                            onTapAssistantRevert = onStartAssistantRevertPreview,
+                                            onOpenFileChangeDetails = { presentation ->
+                                                fileChangeSheetPresentation = presentation
+                                            },
+                                        )
+
+                                        ConversationSpeaker.SYSTEM -> SystemConversationRow(
+                                            item = message,
+                                            accessoryState = blockAccessories[message.id],
+                                            commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
+                                            onOpenFileChangeDetails = { presentation ->
+                                                fileChangeSheetPresentation = presentation
+                                            },
+                                            onOpenCommandExecutionDetails = { messageId ->
+                                                commandDetailsMessageId = messageId
+                                            },
+                                            parentThreadId = thread.id,
+                                            threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                                                uiState.threads
+                                            } else {
+                                                emptyList()
+                                            },
+                                            parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                                                thread.messages
+                                            } else {
+                                                emptyList()
+                                            },
+                                            onOpenSubagentThread = onOpenSubagentThread,
+                                            onHydrateSubagentThread = onHydrateSubagentThread,
+                                        )
+                                    }
                                 }
                                 item(key = "conversation-bottom-anchor") {
                                     Spacer(
@@ -887,6 +906,17 @@ private data class ConversationTextBlock(
 )
 
 private val conversationInlineMarkdownPattern = Regex("""\[[^\]]+]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__""")
+private val heavyStreamingMarkdownSignalRegex = Regex(
+    pattern = """(?m)^\s{0,3}(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```|\|)|!\[[^\]]*]\([^)]+\)|\[[^\]]+]\([^)]+\)|`|(\*\*|__)""",
+)
+
+internal fun shouldUseLightweightStreamingAssistantText(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) {
+        return true
+    }
+    return !heavyStreamingMarkdownSignalRegex.containsMatchIn(trimmed)
+}
 
 private fun parseConversationTextBlocks(text: String): List<ConversationTextBlock> {
     if (text.isBlank()) {
@@ -4184,7 +4214,7 @@ private fun ConversationBubble(
         ConversationSpeaker.SYSTEM -> SystemConversationRow(
             item = item,
             accessoryState = accessoryState,
-            commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+            commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
             onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
             parentThreadId = parentThreadId,
@@ -4298,11 +4328,19 @@ private fun AssistantConversationRow(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (item.text.isNotBlank()) {
-                ConversationMarkdownText(
-                    text = item.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.bodyText,
-                )
+                if (item.isStreaming && shouldUseLightweightStreamingAssistantText(item.text)) {
+                    Text(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
+                    )
+                } else {
+                    ConversationMarkdownText(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
+                    )
+                }
             }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
                 Text(
@@ -4337,7 +4375,7 @@ private fun AssistantConversationRow(
 private fun SystemConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
-    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    commandExecutionDetails: RemodexCommandExecutionDetails?,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     parentThreadId: String,
@@ -4367,7 +4405,7 @@ private fun SystemConversationRow(
             ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
                 item = item,
                 accessoryState = accessoryState,
-                details = item.itemId?.let(commandExecutionDetailsByItemId::get),
+                details = commandExecutionDetails,
                 onOpenDetails = { onOpenCommandExecutionDetails(item.id) },
             )
             ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(

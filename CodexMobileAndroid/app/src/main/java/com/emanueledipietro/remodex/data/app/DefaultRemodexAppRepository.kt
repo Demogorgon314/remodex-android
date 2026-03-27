@@ -17,7 +17,6 @@ import com.emanueledipietro.remodex.data.threads.ThreadResumeService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
-import com.emanueledipietro.remodex.data.threads.toCachedThreadRecord
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
@@ -48,9 +47,13 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.remodexInitialGptAccountSnapshot
+import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +62,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -76,8 +80,12 @@ class DefaultRemodexAppRepository(
     ),
     scope: CoroutineScope,
 ) : RemodexAppRepository {
+    private val repositoryScope = scope
+    private val timelineProjectionCacheLock = Any()
+    private val timelineProjectionCacheByThread = mutableMapOf<String, ThreadTimelineProjectionCache>()
+    private var threadCacheWriteJob: Job? = null
     private val initialBaseThreads = threadSyncService.threads.value
-        .map(ThreadSyncSnapshot::toCachedThreadRecord)
+        .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
         .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
         .map(CachedThreadRecord::toBaseThreadSummary)
     private val baseThreadsState = MutableStateFlow(initialBaseThreads)
@@ -108,13 +116,13 @@ class DefaultRemodexAppRepository(
     override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusState
 
     init {
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             threadSyncService.threads.collectLatest { snapshots ->
                 syncThreads(snapshots)
             }
         }
 
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             threadCacheStore.threads.collectLatest { cachedThreads ->
                 if (threadSyncService.threads.value.isNotEmpty()) {
                     return@collectLatest
@@ -123,7 +131,7 @@ class DefaultRemodexAppRepository(
             }
         }
 
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             combine(
                 appPreferencesRepository.preferences,
                 secureConnectionCoordinator.state,
@@ -953,12 +961,58 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun syncThreads(snapshots: List<ThreadSyncSnapshot>) {
-        val cachedThreads = snapshots
-            .map(ThreadSyncSnapshot::toCachedThreadRecord)
-            .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
-        val mergedBaseThreads = mergeBaseThreadsFromSync(cachedThreads.map(CachedThreadRecord::toBaseThreadSummary))
-        threadCacheStore.replaceThreads(cachedThreads)
-        refreshThreadsLocally(mergedBaseThreads)
+        val projected = withContext(Dispatchers.Default) {
+            synchronized(timelineProjectionCacheLock) {
+                timelineProjectionCacheByThread.keys.retainAll(snapshots.map(ThreadSyncSnapshot::id).toSet())
+            }
+            val cachedThreads = snapshots
+                .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
+                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+            SyncedThreadProjection(
+                cachedThreads = cachedThreads,
+                mergedBaseThreads = mergeBaseThreadsFromSync(cachedThreads.map(CachedThreadRecord::toBaseThreadSummary)),
+            )
+        }
+        refreshThreadsLocally(projected.mergedBaseThreads)
+        scheduleThreadCacheWrite(
+            cachedThreads = projected.cachedThreads,
+            debounce = snapshots.any(ThreadSyncSnapshot::isRunning),
+        )
+    }
+
+    private fun projectThreadTimelineItems(snapshot: ThreadSyncSnapshot): List<com.emanueledipietro.remodex.model.RemodexConversationItem> {
+        return synchronized(timelineProjectionCacheLock) {
+            val previous = timelineProjectionCacheByThread[snapshot.id]
+            val lastMutation = snapshot.timelineMutations.lastOrNull()
+            val projectedItems = if (
+                previous != null &&
+                snapshot.timelineMutations.size == previous.mutationCount + 1 &&
+                lastMutation != null
+            ) {
+                TurnTimelineReducer.applyProjectedFastPath(previous.projectedItems, lastMutation)
+                    ?: TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            } else {
+                TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            }
+            timelineProjectionCacheByThread[snapshot.id] = ThreadTimelineProjectionCache(
+                mutationCount = snapshot.timelineMutations.size,
+                projectedItems = projectedItems,
+            )
+            projectedItems
+        }
+    }
+
+    private fun scheduleThreadCacheWrite(
+        cachedThreads: List<CachedThreadRecord>,
+        debounce: Boolean,
+    ) {
+        threadCacheWriteJob?.cancel()
+        threadCacheWriteJob = repositoryScope.launch(Dispatchers.IO) {
+            if (debounce) {
+                delay(ThreadCacheStreamingWriteDebounceMs)
+            }
+            threadCacheStore.replaceThreads(cachedThreads)
+        }
     }
 
     private suspend fun resumeThreadBeforeSend(
@@ -1014,7 +1068,7 @@ class DefaultRemodexAppRepository(
     private fun refreshBaseThreadsFromSync() {
         val mergedBaseThreads = mergeBaseThreadsFromSync(
             threadSyncService.threads.value
-                .map(ThreadSyncSnapshot::toCachedThreadRecord)
+                .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
                 .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
                 .map(CachedThreadRecord::toBaseThreadSummary),
         )
@@ -1110,6 +1164,41 @@ class DefaultRemodexAppRepository(
         }
         return mergedById.values.toList()
     }
+}
+
+private data class ThreadTimelineProjectionCache(
+    val mutationCount: Int,
+    val projectedItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+)
+
+private data class SyncedThreadProjection(
+    val cachedThreads: List<CachedThreadRecord>,
+    val mergedBaseThreads: List<RemodexThreadSummary>,
+)
+
+private const val ThreadCacheStreamingWriteDebounceMs = 120L
+
+private fun ThreadSyncSnapshot.toCachedThreadRecord(
+    timelineItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+): CachedThreadRecord {
+    return CachedThreadRecord(
+        id = id,
+        title = title,
+        preview = preview,
+        projectPath = projectPath,
+        lastUpdatedLabel = lastUpdatedLabel,
+        lastUpdatedEpochMs = lastUpdatedEpochMs,
+        isRunning = isRunning,
+        syncState = syncState,
+        parentThreadId = parentThreadId,
+        agentNickname = agentNickname,
+        agentRole = agentRole,
+        activeTurnId = activeTurnId,
+        latestTurnTerminalState = latestTurnTerminalState,
+        stoppedTurnIds = stoppedTurnIds,
+        runtimeConfig = runtimeConfig,
+        timelineItems = timelineItems,
+    )
 }
 
 private data class SessionInputs(

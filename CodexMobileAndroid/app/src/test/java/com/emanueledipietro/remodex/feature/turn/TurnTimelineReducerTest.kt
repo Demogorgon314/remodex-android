@@ -47,6 +47,44 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `projected fast path updates only the streaming assistant row`() {
+        val user = RemodexConversationItem(
+            id = "user-1",
+            speaker = ConversationSpeaker.USER,
+            text = "Ship it",
+            orderIndex = 0,
+        )
+        val assistant = RemodexConversationItem(
+            id = "assistant-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "First chunk",
+            turnId = "turn-1",
+            itemId = "assistant-item",
+            isStreaming = true,
+            orderIndex = 1,
+        )
+
+        val projected = listOf(user, assistant)
+        val next = TurnTimelineReducer.applyProjectedFastPath(
+            items = projected,
+            mutation = TimelineMutation.AssistantTextDelta(
+                messageId = "assistant-1",
+                turnId = "turn-1",
+                itemId = "assistant-item",
+                delta = "Second chunk",
+                orderIndex = 1,
+            ),
+        )
+
+        assertNotNull(next)
+        assertTrue(next!![0] === user)
+        assertTrue(next[1] !== assistant)
+        assertTrue(next[1].text.contains("First chunk"))
+        assertTrue(next[1].text.contains("Second chunk"))
+    }
+
+    @Test
     fun `activity lines become dedicated tool activity rows while reasoning stays separate`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(

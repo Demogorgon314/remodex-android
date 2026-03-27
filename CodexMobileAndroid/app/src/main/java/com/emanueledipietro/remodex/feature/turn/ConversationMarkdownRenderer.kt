@@ -103,6 +103,15 @@ private val mermaidFenceRegex = Regex(
 )
 private val markdownImageTitleRegex = Regex("""^(.*)\s+(?:"([^"]*)"|'([^']*)')$""")
 
+private data class ConversationMarkdownTextRenderState(
+    val markdown: String,
+    val textColorArgb: Int,
+    val linkColorArgb: Int,
+    val textSizePx: Float?,
+    val lineHeightExtra: Float,
+    val enablesSelection: Boolean,
+)
+
 @Composable
 internal fun ConversationRichMarkdownContent(
     text: String,
@@ -323,6 +332,16 @@ private fun ConversationMarkdownTextSegment(
             0f
         }
     }
+    val renderState = remember(markdown, color, chrome.accent, textSizePx, lineHeightExtra, enablesSelection) {
+        ConversationMarkdownTextRenderState(
+            markdown = markdown,
+            textColorArgb = color.toArgb(),
+            linkColorArgb = chrome.accent.toArgb(),
+            textSizePx = textSizePx.takeUnless(Float::isNaN),
+            lineHeightExtra = lineHeightExtra,
+            enablesSelection = enablesSelection,
+        )
+    }
     val markwon = remember(context, uriHandler) {
         Markwon.builder(context)
             .usePlugin(StrikethroughPlugin.create())
@@ -361,19 +380,23 @@ private fun ConversationMarkdownTextSegment(
             }
         },
         update = { textView ->
-            textView.setTextColor(color.toArgb())
-            textView.setLinkTextColor(chrome.accent.toArgb())
-            if (!textSizePx.isNaN()) {
-                textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
+            val previousState = textView.tag as? ConversationMarkdownTextRenderState
+            if (previousState != renderState) {
+                textView.setTextColor(renderState.textColorArgb)
+                textView.setLinkTextColor(renderState.linkColorArgb)
+                renderState.textSizePx?.let { resolvedTextSizePx ->
+                    textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, resolvedTextSizePx)
+                }
+                textView.setLineSpacing(renderState.lineHeightExtra, 1f)
+                textView.setTextIsSelectable(renderState.enablesSelection)
+                textView.movementMethod = if (renderState.enablesSelection) {
+                    null
+                } else {
+                    LinkMovementMethod.getInstance()
+                }
+                markwon.setMarkdown(textView, renderState.markdown)
+                textView.tag = renderState
             }
-            textView.setLineSpacing(lineHeightExtra, 1f)
-            textView.setTextIsSelectable(enablesSelection)
-            textView.movementMethod = if (enablesSelection) {
-                null
-            } else {
-                LinkMovementMethod.getInstance()
-            }
-            markwon.setMarkdown(textView, markdown)
         },
     )
 }

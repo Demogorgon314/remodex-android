@@ -18,6 +18,24 @@ object TurnTimelineReducer {
         return project(reduce(mutations))
     }
 
+    fun applyProjectedFastPath(
+        items: List<RemodexConversationItem>,
+        mutation: TimelineMutation,
+    ): List<RemodexConversationItem>? {
+        return when (mutation) {
+            is TimelineMutation.AssistantTextDelta -> applyAssistantProjectedTextDelta(
+                items = items,
+                messageId = mutation.messageId,
+                turnId = mutation.turnId,
+                itemId = mutation.itemId,
+                delta = mutation.delta,
+                orderIndex = mutation.orderIndex,
+            )
+
+            else -> null
+        }
+    }
+
     fun project(items: List<RemodexConversationItem>): List<RemodexConversationItem> {
         if (items.isEmpty()) {
             return emptyList()
@@ -106,6 +124,51 @@ object TurnTimelineReducer {
         }
         return items.toMutableList().apply {
             this[existingIndex] = item
+        }
+    }
+
+    private fun applyAssistantProjectedTextDelta(
+        items: List<RemodexConversationItem>,
+        messageId: String,
+        turnId: String,
+        itemId: String?,
+        delta: String,
+        orderIndex: Long,
+    ): List<RemodexConversationItem>? {
+        val existingIndex = items.indexOfFirst { item ->
+            item.id == messageId &&
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.kind == ConversationItemKind.CHAT
+        }
+        if (existingIndex == -1) {
+            return null
+        }
+
+        val existing = items[existingIndex]
+        val nextText = mergeText(existing.text, delta.trim())
+        val nextTurnId = turnId.ifBlank { existing.turnId.orEmpty() }
+        val nextItemId = itemId ?: existing.itemId
+
+        if (
+            nextText == existing.text &&
+            existing.isStreaming &&
+            existing.turnId == nextTurnId &&
+            existing.itemId == nextItemId &&
+            existing.orderIndex >= orderIndex
+        ) {
+            return items
+        }
+
+        val updated = existing.copy(
+            text = nextText,
+            turnId = nextTurnId,
+            itemId = nextItemId,
+            isStreaming = true,
+            orderIndex = maxOf(existing.orderIndex, orderIndex),
+        )
+
+        return items.toMutableList().apply {
+            this[existingIndex] = updated
         }
     }
 
