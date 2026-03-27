@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
@@ -59,6 +60,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.onClick
@@ -78,12 +80,17 @@ import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
+import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import org.json.JSONObject
 
-private sealed interface ConversationMarkdownSegment {
+internal sealed interface ConversationMarkdownSegment {
     data class Markdown(val text: String) : ConversationMarkdownSegment
+    data class CodeBlock(
+        val code: String,
+        val language: String?,
+    ) : ConversationMarkdownSegment
     data class Mermaid(val source: String) : ConversationMarkdownSegment
     data class Image(
         val url: String,
@@ -115,6 +122,10 @@ private data class ConversationMarkdownTextRenderToken(
     val markdownToken: String,
     val textColorArgb: Int,
     val linkColorArgb: Int,
+    val codeBackgroundColorArgb: Int,
+    val codeBlockBackgroundColorArgb: Int,
+    val blockMarginPx: Int,
+    val codeBlockMarginPx: Int,
     val textSizePx: Float?,
     val lineHeightExtra: Float,
     val enablesSelection: Boolean,
@@ -179,6 +190,13 @@ internal fun ConversationRichMarkdownContent(
                     onLongPress = onLongPress,
                 )
 
+                is ConversationMarkdownSegment.CodeBlock -> ConversationMarkdownCodeBlockSegment(
+                    code = segment.code,
+                    style = style,
+                    enablesSelection = enablesSelection,
+                    onLongPress = onLongPress,
+                )
+
                 is ConversationMarkdownSegment.Mermaid -> ConversationMermaidSegment(
                     source = segment.source,
                     onLongPress = onLongPress,
@@ -215,7 +233,7 @@ internal fun ConversationRichMarkdownContent(
     }
 }
 
-private fun parseConversationMarkdownSegments(text: String): List<ConversationMarkdownSegment> {
+internal fun parseConversationMarkdownSegments(text: String): List<ConversationMarkdownSegment> {
     if (text.isBlank()) {
         return emptyList()
     }
@@ -281,7 +299,10 @@ private fun appendMarkdownSegment(
     }
 
     val markdownLines = mutableListOf<String>()
+    val codeLines = mutableListOf<String>()
     var insideCodeFence = false
+    var codeFenceStartLine: String? = null
+    var codeFenceLanguage: String? = null
 
     fun flushMarkdown() {
         val markdown = markdownLines.joinToString("\n").trim('\n')
@@ -291,11 +312,35 @@ private fun appendMarkdownSegment(
         markdownLines.clear()
     }
 
+    fun flushCodeBlock() {
+        val code = codeLines.joinToString("\n").trimEnd('\n')
+        if (code.isNotEmpty()) {
+            target += ConversationMarkdownSegment.CodeBlock(
+                code = code,
+                language = codeFenceLanguage,
+            )
+        }
+        codeLines.clear()
+        codeFenceStartLine = null
+        codeFenceLanguage = null
+    }
+
     normalized.lines().forEach { rawLine ->
         val trimmed = rawLine.trim()
-        val isFenceLine = trimmed.startsWith("```")
+        val fenceInfo = fenceInfoOrNull(trimmed)
 
-        if (!insideCodeFence) {
+        if (insideCodeFence) {
+            if (fenceInfo != null) {
+                flushMarkdown()
+                flushCodeBlock()
+                insideCodeFence = false
+            } else {
+                codeLines += rawLine
+            }
+            return@forEach
+        }
+
+        if (fenceInfo == null) {
             parseStandaloneMarkdownImage(trimmed)?.let { image ->
                 flushMarkdown()
                 target += image
@@ -303,10 +348,18 @@ private fun appendMarkdownSegment(
             }
         }
 
-        markdownLines += rawLine
-        if (isFenceLine) {
-            insideCodeFence = !insideCodeFence
+        if (fenceInfo != null) {
+            insideCodeFence = true
+            codeFenceStartLine = rawLine
+            codeFenceLanguage = fenceInfo.ifBlank { null }
+        } else {
+            markdownLines += rawLine
         }
+    }
+
+    if (insideCodeFence) {
+        codeFenceStartLine?.let(markdownLines::add)
+        markdownLines.addAll(codeLines)
     }
 
     flushMarkdown()
@@ -314,6 +367,13 @@ private fun appendMarkdownSegment(
 
 private fun normalizeConversationMarkdown(text: String): String =
     text.replace("\r\n", "\n").trim('\n')
+
+private fun fenceInfoOrNull(trimmedLine: String): String? {
+    if (!trimmedLine.startsWith("```")) {
+        return null
+    }
+    return trimmedLine.removePrefix("```").trim()
+}
 
 private fun parseStandaloneMarkdownImage(line: String): ConversationMarkdownSegment.Image? {
     if (!line.startsWith("![") || !line.endsWith(")")) {
@@ -364,6 +424,7 @@ private fun ConversationMarkdownTextSegment(
     val uriHandler = LocalUriHandler.current
     val density = LocalDensity.current
     val chrome = remodexConversationChrome()
+    val isDark = isSystemInDarkTheme()
     val selectionHighlightColor = remember(context) { platformSelectionHighlightColor(context) }
     val lastTouchOffset = remember { intArrayOf(0, 0) }
     val textSizePx = remember(style.fontSize, density) {
@@ -380,22 +441,69 @@ private fun ConversationMarkdownTextSegment(
             0f
         }
     }
-    val renderToken = remember(markdown, color, chrome.accent, textSizePx, lineHeightExtra, enablesSelection) {
+    val codeBackgroundColor = remember(chrome, isDark) {
+        if (isDark) chrome.panelSurfaceStrong else chrome.nestedSurface
+    }
+    val codeBlockBackgroundColor = remember(chrome, isDark) {
+        if (isDark) chrome.panelSurfaceStrong else chrome.nestedSurface
+    }
+    val blockMarginPx = remember(density) {
+        with(density) { 14.dp.roundToPx() }
+    }
+    val codeBlockMarginPx = remember(density) {
+        with(density) { 6.dp.roundToPx() }
+    }
+    val renderToken = remember(
+        markdown,
+        color,
+        chrome.accent,
+        codeBackgroundColor,
+        codeBlockBackgroundColor,
+        blockMarginPx,
+        codeBlockMarginPx,
+        textSizePx,
+        lineHeightExtra,
+        enablesSelection,
+    ) {
         ConversationMarkdownTextRenderToken(
             markdownToken = conversationMarkdownRenderToken(markdown),
             textColorArgb = color.toArgb(),
             linkColorArgb = chrome.accent.toArgb(),
+            codeBackgroundColorArgb = codeBackgroundColor.toArgb(),
+            codeBlockBackgroundColorArgb = codeBlockBackgroundColor.toArgb(),
+            blockMarginPx = blockMarginPx,
+            codeBlockMarginPx = codeBlockMarginPx,
             textSizePx = textSizePx.takeUnless(Float::isNaN),
             lineHeightExtra = lineHeightExtra,
             enablesSelection = enablesSelection,
         )
     }
-    val markwon = remember(context, uriHandler) {
+    val markwon = remember(
+        context,
+        uriHandler,
+        renderToken.textColorArgb,
+        renderToken.linkColorArgb,
+        renderToken.codeBackgroundColorArgb,
+        renderToken.codeBlockBackgroundColorArgb,
+        renderToken.blockMarginPx,
+        renderToken.codeBlockMarginPx,
+    ) {
         Markwon.builder(context)
             .usePlugin(StrikethroughPlugin.create())
             .usePlugin(TablePlugin.create(context))
             .usePlugin(
                 object : AbstractMarkwonPlugin() {
+                    override fun configureTheme(builder: MarkwonTheme.Builder) {
+                        builder
+                            .linkColor(renderToken.linkColorArgb)
+                            .codeTextColor(renderToken.textColorArgb)
+                            .codeBlockTextColor(renderToken.textColorArgb)
+                            .codeBackgroundColor(renderToken.codeBackgroundColorArgb)
+                            .codeBlockBackgroundColor(renderToken.codeBlockBackgroundColorArgb)
+                            .blockMargin(renderToken.blockMarginPx)
+                            .codeBlockMargin(renderToken.codeBlockMarginPx)
+                    }
+
                     override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
                         builder.linkResolver { _, link ->
                             val scheme = Uri.parse(link).scheme
@@ -476,6 +584,69 @@ private fun ConversationMarkdownTextSegment(
             }
         },
     )
+}
+
+@Composable
+private fun ConversationMarkdownCodeBlockSegment(
+    code: String,
+    style: TextStyle,
+    enablesSelection: Boolean,
+    onLongPress: ((IntOffset) -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    val textStyle = remember(style) {
+        style.copy(fontFamily = FontFamily.Monospace)
+    }
+    val contentModifier = if (!enablesSelection && onLongPress != null) {
+        Modifier
+            .fillMaxWidth()
+            .pointerInput(onLongPress) {
+                detectTapGestures(
+                    onLongPress = { offset ->
+                        onLongPress(
+                            IntOffset(
+                                x = offset.x.toInt(),
+                                y = offset.y.toInt(),
+                            ),
+                        )
+                    },
+                )
+            }
+            .semantics {
+                onLongClick {
+                    onLongPress(IntOffset.Zero)
+                    true
+                }
+            }
+    } else {
+        Modifier.fillMaxWidth()
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = chrome.nestedSurface,
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        if (enablesSelection) {
+            SelectionContainer {
+                androidx.compose.material3.Text(
+                    text = code,
+                    modifier = contentModifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = textStyle,
+                    color = chrome.bodyText,
+                )
+            }
+        } else {
+            androidx.compose.material3.Text(
+                text = code,
+                modifier = contentModifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                style = textStyle,
+                color = chrome.bodyText,
+            )
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")

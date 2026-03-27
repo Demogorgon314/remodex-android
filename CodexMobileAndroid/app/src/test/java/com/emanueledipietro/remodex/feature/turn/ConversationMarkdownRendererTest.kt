@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.feature.turn
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationMarkdownRendererTest {
@@ -37,5 +38,53 @@ class ConversationMarkdownRendererTest {
             conversationMarkdownRenderToken(first),
             conversationMarkdownRenderToken(second),
         )
+    }
+
+    @Test
+    fun `markdown parser extracts fenced code blocks as standalone segments`() {
+        val markdown = """
+            Before paragraph
+
+            ```kotlin
+            val answer = 42
+            println(answer)
+            ```
+
+            After paragraph with `inline code`
+        """.trimIndent()
+
+        val segments = parseConversationMarkdownSegments(markdown)
+
+        assertEquals(3, segments.size)
+        assertTrue(segments[0] is ConversationMarkdownSegment.Markdown)
+        assertTrue(segments[1] is ConversationMarkdownSegment.CodeBlock)
+        assertTrue(segments[2] is ConversationMarkdownSegment.Markdown)
+
+        val codeBlock = segments[1] as ConversationMarkdownSegment.CodeBlock
+        assertEquals("kotlin", codeBlock.language)
+        assertEquals(
+            """
+            val answer = 42
+            println(answer)
+            """.trimIndent(),
+            codeBlock.code,
+        )
+    }
+
+    @Test
+    fun `markdown parser keeps unmatched fence as markdown`() {
+        val markdown = """
+            Intro
+
+            ```swift
+            let value = 1
+        """.trimIndent()
+
+        val segments = parseConversationMarkdownSegments(markdown)
+
+        assertEquals(1, segments.size)
+        val onlySegment = segments.single()
+        assertTrue(onlySegment is ConversationMarkdownSegment.Markdown)
+        assertEquals(markdown, (onlySegment as ConversationMarkdownSegment.Markdown).text)
     }
 }
