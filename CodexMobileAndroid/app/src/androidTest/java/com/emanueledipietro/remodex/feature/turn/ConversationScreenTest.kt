@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
@@ -212,6 +213,65 @@ class ConversationScreenTest {
         }
 
         composeRule.onNodeWithTag(ComposerSendButtonTag).assertIsNotEnabled()
+    }
+
+    @Test
+    fun runningComposerShowsStopButtonAndForwardsClicks() {
+        var stopClicks = 0
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        isRunning = true,
+                        canStop = true,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = { stopClicks += 1 },
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerStopButtonTag).performClick()
+        composeRule.runOnIdle {
+            assertEquals(1, stopClicks)
+        }
     }
 
     @Test
@@ -675,6 +735,7 @@ class ConversationScreenTest {
     private fun conversationUiState(
         autocompleteState: RemodexComposerAutocompleteState,
         isRunning: Boolean = false,
+        canStop: Boolean = false,
         messages: List<RemodexConversationItem> = emptyList(),
     ): AppUiState {
         val thread = RemodexThreadSummary(
@@ -693,6 +754,7 @@ class ConversationScreenTest {
             threads = listOf(thread),
             composer = ComposerUiState(
                 draftText = "",
+                canStop = canStop,
                 autocomplete = autocompleteState,
             ),
         )

@@ -149,6 +149,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
@@ -216,6 +217,8 @@ import kotlinx.coroutines.delay
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
+private val ComposerStopGlyphSize = 10.dp
+private val ComposerStopGlyphCornerRadius = 2.5.dp
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -256,6 +259,7 @@ private const val MaxAutocompleteVisibleRows = 6
 internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
 internal const val ComposerSendButtonTag = "composer_send_button"
+internal const val ComposerStopButtonTag = "composer_stop_button"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
@@ -995,6 +999,43 @@ private fun ConversationCircleButton(
                 contentDescription = contentDescription,
                 modifier = Modifier.size(14.dp),
                 tint = iconTint,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationStopButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val performLightHaptic = rememberLightImpactHaptic()
+    Surface(
+        modifier = modifier.requiredSize(ComposerTrailingButtonSize),
+        color = Color.Black,
+        shape = CircleShape,
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics {
+                    contentDescription = "Stop"
+                }
+                .clickable(
+                    onClick = {
+                        performLightHaptic()
+                        onClick()
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(ComposerStopGlyphSize)
+                    .clip(RoundedCornerShape(ComposerStopGlyphCornerRadius))
+                    .background(Color.White),
             )
         }
     }
@@ -2599,9 +2640,8 @@ private fun ComposerCard(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (composer.canStop) {
-                            ConversationCircleButton(
-                                icon = Icons.Outlined.Close,
-                                contentDescription = "Stop",
+                            ConversationStopButton(
+                                modifier = Modifier.testTag(ComposerStopButtonTag),
                                 onClick = onStopTurn,
                             )
                         }
