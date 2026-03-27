@@ -14,6 +14,9 @@ import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import com.emanueledipietro.remodex.feature.turn.FileChangeAction
 import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
+import com.emanueledipietro.remodex.model.ConversationItemKind
+import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
@@ -52,6 +55,90 @@ class BridgeThreadSyncServiceTest {
         assertEquals("", assistantLifecycleStartedText(null))
         assertEquals("already streamed", assistantLifecycleStartedText("already streamed"))
         assertEquals("  indented\ntext", assistantLifecycleStartedText("  indented\ntext"))
+    }
+
+    @Test
+    fun `assistant completion reuses same turn duplicate text like ios`() {
+        val existing = RemodexConversationItem(
+            id = "assistant-turn-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "Review result",
+            turnId = "turn-1",
+            orderIndex = 7L,
+        )
+
+        val resolved = findReusableAssistantCompletionItemValue(
+            items = listOf(existing),
+            turnId = "turn-1",
+            itemId = "review-exit",
+            text = "Review result",
+        )
+
+        assertEquals("assistant-turn-1", resolved?.id)
+    }
+
+    @Test
+    fun `anonymous assistant completion suppression only applies to recent duplicate text without identity`() {
+        assertTrue(
+            shouldSuppressAnonymousAssistantCompletionValue(
+                turnId = null,
+                itemId = null,
+                text = "Review result",
+                previousText = "Review result",
+                elapsedMs = 500L,
+            ),
+        )
+        assertFalse(
+            shouldSuppressAnonymousAssistantCompletionValue(
+                turnId = "turn-1",
+                itemId = null,
+                text = "Review result",
+                previousText = "Review result",
+                elapsedMs = 500L,
+            ),
+        )
+        assertFalse(
+            shouldSuppressAnonymousAssistantCompletionValue(
+                turnId = null,
+                itemId = null,
+                text = "Review result",
+                previousText = "Review result",
+                elapsedMs = 60_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `optimistic review prompt can be replaced by authoritative review user message`() {
+        assertTrue(
+            shouldReplaceOptimisticReviewPromptValue(
+                localText = "Review current changes",
+                incomingText = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            ),
+        )
+        assertFalse(
+            shouldReplaceOptimisticReviewPromptValue(
+                localText = "Ship notifications",
+                incomingText = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            ),
+        )
+    }
+
+    @Test
+    fun `completed reasoning placeholder should be dropped when no real reasoning text exists`() {
+        assertTrue(
+            shouldDropCompletedReasoningPlaceholderValue(
+                existingText = "Thinking...",
+                completedBody = "Thinking...",
+            ),
+        )
+        assertFalse(
+            shouldDropCompletedReasoningPlaceholderValue(
+                existingText = "Inspecting git diff",
+                completedBody = "Thinking...",
+            ),
+        )
     }
 
     @Test
@@ -96,6 +183,117 @@ class BridgeThreadSyncServiceTest {
                     message = "Invalid request: unknown variant `onRequest`, expected one of `untrusted`, `on-failure`, `on-request`, `granular`, `never`",
                 ),
             ),
+        )
+    }
+
+    @Test
+    fun `assistant lifecycle matcher treats generic messages without a user role as assistant like ios`() {
+        assertTrue(
+            isAssistantLifecycleItemValue(
+                itemType = "message",
+                role = null,
+            ),
+        )
+        assertTrue(
+            isAssistantLifecycleItemValue(
+                itemType = "message",
+                role = "assistant",
+            ),
+        )
+        assertFalse(
+            isAssistantLifecycleItemValue(
+                itemType = "message",
+                role = "user",
+            ),
+        )
+    }
+
+    @Test
+    fun `completed assistant fallback reads plain message text from legacy agent message envelopes`() {
+        val eventObject = buildJsonObject {
+            put("message", JsonPrimitive("Legacy review result"))
+        }
+        val paramsObject = buildJsonObject {
+            put("threadId", JsonPrimitive("thread-1"))
+            put("turnId", JsonPrimitive("turn-1"))
+            put("event", eventObject)
+        }
+
+        assertEquals(
+            "Legacy review result",
+            completedAssistantFallbackTextValue(
+                paramsObject = paramsObject,
+                eventObject = eventObject,
+            ),
+        )
+    }
+
+    @Test
+    fun `assistant turn id fallback matches ios legacy agent envelopes`() {
+        val eventObject = buildJsonObject {
+            put(
+                "turn",
+                buildJsonObject {
+                    put("id", JsonPrimitive("turn-from-event"))
+                },
+            )
+        }
+
+        val paramsWithLegacyId = buildJsonObject {
+            put("id", JsonPrimitive("turn-from-params"))
+            put("event", eventObject)
+        }
+        assertEquals(
+            "turn-from-params",
+            extractAssistantTurnIdValue(
+                paramsObject = paramsWithLegacyId,
+                eventObject = eventObject,
+                extractedTurnId = null,
+            ),
+        )
+
+        val paramsWithoutLegacyId = buildJsonObject {
+            put("event", eventObject)
+        }
+        assertEquals(
+            "turn-from-event",
+            extractAssistantTurnIdValue(
+                paramsObject = paramsWithoutLegacyId,
+                eventObject = eventObject,
+                extractedTurnId = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `incoming message text decoder matches ios content fallbacks`() {
+        val itemObject = buildJsonObject {
+            put(
+                "content",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("type", JsonPrimitive("output_text"))
+                            put(
+                                "data",
+                                buildJsonObject {
+                                    put("text", JsonPrimitive("Line one"))
+                                },
+                            )
+                        },
+                    )
+                    add(
+                        buildJsonObject {
+                            put("delta", JsonPrimitive("Line two"))
+                        },
+                    )
+                },
+            )
+        }
+
+        assertEquals(
+            "Line one\nLine two",
+            decodeIncomingMessageTextValue(itemObject),
         )
     }
 
@@ -318,6 +516,229 @@ class BridgeThreadSyncServiceTest {
                     request.method == "thread/read"
                 },
             )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread restores review enter and exit items like ios`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-review-history",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-review"))
+                                        put("title", JsonPrimitive("Review thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-review"))
+                                        put("updatedAt", JsonPrimitive(1_713_111_222))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-review"))
+                                put("title", JsonPrimitive("Review thread"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-review"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("review-enter"))
+                                                                put("type", JsonPrimitive("enteredReviewMode"))
+                                                                put(
+                                                                    "review",
+                                                                    buildJsonObject {
+                                                                        put("summary", JsonPrimitive("base branch"))
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("review-exit"))
+                                                                put("type", JsonPrimitive("exitedReviewMode"))
+                                                                put(
+                                                                    "review",
+                                                                    buildJsonObject {
+                                                                        put(
+                                                                            "content",
+                                                                            buildJsonArray {
+                                                                                add(JsonPrimitive("Line one"))
+                                                                                add(JsonPrimitive("Line two"))
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-review")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-review" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+            assertEquals(2, projected.size)
+            assertEquals("Reviewing base branch...", projected[0].text)
+            assertEquals(
+                com.emanueledipietro.remodex.model.ConversationItemKind.COMMAND_EXECUTION,
+                projected[0].kind,
+            )
+            assertEquals("Line one\nLine two", projected[1].text)
+            assertEquals(
+                com.emanueledipietro.remodex.model.ConversationItemKind.CHAT,
+                projected[1].kind,
+            )
+            assertEquals(
+                com.emanueledipietro.remodex.model.ConversationSpeaker.ASSISTANT,
+                projected[1].speaker,
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `refresh threads preserves running review thread when thread list lags behind server state`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-review-running-preserve",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var threadListReads = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    threadListReads += 1
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived && threadListReads <= 2) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-review-running"))
+                                            put("title", JsonPrimitive("Review thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-review-running"))
+                                            put("updatedAt", JsonPrimitive(1_713_111_333))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "review/start" to {
+                    buildJsonObject {
+                        put(
+                            "turn",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("turn-review-running"))
+                                put("status", JsonPrimitive("inProgress"))
+                                put("items", buildJsonArray { })
+                            },
+                        )
+                        put("reviewThreadId", JsonPrimitive("thread-review-running"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+
+            service.startCodeReview(
+                threadId = "thread-review-running",
+                target = com.emanueledipietro.remodex.model.RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
+                baseBranch = null,
+            )
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val thread = service.threads.value.firstOrNull { it.id == "thread-review-running" }
+            assertNotNull(thread)
+            assertTrue(thread?.isRunning == true)
+            assertTrue(thread?.timelineMutations?.isNotEmpty() == true)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

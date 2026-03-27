@@ -39,6 +39,7 @@ import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
@@ -199,14 +200,32 @@ class DefaultRemodexAppRepository(
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             secureConnectionCoordinator.state.collectLatest { secureConnection ->
                 if (secureConnection.secureState == SecureConnectionState.ENCRYPTED) {
+                    val selectedThreadIdBeforeRefresh = sessionState.value.selectedThreadId
+                    val runningSelectedThreadBeforeRefresh = selectedThreadIdBeforeRefresh
+                        ?.let { selectedThreadId ->
+                            sessionState.value.selectedThread
+                                ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning }
+                        }
                     runHydrationSafely {
                         hydrationService()?.refreshThreads()
                     }
-                    sessionState.value.selectedThreadId
+                    selectedThreadIdBeforeRefresh
                         ?.let { selectedThreadId ->
                             runHydrationSafely {
                                 hydrationService()?.hydrateThread(selectedThreadId)
                             }
+                            (runningSelectedThreadBeforeRefresh
+                                ?: sessionState.value.selectedThread
+                                    ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning })
+                                ?.let { selectedThread ->
+                                    runHydrationSafely {
+                                        resumeService()?.resumeThread(
+                                            threadId = selectedThread.id,
+                                            preferredProjectPath = selectedThread.projectPath.ifBlank { null },
+                                            modelIdentifier = selectedThread.runtimeConfig.selectedModelId,
+                                        )
+                                    }
+                                }
                         }
                 }
             }
@@ -269,7 +288,7 @@ class DefaultRemodexAppRepository(
         return threadSyncService as? ThreadResumeService
     }
 
-    private suspend fun copyContinuationRuntimeOverride(
+    private suspend fun inheritRuntimeOverride(
         sourceThreadId: String,
         destinationThreadId: String,
     ) {
@@ -329,18 +348,28 @@ class DefaultRemodexAppRepository(
         }
     }
 
-    override suspend fun createThread(preferredProjectPath: String?) {
+    override suspend fun createThread(
+        preferredProjectPath: String?,
+        inheritRuntimeFromThreadId: String?,
+    ) {
+        val runtimeDefaults = effectiveRuntimeDefaultsForNewThread(inheritRuntimeFromThreadId)
         val createdThread = threadCommandService.createThread(
             preferredProjectPath = preferredProjectPath,
-            runtimeDefaults = preferencesState.value.runtimeDefaults,
+            runtimeDefaults = runtimeDefaults,
         ) ?: return
         refreshBaseThreadsFromSync()
+        inheritRuntimeFromThreadId?.let { sourceThreadId ->
+            inheritRuntimeOverride(
+                sourceThreadId = sourceThreadId,
+                destinationThreadId = createdThread.id,
+            )
+        }
         appPreferencesRepository.setSelectedThreadId(createdThread.id)
+        val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = createdThread.id,
-                selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == createdThread.id }
-                    ?: snapshot.selectedThreadSnapshot,
+                selectedThreadSnapshot = selectedThread ?: snapshot.selectedThreadSnapshot,
             )
         }
     }
@@ -1081,22 +1110,23 @@ class DefaultRemodexAppRepository(
         }
         refreshThreadsLocally(archivedThreads)
 
+        val runtimeDefaults = effectiveRuntimeDefaultsForNewThread(thread.id)
         val createdThread = threadCommandService.createThread(
             preferredProjectPath = thread.projectPath.ifBlank { null },
-            runtimeDefaults = preferencesState.value.runtimeDefaults,
+            runtimeDefaults = runtimeDefaults,
         ) ?: throw IllegalStateException("Could not create a continuation thread.")
-        copyContinuationRuntimeOverride(sourceThreadId = thread.id, destinationThreadId = createdThread.id)
+        inheritRuntimeOverride(sourceThreadId = thread.id, destinationThreadId = createdThread.id)
         localTimelineService()?.appendLocalSystemMessage(
             threadId = createdThread.id,
             text = "Continued from archived thread `${thread.id}`",
         )
         refreshBaseThreadsFromSync()
         appPreferencesRepository.setSelectedThreadId(createdThread.id)
+        val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = createdThread.id,
-                selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == createdThread.id }
-                    ?: snapshot.selectedThreadSnapshot,
+                selectedThreadSnapshot = selectedThread ?: snapshot.selectedThreadSnapshot,
             )
         }
         refreshBaseThreadsFromSync()
@@ -1111,6 +1141,42 @@ class DefaultRemodexAppRepository(
                 .map(CachedThreadRecord::toBaseThreadSummary),
         )
         refreshThreadsLocally(mergedBaseThreads)
+    }
+
+    private fun selectedThreadSnapshotForThreadId(threadId: String): RemodexThreadSummary? {
+        val selectedBaseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId } ?: return null
+        return selectedBaseThread.materialize(
+            preferences = preferencesState.value,
+            availableModels = resolveAvailableModels(baseThreadsState.value),
+        )
+    }
+
+    private fun effectiveRuntimeDefaultsForNewThread(
+        inheritRuntimeFromThreadId: String? = null,
+    ): RemodexRuntimeDefaults {
+        val storedDefaults = preferencesState.value.runtimeDefaults
+        val availableModels = resolveAvailableModels(baseThreadsState.value)
+        val inheritedRuntime = inheritRuntimeFromThreadId
+            ?.let { sourceThreadId ->
+                sessionState.value.threads.firstOrNull { thread -> thread.id == sourceThreadId }?.runtimeConfig
+            }
+        val effectiveRuntime = inheritedRuntime
+            ?.withAvailableModels(availableModels)
+            ?.normalizeSelections()
+            ?: RemodexRuntimeConfig(
+                availableModels = availableModels,
+            ).applyDefaults(storedDefaults)
+        return storedDefaults.copy(
+            modelId = effectiveRuntime.selectedModelId,
+            reasoningEffort = effectiveRuntime.reasoningEffort,
+            accessMode = effectiveRuntime.accessMode,
+            serviceTier = if (inheritedRuntime != null || storedDefaults.hasServiceTierPreference) {
+                effectiveRuntime.serviceTier
+            } else {
+                null
+            },
+            hasServiceTierPreference = inheritedRuntime != null || storedDefaults.hasServiceTierPreference,
+        )
     }
 
     private fun applyPreferencesLocally(preferences: AppPreferences) {
@@ -1391,7 +1457,7 @@ private fun RemodexThreadSummary.materialize(
     )
 }
 
-private fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
+internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
     return RemodexThreadSummary(
         id = id,
         title = title,
@@ -1411,7 +1477,7 @@ private fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         queuedDraftItems = emptyList(),
         runtimeLabel = runtimeConfig.runtimeLabel,
         runtimeConfig = runtimeConfig,
-        messages = timelineItems.sortedBy { item -> item.orderIndex },
+        messages = timelineItems,
     )
 }
 

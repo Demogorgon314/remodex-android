@@ -37,7 +37,10 @@ interface RemodexAppRepository {
 
     suspend fun selectThread(threadId: String)
 
-    suspend fun createThread(preferredProjectPath: String? = null)
+    suspend fun createThread(
+        preferredProjectPath: String? = null,
+        inheritRuntimeFromThreadId: String? = null,
+    )
 
     suspend fun renameThread(
         threadId: String,

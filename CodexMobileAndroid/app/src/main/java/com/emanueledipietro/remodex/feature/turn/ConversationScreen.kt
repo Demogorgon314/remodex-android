@@ -182,6 +182,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -429,12 +430,13 @@ fun ConversationScreen(
     var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledComposerAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
-    var pendingAssistantAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
+    var pendingTurnAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
+    var previousConnectionPhase by remember(thread.id) { mutableStateOf(uiState.connectionStatus.phase) }
     val latestRunningIndicatorMessageId = remember(timelineItems, blockAccessories) {
         timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
     }
-    val assistantResponseAnchorIndex = remember(timelineItems, thread.activeTurnId) {
-        TurnTimelineReducer.assistantResponseAnchorIndex(
+    val activeTurnAnchorIndex = remember(timelineItems, thread.activeTurnId) {
+        TurnTimelineReducer.activeTurnAnchorIndex(
             items = timelineItems,
             activeTurnId = thread.activeTurnId,
         )
@@ -558,7 +560,7 @@ fun ConversationScreen(
 
         handledComposerAnchorSignal = signal
         keepTimelinePinnedToBottom = true
-        pendingAssistantAnchorSignal = signal
+        pendingTurnAnchorSignal = signal
 
         if (timelineItems.isNotEmpty()) {
             withFrameNanos { }
@@ -568,17 +570,40 @@ fun ConversationScreen(
         }
     }
 
-    LaunchedEffect(thread.id, pendingAssistantAnchorSignal, assistantResponseAnchorIndex) {
-        if (pendingAssistantAnchorSignal == 0L || assistantResponseAnchorIndex == null) {
+    LaunchedEffect(thread.id, uiState.connectionStatus.phase, thread.isRunning) {
+        val currentPhase = uiState.connectionStatus.phase
+        val reconnectedToLiveThread =
+            previousConnectionPhase != RemodexConnectionPhase.CONNECTED &&
+                currentPhase == RemodexConnectionPhase.CONNECTED &&
+                thread.isRunning
+        previousConnectionPhase = currentPhase
+        if (!reconnectedToLiveThread) {
+            return@LaunchedEffect
+        }
+
+        keepTimelinePinnedToBottom = true
+        pendingTurnAnchorSignal = maxOf(
+            pendingTurnAnchorSignal + 1L,
+            System.currentTimeMillis(),
+        )
+    }
+
+    LaunchedEffect(thread.id, pendingTurnAnchorSignal, activeTurnAnchorIndex, bottomAnchorIndex, timelineItems.isNotEmpty()) {
+        if (pendingTurnAnchorSignal == 0L) {
+            return@LaunchedEffect
+        }
+
+        val targetIndex = activeTurnAnchorIndex ?: if (timelineItems.isNotEmpty()) bottomAnchorIndex else null
+        if (targetIndex == null) {
             return@LaunchedEffect
         }
 
         withFrameNanos { }
-        timelineState.scrollToItem(assistantResponseAnchorIndex)
+        timelineState.scrollToItem(targetIndex)
         // After we jump back to the current turn, keep follow-bottom enabled so
         // streaming output continues to track downward like a live chat.
         keepTimelinePinnedToBottom = true
-        pendingAssistantAnchorSignal = 0L
+        pendingTurnAnchorSignal = 0L
     }
 
     LaunchedEffect(thread.id, bottomAnchorRequest) {

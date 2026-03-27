@@ -18,6 +18,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadResumeService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.connection.RpcError
+import com.emanueledipietro.remodex.data.threads.TimelineMutation
 import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
@@ -25,12 +26,15 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.ConversationItemKind
+import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
+import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
@@ -116,6 +120,99 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `cached thread conversion preserves projected timeline order`() {
+        val cachedThread = com.emanueledipietro.remodex.data.threads.CachedThreadRecord(
+            id = "thread-projected",
+            title = "Projected order",
+            preview = "Review this change.",
+            projectPath = "/tmp/projected-order",
+            lastUpdatedLabel = "Updated now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineItems = listOf(
+                RemodexConversationItem(
+                    id = "user-1",
+                    speaker = ConversationSpeaker.USER,
+                    text = "Review this change.",
+                    turnId = "turn-review",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "reasoning-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-review",
+                    orderIndex = 2,
+                ),
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "running git diff",
+                    turnId = "turn-review",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("user-1", "reasoning-1", "command-1"),
+            cachedThread.toBaseThreadSummary().messages.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `encrypted reconnect resumes selected running thread to recover live output`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-notifications") snapshot.copy(isRunning = true) else snapshot
+            },
+        )
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydrateCallsBeforeReconnect = syncService.hydrateCalls
+        val resumeCallsBeforeReconnect = syncService.resumeCalls
+
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        advanceUntilIdle()
+
+        assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
+        assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
+    }
+
+    @Test
     fun `send prompt starts a local turn immediately when the thread is idle`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")
@@ -144,11 +241,75 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.createThread("/tmp/new-project")
         advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "the newly created chat thread",
+        ) { thread ->
+            thread?.projectPath == "/tmp/new-project"
+        }
 
-        val selectedThread = repository.session.value.selectedThread
+        val session = repository.session.value
+        val selectedThread = session.selectedThread
         assertTrue(selectedThread != null)
-        assertEquals(selectedThread?.id, repository.session.value.selectedThreadId)
+        assertEquals(selectedThread?.id, session.selectedThreadId)
         assertEquals("/tmp/new-project", selectedThread?.projectPath)
+    }
+
+    @Test
+    fun `create thread normalizes unsupported reasoning defaults for the selected model`() = runTest {
+        val syncService = CreateThreadDefaultsCaptureSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.setDefaultModelId("gpt-5.3-codex")
+        repository.setDefaultReasoningEffort("xhigh")
+        advanceUntilIdle()
+
+        repository.createThread("/tmp/review-project")
+        advanceUntilIdle()
+
+        assertEquals("gpt-5.3-codex", syncService.lastCreateThreadDefaults?.modelId)
+        assertEquals("medium", syncService.lastCreateThreadDefaults?.reasoningEffort)
+    }
+
+    @Test
+    fun `create thread can inherit effective runtime from the source thread`() = runTest {
+        val syncService = CreateThreadDefaultsCaptureSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.setDefaultModelId("gpt-5.3-codex")
+        repository.setDefaultReasoningEffort("xhigh")
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        repository.setReasoningEffort("thread-notifications", "medium")
+        advanceUntilIdle()
+
+        repository.createThread(
+            preferredProjectPath = "/tmp/review-project",
+            inheritRuntimeFromThreadId = "thread-notifications",
+        )
+        advanceUntilIdle()
+
+        assertEquals("gpt-5.3-codex", syncService.lastCreateThreadDefaults?.modelId)
+        assertEquals("medium", syncService.lastCreateThreadDefaults?.reasoningEffort)
+        assertEquals("medium", repository.session.value.selectedThread?.runtimeConfig?.reasoningEffort)
     }
 
     @Test
@@ -214,11 +375,9 @@ class DefaultRemodexAppRepositoryTest {
             },
         )
 
-        runCurrent()
-
-        assertEquals(
-            "Streaming title from sync",
-            repository.session.value.selectedThread?.title,
+        awaitSelectedThreadTitle(
+            repository = repository,
+            expectedTitle = "Streaming title from sync",
         )
 
         cacheStore.allowWrites()
@@ -371,11 +530,18 @@ class DefaultRemodexAppRepositoryTest {
             attachments = emptyList(),
         )
         advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "a continuation thread after the original thread is missing",
+        ) { thread ->
+            thread != null && thread.id != "thread-notifications"
+        }
 
-        val selectedThread = repository.session.value.selectedThread
+        val session = repository.session.value
+        val selectedThread = session.selectedThread
         assertTrue(selectedThread != null)
         assertTrue(selectedThread?.id != "thread-notifications")
-        assertEquals(selectedThread?.id, repository.session.value.selectedThreadId)
+        assertEquals(selectedThread?.id, session.selectedThreadId)
         assertEquals(selectedThread?.id, commandService.lastSuccessfulSendThreadId)
         assertTrue(
             selectedThread?.messages.orEmpty().any { item ->
@@ -393,7 +559,7 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             RemodexThreadSyncState.ARCHIVED_LOCAL,
-            repository.session.value.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
+            session.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
         )
         assertEquals(
             "/Users/emanueledipietro/Developer/remodex/CodexMobileAndroid",
@@ -425,11 +591,18 @@ class DefaultRemodexAppRepositoryTest {
             attachments = emptyList(),
         )
         advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "a continuation thread after resume reports the original thread missing",
+        ) { thread ->
+            thread != null && thread.id != "thread-notifications"
+        }
 
-        val selectedThread = repository.session.value.selectedThread
+        val session = repository.session.value
+        val selectedThread = session.selectedThread
         assertTrue(selectedThread != null)
         assertTrue(selectedThread?.id != "thread-notifications")
-        assertEquals(selectedThread?.id, repository.session.value.selectedThreadId)
+        assertEquals(selectedThread?.id, session.selectedThreadId)
         assertEquals(selectedThread?.id, syncService.lastSuccessfulSendThreadId)
         assertEquals(1, syncService.resumeCalls)
         assertTrue(
@@ -439,7 +612,7 @@ class DefaultRemodexAppRepositoryTest {
         )
         assertEquals(
             RemodexThreadSyncState.ARCHIVED_LOCAL,
-            repository.session.value.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
+            session.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
         )
     }
 
@@ -719,6 +892,36 @@ class DefaultRemodexAppRepositoryTest {
         fail("Expected $expectedState but was ${coordinator.state.value.secureState}")
     }
 
+    private suspend fun TestScope.awaitSelectedThreadTitle(
+        repository: DefaultRemodexAppRepository,
+        expectedTitle: String,
+    ) {
+        repeat(40) {
+            advanceUntilIdle()
+            if (repository.session.value.selectedThread?.title == expectedTitle) {
+                return
+            }
+            Thread.sleep(10)
+        }
+        fail("Expected selected thread title to be $expectedTitle but was ${repository.session.value.selectedThread?.title}")
+    }
+
+    private suspend fun TestScope.awaitSelectedThread(
+        repository: DefaultRemodexAppRepository,
+        description: String,
+        predicate: (RemodexThreadSummary?) -> Boolean,
+    ) {
+        repeat(100) {
+            advanceUntilIdle()
+            val selectedThread = repository.session.value.selectedThread
+            if (predicate(selectedThread)) {
+                return
+            }
+            Thread.sleep(20)
+        }
+        fail("Expected $description but selected thread was ${repository.session.value.selectedThread?.id}")
+    }
+
     private class ResumeReportsRunningSyncService(
         private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
     ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
@@ -859,6 +1062,62 @@ class DefaultRemodexAppRepositoryTest {
         ) {
             lastSendThreadId = threadId
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class CreateThreadDefaultsCaptureSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadResumeService by delegate, ThreadLocalTimelineService by delegate, ThreadCommandService by delegate {
+        var lastCreateThreadDefaults: RemodexRuntimeDefaults? = null
+            private set
+
+        override suspend fun createThread(
+            preferredProjectPath: String?,
+            runtimeDefaults: RemodexRuntimeDefaults,
+        ): ThreadSyncSnapshot? {
+            lastCreateThreadDefaults = runtimeDefaults
+            return delegate.createThread(preferredProjectPath, runtimeDefaults)
+        }
+    }
+
+    private class ReconnectResumeSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+        private val clearRunningOnRefresh: Boolean = false,
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+
+        override suspend fun refreshThreads() {
+            hydrateCalls += 1
+            if (clearRunningOnRefresh) {
+                delegate.updateThreads(
+                    delegate.threads.value.map { snapshot ->
+                        snapshot.copy(isRunning = false)
+                    },
+                )
+            }
+        }
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+
+        fun updateThreads(threads: List<ThreadSyncSnapshot>) {
+            delegate.updateThreads(threads)
         }
     }
 }

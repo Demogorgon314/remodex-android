@@ -609,7 +609,8 @@ class AppViewModel(
     }
 
     fun sendPrompt() {
-        val threadId = uiState.value.selectedThread?.id ?: return
+        val selectedThread = uiState.value.selectedThread ?: return
+        val threadId = selectedThread.id
         viewModelScope.launch {
             val composer = uiState.value.composer
             val pendingComposerState = PendingComposerSendState(
@@ -632,13 +633,20 @@ class AppViewModel(
                 bumpComposerSendDismissSignal(threadId)
                 clearComposer(threadId)
                 try {
+                    repository.createThread(
+                        preferredProjectPath = selectedThread.projectPath.ifBlank { null },
+                        inheritRuntimeFromThreadId = threadId,
+                    )
+                    val reviewThreadId = repository.session.value.selectedThread?.id
+                        ?.takeIf { createdThreadId -> createdThreadId != threadId }
+                        ?: error("Could not create a review thread.")
                     repository.startCodeReview(
-                        threadId = threadId,
+                        threadId = reviewThreadId,
                         target = reviewSelection.target,
                         baseBranch = composer.selectedGitBaseBranch.ifBlank { null },
                     )
-                    bumpComposerSendAnchorSignal(threadId)
-                    refreshGitState(threadId)
+                    bumpComposerSendAnchorSignal(reviewThreadId)
+                    refreshGitState(reviewThreadId)
                 } catch (error: Throwable) {
                     if (error is CancellationException) {
                         throw error
@@ -865,6 +873,22 @@ class AppViewModel(
             }
 
             RemodexSlashCommand.CODE_REVIEW -> {
+                composerDrafts.update { draftsByThread ->
+                    val currentDraft = draftsByThread[threadId].orEmpty()
+                    draftsByThread.toMutableMap().apply {
+                        this[threadId] = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(currentDraft)
+                            ?: currentDraft
+                    }
+                }
+                if (uiState.value.composer.autocomplete.hasComposerContentConflictingWithReview) {
+                    composerReviewSelections.update { selectionsByThread ->
+                        selectionsByThread.toMutableMap().apply {
+                            remove(threadId)
+                        }
+                    }
+                    clearComposerAutocomplete()
+                    return
+                }
                 composerReviewSelections.update { selectionsByThread ->
                     selectionsByThread.toMutableMap().apply {
                         this[threadId] = RemodexComposerReviewSelection(target = null)

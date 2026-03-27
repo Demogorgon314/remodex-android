@@ -294,6 +294,63 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `active turn anchor falls back to the latest item in the active turn when no assistant exists`() {
+        val items = listOf(
+            RemodexConversationItem(
+                id = "user-1",
+                speaker = ConversationSpeaker.USER,
+                text = "Run review",
+                turnId = "turn-1",
+                orderIndex = 0,
+            ),
+            RemodexConversationItem(
+                id = "reasoning-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.REASONING,
+                text = "Thinking...",
+                turnId = "turn-2",
+                isStreaming = true,
+                orderIndex = 1,
+            ),
+            RemodexConversationItem(
+                id = "command-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "running git status",
+                turnId = "turn-2",
+                isStreaming = true,
+                orderIndex = 2,
+            ),
+        )
+
+        assertEquals(2, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = "turn-2"))
+    }
+
+    @Test
+    fun `active turn anchor falls back to the latest streaming item when the active turn id is unavailable`() {
+        val items = listOf(
+            RemodexConversationItem(
+                id = "assistant-1",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "Earlier reply",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            RemodexConversationItem(
+                id = "command-1",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "running git diff",
+                turnId = "turn-2",
+                isStreaming = true,
+                orderIndex = 2,
+            ),
+        )
+
+        assertEquals(1, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = null))
+    }
+
+    @Test
     fun `projected fast path updates only the streaming assistant row`() {
         val user = RemodexConversationItem(
             id = "user-1",

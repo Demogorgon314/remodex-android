@@ -49,6 +49,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -635,6 +636,90 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `slash code review selection matches ios behavior`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Review thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/review")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.CODE_REVIEW)
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertEquals(RemodexComposerAutocompletePanel.REVIEW_TARGETS, viewModel.uiState.value.composer.autocomplete.panel)
+        assertEquals(null, viewModel.uiState.value.composer.reviewSelection?.target)
+    }
+
+    @Test
+    fun `slash code review refuses conflicting draft content like ios`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Review thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Please review this /review")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.CODE_REVIEW)
+        advanceUntilIdle()
+
+        assertEquals("Please review this", viewModel.uiState.value.composer.draftText)
+        assertNull(viewModel.uiState.value.composer.reviewSelection)
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `sending code review uses repository review start and not prompt send`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Review thread",
+                        projectPath = "/tmp/remodex-review",
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/review")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.CODE_REVIEW)
+        viewModel.selectCodeReviewTarget(RemodexComposerReviewTarget.UNCOMMITTED_CHANGES)
+        advanceUntilIdle()
+
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals(
+            listOf("/tmp/remodex-review" to "thread-1"),
+            repository.createThreadRequests,
+        )
+        assertEquals(
+            listOf(Triple("thread-created", RemodexComposerReviewTarget.UNCOMMITTED_CHANGES, null)),
+            repository.codeReviewRequests,
+        )
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertNull(viewModel.uiState.value.composer.reviewSelection)
+        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
+        assertEquals(0L, viewModel.uiState.value.composerSendDismissSignal)
+        assertEquals(1L, viewModel.uiState.value.composerSendAnchorSignal)
+    }
+
+    @Test
     fun `send clears composer immediately and restores full state on failure`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -849,6 +934,8 @@ class AppViewModelTest {
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
+        val codeReviewRequests = mutableListOf<Triple<String, RemodexComposerReviewTarget, String?>>()
+        val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
@@ -863,6 +950,7 @@ class AppViewModelTest {
         var gitStateResult = RemodexGitState()
         var gitStateError: Throwable? = null
         var checkoutGitBranchError: Throwable? = null
+        var nextCreatedThreadId = "thread-created"
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -901,7 +989,28 @@ class AppViewModelTest {
 
         override suspend fun selectThread(threadId: String) = Unit
 
-        override suspend fun createThread(preferredProjectPath: String?) = Unit
+        override suspend fun createThread(
+            preferredProjectPath: String?,
+            inheritRuntimeFromThreadId: String?,
+        ) {
+            createThreadRequests += (preferredProjectPath to inheritRuntimeFromThreadId)
+            val createdThread = com.emanueledipietro.remodex.model.RemodexThreadSummary(
+                id = nextCreatedThreadId,
+                title = "Review current changes",
+                preview = "Preview",
+                projectPath = preferredProjectPath.orEmpty(),
+                lastUpdatedLabel = "Updated just now",
+                isRunning = false,
+                queuedDrafts = 0,
+                runtimeLabel = "Auto, medium reasoning",
+                messages = emptyList(),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(createdThread) + snapshot.value.threads,
+                selectedThreadId = createdThread.id,
+                selectedThreadSnapshot = createdThread,
+            )
+        }
 
         override suspend fun renameThread(threadId: String, name: String) = Unit
 
@@ -982,7 +1091,9 @@ class AppViewModelTest {
             threadId: String,
             target: RemodexComposerReviewTarget,
             baseBranch: String?,
-        ) = Unit
+        ) {
+            codeReviewRequests += Triple(threadId, target, baseBranch)
+        }
 
         override suspend fun forkThread(
             threadId: String,
@@ -1072,6 +1183,7 @@ class AppViewModelTest {
     private fun threadSummary(
         id: String,
         title: String,
+        projectPath: String = "/tmp/remodex",
         isRunning: Boolean = false,
         latestTurnTerminalState: RemodexTurnTerminalState? = null,
         messages: List<RemodexConversationItem> = emptyList(),
@@ -1080,7 +1192,7 @@ class AppViewModelTest {
             id = id,
             title = title,
             preview = "Preview",
-            projectPath = "/tmp/remodex",
+            projectPath = projectPath,
             lastUpdatedLabel = "Updated just now",
             isRunning = isRunning,
             latestTurnTerminalState = latestTurnTerminalState,
