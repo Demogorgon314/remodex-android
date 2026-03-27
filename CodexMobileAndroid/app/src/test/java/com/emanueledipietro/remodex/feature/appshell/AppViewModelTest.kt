@@ -25,9 +25,12 @@ import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
+import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -923,6 +926,326 @@ class AppViewModelTest {
         assertEquals(null, viewModel.uiState.value.gitSyncAlert)
     }
 
+    @Test
+    fun `checking out an elsewhere branch selects the matching thread instead of calling git checkout`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Feature thread",
+                        projectPath = "/tmp/remodex/.codex/worktrees/feature/test",
+                    ),
+                    threadSummary(
+                        id = "thread-2",
+                        title = "Current thread",
+                        projectPath = "/tmp/remodex",
+                    ),
+                ),
+                selectedThreadId = "thread-2",
+            )
+            gitStateResult = RemodexGitState(
+                branches = RemodexGitBranches(
+                    branches = listOf("main", "feature/test"),
+                    branchesCheckedOutElsewhere = setOf("feature/test"),
+                    worktreePathByBranch = mapOf(
+                        "feature/test" to "/tmp/remodex/.codex/worktrees/feature/test",
+                    ),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.checkoutGitBranch("feature/test")
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.selectedThreadRequests)
+        assertTrue(repository.checkoutGitBranchRequests.isEmpty())
+        assertEquals("thread-1", viewModel.uiState.value.selectedThread?.id)
+    }
+
+    @Test
+    fun `discard runtime changes requires confirmation before calling repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "feature/test",
+                    isDirty = true,
+                    aheadCount = 2,
+                    state = "dirty",
+                ),
+                branches = RemodexGitBranches(defaultBranch = "main"),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.discardRuntimeChangesAndSync()
+        advanceUntilIdle()
+
+        assertTrue(repository.discardRuntimeChangesRequests.isEmpty())
+        assertEquals("Discard local changes?", viewModel.uiState.value.gitSyncAlert?.title)
+        assertEquals(
+            listOf("Cancel", "Discard Changes"),
+            viewModel.uiState.value.gitSyncAlert?.buttons?.map { button -> button.title },
+        )
+
+        viewModel.confirmGitSyncAlert()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.discardRuntimeChangesRequests)
+        assertNull(viewModel.uiState.value.gitSyncAlert)
+    }
+
+    @Test
+    fun `create pull request shows validation alert when still on default branch`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "main",
+                    trackingBranch = "origin/main",
+                    isPublishedToRemote = true,
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("main"),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        var openedUrl: String? = null
+        viewModel.createPullRequest { openedUrl = it }
+        advanceUntilIdle()
+
+        assertNull(openedUrl)
+        assertEquals(
+            "Switch to a feature branch before creating a PR.",
+            viewModel.uiState.value.gitSyncAlert?.message,
+        )
+    }
+
+    @Test
+    fun `create pull request opens compare url when git state is valid`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "feature/test",
+                    trackingBranch = "origin/feature/test",
+                    isPublishedToRemote = true,
+                    aheadCount = 0,
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("main", "feature/test"),
+                    currentBranch = "feature/test",
+                    defaultBranch = "main",
+                ),
+            )
+            remoteUrlResult = RemodexGitRemoteUrl(
+                url = "git@github.com:openai/remodex.git",
+                ownerRepo = "openai/remodex",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        var openedUrl: String? = null
+        viewModel.createPullRequest { openedUrl = it }
+        advanceUntilIdle()
+
+        assertEquals(
+            "https://github.com/openai/remodex/compare/main...feature/test?expand=1",
+            openedUrl,
+        )
+        assertNull(viewModel.uiState.value.gitSyncAlert)
+    }
+
+    @Test
+    fun `commit and push delegates to repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.commitAndPushGitChanges()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1" to null), repository.commitAndPushRequests)
+    }
+
+    @Test
+    fun `creating a dirty branch prompts before carrying or committing changes`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "main",
+                    isDirty = true,
+                    localOnlyCommitCount = 2,
+                    files = listOf(
+                        com.emanueledipietro.remodex.model.RemodexGitChangedFile(
+                            path = "app/src/main/kotlin/App.kt",
+                            status = "M",
+                        ),
+                    ),
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("main", "feature/test"),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.createGitBranch("feature/test")
+        advanceUntilIdle()
+
+        assertTrue(repository.createGitBranchRequests.isEmpty())
+        assertEquals(
+            listOf("Cancel", "Carry to New Branch", "Commit, Create & Switch"),
+            viewModel.uiState.value.gitSyncAlert?.buttons?.map { button -> button.title },
+        )
+
+        viewModel.performGitSyncAlertAction(RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION)
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1" to "WIP before switching branches"), repository.commitGitChangesRequests)
+        assertEquals(listOf("thread-1" to "feature/test"), repository.createGitBranchRequests)
+    }
+
+    @Test
+    fun `switching branches with dirty changes prompts for commit and continue`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "main",
+                    isDirty = true,
+                    files = listOf(
+                        com.emanueledipietro.remodex.model.RemodexGitChangedFile(
+                            path = "README.md",
+                            status = "M",
+                        ),
+                    ),
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("main", "feature/test"),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.checkoutGitBranch("feature/test")
+        advanceUntilIdle()
+
+        assertTrue(repository.checkoutGitBranchRequests.isEmpty())
+        assertEquals(
+            listOf("Cancel", "Commit & Switch"),
+            viewModel.uiState.value.gitSyncAlert?.buttons?.map { button -> button.title },
+        )
+
+        viewModel.performGitSyncAlertAction(RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION)
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1" to "WIP before switching branches"), repository.commitGitChangesRequests)
+        assertEquals(listOf("thread-1" to "feature/test"), repository.checkoutGitBranchRequests)
+    }
+
+    @Test
+    fun `handoff to worktree creates a move worktree and rebinds the current thread`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Git thread",
+                        projectPath = "/tmp/remodex",
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "main",
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("main"),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+            gitWorktreeResult = com.emanueledipietro.remodex.model.RemodexGitWorktreeResult(
+                branch = "feature/handoff",
+                worktreePath = "/tmp/remodex/.codex/worktrees/feature/handoff",
+                alreadyExisted = false,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.handoffThreadToWorktree("feature/handoff", "main")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(Triple("thread-1", "feature/handoff", "main")),
+            repository.createGitWorktreeResultRequests,
+        )
+        assertEquals(
+            listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/handoff"),
+            repository.moveThreadToProjectPathRequests,
+        )
+        assertEquals(
+            "/tmp/remodex/.codex/worktrees/feature/handoff",
+            viewModel.uiState.value.selectedThread?.projectPath,
+        )
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
@@ -931,11 +1254,19 @@ class AppViewModelTest {
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
         val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
         val hydrateRequests = mutableListOf<String>()
+        val selectedThreadRequests = mutableListOf<String>()
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
         val codeReviewRequests = mutableListOf<Triple<String, RemodexComposerReviewTarget, String?>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
+        val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
+        val createGitBranchRequests = mutableListOf<Pair<String, String>>()
+        val createGitWorktreeResultRequests = mutableListOf<Triple<String, String, String?>>()
+        val commitGitChangesRequests = mutableListOf<Pair<String, String?>>()
+        val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
+        val discardRuntimeChangesRequests = mutableListOf<String>()
+        val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
@@ -950,6 +1281,15 @@ class AppViewModelTest {
         var gitStateResult = RemodexGitState()
         var gitStateError: Throwable? = null
         var checkoutGitBranchError: Throwable? = null
+        var remoteUrlResult = RemodexGitRemoteUrl(
+            url = "git@github.com:example/remodex.git",
+            ownerRepo = "example/remodex",
+        )
+        var gitWorktreeResult = com.emanueledipietro.remodex.model.RemodexGitWorktreeResult(
+            branch = "feature/worktree",
+            worktreePath = "/tmp/remodex/.codex/worktrees/feature/worktree",
+            alreadyExisted = false,
+        )
         var nextCreatedThreadId = "thread-created"
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
@@ -987,7 +1327,14 @@ class AppViewModelTest {
             hydrateRequests += threadId
         }
 
-        override suspend fun selectThread(threadId: String) = Unit
+        override suspend fun selectThread(threadId: String) {
+            selectedThreadRequests += threadId
+            val selectedThread = snapshot.value.threads.firstOrNull { thread -> thread.id == threadId }
+            snapshot.value = snapshot.value.copy(
+                selectedThreadId = threadId,
+                selectedThreadSnapshot = selectedThread,
+            )
+        }
 
         override suspend fun createThread(
             preferredProjectPath: String?,
@@ -1118,6 +1465,7 @@ class AppViewModelTest {
             threadId: String,
             branch: String,
         ): RemodexGitState {
+            checkoutGitBranchRequests += threadId to branch
             checkoutGitBranchError?.let { throw it }
             return RemodexGitState()
         }
@@ -1125,24 +1473,77 @@ class AppViewModelTest {
         override suspend fun createGitBranch(
             threadId: String,
             branch: String,
-        ): RemodexGitState = RemodexGitState()
+        ): RemodexGitState {
+            createGitBranchRequests += threadId to branch
+            return RemodexGitState()
+        }
 
         override suspend fun createGitWorktree(
             threadId: String,
             name: String,
             baseBranch: String?,
+            changeTransfer: RemodexGitWorktreeChangeTransferMode,
         ): RemodexGitState = RemodexGitState()
+
+        override suspend fun createGitWorktreeResult(
+            threadId: String,
+            name: String,
+            baseBranch: String?,
+            changeTransfer: RemodexGitWorktreeChangeTransferMode,
+        ): com.emanueledipietro.remodex.model.RemodexGitWorktreeResult {
+            createGitWorktreeResultRequests += Triple(threadId, name, baseBranch)
+            return gitWorktreeResult.copy(branch = name)
+        }
 
         override suspend fun commitGitChanges(
             threadId: String,
             message: String?,
-        ): RemodexGitState = RemodexGitState()
+        ): RemodexGitState {
+            commitGitChangesRequests += threadId to message
+            return RemodexGitState()
+        }
+
+        override suspend fun commitAndPushGitChanges(
+            threadId: String,
+            message: String?,
+        ): RemodexGitState {
+            commitAndPushRequests += threadId to message
+            return RemodexGitState(lastActionMessage = "Committed and pushed the current branch.")
+        }
 
         override suspend fun pullGitChanges(threadId: String): RemodexGitState = RemodexGitState()
 
         override suspend fun pushGitChanges(threadId: String): RemodexGitState = RemodexGitState()
 
-        override suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState = RemodexGitState()
+        override suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl = remoteUrlResult
+
+        override suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState {
+            discardRuntimeChangesRequests += threadId
+            return RemodexGitState()
+        }
+
+        override suspend fun moveThreadToProjectPath(
+            threadId: String,
+            projectPath: String,
+        ) {
+            moveThreadToProjectPathRequests += threadId to projectPath
+            snapshot.value = snapshot.value.copy(
+                threads = snapshot.value.threads.map { thread ->
+                    if (thread.id == threadId) {
+                        thread.copy(projectPath = projectPath)
+                    } else {
+                        thread
+                    }
+                },
+                selectedThreadSnapshot = snapshot.value.selectedThreadSnapshot?.let { thread ->
+                    if (thread.id == threadId) {
+                        thread.copy(projectPath = projectPath)
+                    } else {
+                        thread
+                    }
+                },
+            )
+        }
 
         override suspend fun previewAssistantRevert(
             threadId: String,

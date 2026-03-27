@@ -17,8 +17,11 @@ import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -88,11 +91,45 @@ class FakeThreadSyncService(
         preferredProjectPath: String?,
         modelIdentifier: String?,
     ): ThreadSyncSnapshot? {
-        val snapshot = backingThreads.value.firstOrNull { candidate -> candidate.id == threadId }
-        if (snapshot != null) {
+        val normalizedProjectPath = preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)
+        var resumedSnapshot: ThreadSyncSnapshot? = null
+        backingThreads.update { threads ->
+            threads.map { snapshot ->
+                if (snapshot.id != threadId) {
+                    snapshot
+                } else {
+                    val updatedSnapshot = if (normalizedProjectPath != null) {
+                        snapshot.copy(projectPath = normalizedProjectPath)
+                    } else {
+                        snapshot
+                    }
+                    resumedSnapshot = updatedSnapshot
+                    updatedSnapshot
+                }
+            }
+        }
+        if (resumedSnapshot != null) {
             resumedThreadIds.add(threadId)
         }
-        return snapshot
+        return resumedSnapshot
+    }
+
+    override suspend fun updateThreadProjectPathLocally(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot? {
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return null
+        var updatedSnapshot: ThreadSyncSnapshot? = null
+        backingThreads.update { threads ->
+            threads.map { snapshot ->
+                if (snapshot.id != threadId) {
+                    snapshot
+                } else {
+                    snapshot.copy(projectPath = normalizedProjectPath).also { updatedSnapshot = it }
+                }
+            }
+        }
+        return updatedSnapshot
     }
 
     override fun isThreadResumedLocally(threadId: String): Boolean {
@@ -441,6 +478,7 @@ class FakeThreadSyncService(
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
     ): RemodexGitState {
         return updateGitState(threadId) { current ->
             current.copy(
@@ -454,6 +492,28 @@ class FakeThreadSyncService(
                 errorMessage = null,
             )
         }
+    }
+
+    override suspend fun createGitWorktreeResult(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+    ): RemodexGitWorktreeResult {
+        val current = backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        val repoRoot = current?.projectPath.orEmpty().ifBlank { "/tmp/remodex" }
+        val worktreePath = "$repoRoot/worktrees/$name"
+        createGitWorktree(
+            threadId = threadId,
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = changeTransfer,
+        )
+        return RemodexGitWorktreeResult(
+            branch = name,
+            worktreePath = worktreePath,
+            alreadyExisted = false,
+        )
     }
 
     override suspend fun commitGitChanges(
@@ -474,6 +534,16 @@ class FakeThreadSyncService(
                 errorMessage = null,
             )
         }
+    }
+
+    override suspend fun commitAndPushGitChanges(
+        threadId: String,
+        message: String?,
+    ): RemodexGitState {
+        commitGitChanges(threadId = threadId, message = message)
+        return pushGitChanges(threadId).copy(
+            lastActionMessage = "Committed and pushed the current branch.",
+        )
     }
 
     override suspend fun pullGitChanges(threadId: String): RemodexGitState {
@@ -510,6 +580,19 @@ class FakeThreadSyncService(
                 errorMessage = null,
             )
         }
+    }
+
+    override suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl {
+        val current = gitStateByThreadId[threadId]
+        val repoRoot = current?.sync?.repoRoot ?: current?.branches?.localCheckoutPath ?: "/tmp/remodex"
+        val ownerRepo = when {
+            repoRoot.contains("bridge", ignoreCase = true) -> "remodex/phodex-bridge"
+            else -> "remodex/CodexMobileAndroid"
+        }
+        return RemodexGitRemoteUrl(
+            url = "git@github.com:$ownerRepo.git",
+            ownerRepo = ownerRepo,
+        )
     }
 
     override suspend fun previewAssistantRevert(

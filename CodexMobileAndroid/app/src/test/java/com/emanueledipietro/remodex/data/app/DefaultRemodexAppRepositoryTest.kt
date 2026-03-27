@@ -213,6 +213,76 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `move thread to project path keeps empty resumed thread local without forcing resume`() = runTest {
+        val syncService = LocalProjectMoveSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.createThread(preferredProjectPath = "/tmp/local-main")
+        advanceUntilIdle()
+        val createdThreadId = requireNotNull(repository.session.value.selectedThread?.id) {
+            "Expected a created thread"
+        }
+
+        repository.moveThreadToProjectPath(
+            threadId = createdThreadId,
+            projectPath = "/tmp/.codex/worktrees/feature-empty",
+        )
+        advanceUntilIdle()
+
+        assertEquals(0, syncService.resumeCalls)
+        assertEquals(
+            "/tmp/.codex/worktrees/feature-empty",
+            repository.session.value.selectedThread?.projectPath,
+        )
+    }
+
+    @Test
+    fun `move thread to project path reverts local change when resume fails for materialized thread`() = runTest {
+        val syncService = LocalProjectMoveSyncService(
+            shouldFailResumeForThreadId = "thread-notifications",
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val originalProjectPath = requireNotNull(repository.session.value.selectedThread?.projectPath) {
+            "Expected selected thread"
+        }
+
+        try {
+            repository.moveThreadToProjectPath(
+                threadId = "thread-notifications",
+                projectPath = "/tmp/.codex/worktrees/feature-materialized",
+            )
+            fail("Expected moveThreadToProjectPath to throw")
+        } catch (error: IllegalStateException) {
+            assertEquals("resume failed", error.message)
+        }
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.resumeCalls)
+        assertEquals(originalProjectPath, repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
     fun `send prompt starts a local turn immediately when the thread is idle`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")
@@ -1118,6 +1188,37 @@ class DefaultRemodexAppRepositoryTest {
 
         fun updateThreads(threads: List<ThreadSyncSnapshot>) {
             delegate.updateThreads(threads)
+        }
+    }
+
+    private class LocalProjectMoveSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+        private val shouldFailResumeForThreadId: String? = null,
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var resumeCalls: Int = 0
+            private set
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            if (threadId == shouldFailResumeForThreadId) {
+                throw IllegalStateException("resume failed")
+            }
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override suspend fun updateThreadProjectPathLocally(
+            threadId: String,
+            projectPath: String,
+        ): ThreadSyncSnapshot? {
+            return delegate.updateThreadProjectPathLocally(threadId, projectPath)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
         }
     }
 }

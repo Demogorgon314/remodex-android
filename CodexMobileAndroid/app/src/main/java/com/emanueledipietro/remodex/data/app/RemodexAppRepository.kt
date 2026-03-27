@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
@@ -155,9 +158,22 @@ interface RemodexAppRepository {
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.COPY,
     ): RemodexGitState
 
+    suspend fun createGitWorktreeResult(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.COPY,
+    ): RemodexGitWorktreeResult
+
     suspend fun commitGitChanges(
+        threadId: String,
+        message: String? = null,
+    ): RemodexGitState
+
+    suspend fun commitAndPushGitChanges(
         threadId: String,
         message: String? = null,
     ): RemodexGitState
@@ -167,6 +183,13 @@ interface RemodexAppRepository {
     suspend fun pushGitChanges(threadId: String): RemodexGitState
 
     suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState
+
+    suspend fun moveThreadToProjectPath(
+        threadId: String,
+        projectPath: String,
+    )
+
+    suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl
 
     suspend fun previewAssistantRevert(
         threadId: String,

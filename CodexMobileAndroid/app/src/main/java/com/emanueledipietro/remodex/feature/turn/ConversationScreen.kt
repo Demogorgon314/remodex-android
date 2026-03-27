@@ -185,6 +185,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -376,9 +377,12 @@ fun ConversationScreen(
     onCreateGitBranch: (String) -> Unit,
     onCreateGitWorktree: (String) -> Unit,
     onCommitGitChanges: () -> Unit,
+    onCommitAndPushGitChanges: () -> Unit,
     onPullGitChanges: () -> Unit,
     onPushGitChanges: () -> Unit,
+    onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
+    onHandoffThreadToWorktree: (String, String) -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
@@ -397,6 +401,7 @@ fun ConversationScreen(
     val showsThreadRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
@@ -863,10 +868,31 @@ fun ConversationScreen(
                             onSelectAccessMode = onSelectAccessMode,
                             onRefreshUsageStatus = onRefreshUsageStatus,
                             onOpenGitSheet = { gitSheetExpanded = true },
+                            onOpenWorktreeHandoff = { worktreeHandoffSheetExpanded = true },
                         )
                     }
                 }
             }
+        }
+
+        if (worktreeHandoffSheetExpanded) {
+            WorktreeHandoffSheet(
+                title = if (thread.messages.isEmpty()) "New worktree" else "Hand off thread to worktree",
+                message = if (thread.messages.isEmpty()) {
+                    "Create and check out a branch in a new worktree, then continue this local chat there."
+                } else {
+                    "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
+                },
+                preferredBaseBranch = preferredWorktreeBaseBranch(
+                    gitState = uiState.composer.gitState,
+                    selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
+                ),
+                onDismiss = { worktreeHandoffSheetExpanded = false },
+                onSubmit = { branchName, baseBranch ->
+                    worktreeHandoffSheetExpanded = false
+                    onHandoffThreadToWorktree(branchName, baseBranch)
+                },
+            )
         }
 
         if (gitSheetExpanded) {
@@ -880,8 +906,10 @@ fun ConversationScreen(
                 onCreateBranch = onCreateGitBranch,
                 onCreateWorktree = onCreateGitWorktree,
                 onCommit = onCommitGitChanges,
+                onCommitAndPush = onCommitAndPushGitChanges,
                 onPull = onPullGitChanges,
                 onPush = onPushGitChanges,
+                onCreatePullRequest = onCreatePullRequest,
                 onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
             )
         }
@@ -1471,8 +1499,10 @@ private fun GitContextCard(
     onCreateBranch: (String) -> Unit,
     onCreateWorktree: (String) -> Unit,
     onCommit: () -> Unit,
+    onCommitAndPush: () -> Unit,
     onPull: () -> Unit,
     onPush: () -> Unit,
+    onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
@@ -1557,11 +1587,7 @@ private fun GitContextCard(
                 },
                 includeClearChoice = false,
                 itemKey = { it },
-                onSelect = { branch ->
-                    if (!gitState.branches.branchesCheckedOutElsewhere.contains(branch)) {
-                        onCheckoutBranch(branch)
-                    }
-                },
+                onSelect = onCheckoutBranch,
             )
             OutlinedTextField(
                 value = branchDraft,
@@ -1587,6 +1613,9 @@ private fun GitContextCard(
                 OutlinedButton(onClick = onCommit) {
                     Text("Commit")
                 }
+                OutlinedButton(onClick = onCommitAndPush) {
+                    Text("Commit & Push")
+                }
                 OutlinedButton(
                     onClick = {
                         if (branchDraft.isNotBlank()) {
@@ -1607,8 +1636,13 @@ private fun GitContextCard(
                 ) {
                     Text("Create worktree")
                 }
-                OutlinedButton(onClick = onDiscardRuntimeChangesAndSync) {
-                    Text("Discard & sync")
+                OutlinedButton(onClick = onCreatePullRequest) {
+                    Text("Create PR")
+                }
+                if (shouldShowDiscardRuntimeChangesAndSync(gitState.sync)) {
+                    OutlinedButton(onClick = onDiscardRuntimeChangesAndSync) {
+                        Text("Discard & sync")
+                    }
                 }
             }
         }
@@ -1625,6 +1659,7 @@ private fun ComposerSecondaryBar(
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onOpenGitSheet: () -> Unit,
+    onOpenWorktreeHandoff: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val uriHandler = LocalUriHandler.current
@@ -1720,7 +1755,7 @@ private fun ComposerSecondaryBar(
                             },
                             onClick = {
                                 runtimeExpanded = false
-                                onOpenGitSheet()
+                                onOpenWorktreeHandoff()
                             },
                             enabled = canHandOffToWorktree,
                             leadingIcon = {
@@ -2274,6 +2309,31 @@ private fun composerSecondaryBarBranchLabel(gitState: RemodexGitState): String {
         ?: "Branch"
 }
 
+private fun preferredWorktreeBaseBranch(
+    gitState: RemodexGitState,
+    selectedBaseBranch: String,
+): String {
+    return gitState.branches.currentBranch
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: gitState.sync?.currentBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: selectedBaseBranch.trim().takeIf(String::isNotEmpty)
+        ?: gitState.branches.defaultBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: ""
+}
+
+private fun shouldShowDiscardRuntimeChangesAndSync(sync: RemodexGitRepoSync?): Boolean {
+    if (sync == null) {
+        return false
+    }
+    val dangerousStates = setOf("dirty", "dirty_and_behind", "diverged")
+    return sync.state in dangerousStates || (sync.isDirty && sync.state == "no_upstream")
+}
+
 private fun composerCompactTokenCount(count: Int): String {
     return when {
         count >= 1_000_000 -> {
@@ -2322,8 +2382,10 @@ private fun DetailedGitSheet(
     onCreateBranch: (String) -> Unit,
     onCreateWorktree: (String) -> Unit,
     onCommit: () -> Unit,
+    onCommitAndPush: () -> Unit,
     onPull: () -> Unit,
     onPush: () -> Unit,
+    onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -2336,10 +2398,66 @@ private fun DetailedGitSheet(
             onCreateBranch = onCreateBranch,
             onCreateWorktree = onCreateWorktree,
             onCommit = onCommit,
+            onCommitAndPush = onCommitAndPush,
             onPull = onPull,
             onPush = onPush,
+            onCreatePullRequest = onCreatePullRequest,
             onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorktreeHandoffSheet(
+    title: String,
+    message: String,
+    preferredBaseBranch: String,
+    onDismiss: () -> Unit,
+    onSubmit: (String, String) -> Unit,
+) {
+    var branchDraft by rememberSaveable { mutableStateOf("") }
+    val trimmedBaseBranch = preferredBaseBranch.trim()
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = branchDraft,
+                onValueChange = { branchDraft = it },
+                label = { Text("Branch name") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (trimmedBaseBranch.isNotEmpty()) {
+                Text(
+                    text = "Base branch: $trimmedBaseBranch",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(
+                onClick = { onSubmit(branchDraft.trim(), trimmedBaseBranch) },
+                enabled = branchDraft.isNotBlank() && trimmedBaseBranch.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(title)
+            }
+        }
     }
 }
 

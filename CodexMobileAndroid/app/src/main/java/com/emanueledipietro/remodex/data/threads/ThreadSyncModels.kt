@@ -11,7 +11,10 @@ import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanState
@@ -117,9 +120,22 @@ interface ThreadCommandService {
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.COPY,
     ): RemodexGitState
 
+    suspend fun createGitWorktreeResult(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.COPY,
+    ): RemodexGitWorktreeResult
+
     suspend fun commitGitChanges(
+        threadId: String,
+        message: String? = null,
+    ): RemodexGitState
+
+    suspend fun commitAndPushGitChanges(
         threadId: String,
         message: String? = null,
     ): RemodexGitState
@@ -129,6 +145,8 @@ interface ThreadCommandService {
     suspend fun pushGitChanges(threadId: String): RemodexGitState
 
     suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState
+
+    suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl
 
     suspend fun previewAssistantRevert(
         threadId: String,
@@ -155,6 +173,23 @@ interface ThreadResumeService {
         preferredProjectPath: String? = null,
         modelIdentifier: String? = null,
     ): ThreadSyncSnapshot?
+
+    suspend fun updateThreadProjectPathLocally(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot? = null
+
+    suspend fun moveThreadToProjectPath(
+        threadId: String,
+        projectPath: String,
+        modelIdentifier: String? = null,
+    ): ThreadSyncSnapshot? {
+        return resumeThread(
+            threadId = threadId,
+            preferredProjectPath = projectPath,
+            modelIdentifier = modelIdentifier,
+        )
+    }
 
     fun isThreadResumedLocally(threadId: String): Boolean = false
 }

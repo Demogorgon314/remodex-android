@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadLocalTimelineService
 import com.emanueledipietro.remodex.data.threads.ThreadResumeService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
+import com.emanueledipietro.remodex.data.threads.shouldRetryAfterThreadMaterializationValue
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
@@ -30,7 +31,10 @@ import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
@@ -947,11 +951,27 @@ class DefaultRemodexAppRepository(
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
     ): RemodexGitState {
         return threadCommandService.createGitWorktree(
             threadId = threadId,
             name = name,
             baseBranch = baseBranch,
+            changeTransfer = changeTransfer,
+        )
+    }
+
+    override suspend fun createGitWorktreeResult(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+    ): RemodexGitWorktreeResult {
+        return threadCommandService.createGitWorktreeResult(
+            threadId = threadId,
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = changeTransfer,
         )
     }
 
@@ -960,6 +980,13 @@ class DefaultRemodexAppRepository(
         message: String?,
     ): RemodexGitState {
         return threadCommandService.commitGitChanges(threadId, message)
+    }
+
+    override suspend fun commitAndPushGitChanges(
+        threadId: String,
+        message: String?,
+    ): RemodexGitState {
+        return threadCommandService.commitAndPushGitChanges(threadId, message)
     }
 
     override suspend fun pullGitChanges(threadId: String): RemodexGitState {
@@ -972,6 +999,50 @@ class DefaultRemodexAppRepository(
 
     override suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState {
         return threadCommandService.discardRuntimeChangesAndSync(threadId)
+    }
+
+    override suspend fun moveThreadToProjectPath(
+        threadId: String,
+        projectPath: String,
+    ) {
+        val thread = sessionState.value.threads.firstOrNull { existing -> existing.id == threadId } ?: return
+        val resumeService = resumeService() ?: return
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return
+        val previousProjectPath = thread.projectPath
+        resumeService.updateThreadProjectPathLocally(
+            threadId = threadId,
+            projectPath = normalizedProjectPath,
+        )
+        refreshBaseThreadsFromSync()
+
+        // Brand-new local threads already carry the desired cwd for the first turn, but
+        // the bridge cannot always resume them until a rollout exists.
+        if (thread.messages.isEmpty() && resumeService.isThreadResumedLocally(threadId)) {
+            return
+        }
+
+        try {
+            resumeService.moveThreadToProjectPath(
+                threadId = threadId,
+                projectPath = normalizedProjectPath,
+                modelIdentifier = thread.runtimeConfig.selectedModelId,
+            )
+        } catch (error: Throwable) {
+            if (shouldRetryAfterThreadMaterializationValue(error)) {
+                return
+            }
+            resumeService.updateThreadProjectPathLocally(
+                threadId = threadId,
+                projectPath = previousProjectPath,
+            )
+            refreshBaseThreadsFromSync()
+            throw error
+        }
+        refreshBaseThreadsFromSync()
+    }
+
+    override suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl {
+        return threadCommandService.loadGitRemoteUrl(threadId)
     }
 
     override suspend fun previewAssistantRevert(

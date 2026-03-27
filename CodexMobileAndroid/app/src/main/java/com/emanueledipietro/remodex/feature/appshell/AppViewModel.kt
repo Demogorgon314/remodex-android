@@ -1,5 +1,4 @@
 package com.emanueledipietro.remodex.feature.appshell
-
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -32,6 +31,7 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
@@ -55,6 +55,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import kotlin.math.max
 
 data class ComposerUiState(
@@ -120,7 +122,50 @@ data class ThreadCompletionBannerUiState(
 data class RemodexGitSyncAlertUiState(
     val title: String = "Git Error",
     val message: String,
+    val buttons: List<RemodexGitSyncAlertButtonUiState> = listOf(
+        RemodexGitSyncAlertButtonUiState(
+            title = "OK",
+            role = RemodexGitSyncAlertButtonRole.CANCEL,
+            action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+        ),
+    ),
 )
+
+data class RemodexGitSyncAlertButtonUiState(
+    val title: String,
+    val role: RemodexGitSyncAlertButtonRole? = null,
+    val action: RemodexGitSyncAlertAction,
+)
+
+enum class RemodexGitSyncAlertButtonRole {
+    CANCEL,
+    DESTRUCTIVE,
+}
+
+enum class RemodexGitSyncAlertAction {
+    DISMISS_ONLY,
+    DISCARD_RUNTIME_CHANGES,
+    CONTINUE_GIT_BRANCH_OPERATION,
+    COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION,
+}
+
+private sealed interface PendingGitBranchOperation {
+    data class CreateBranch(val branchName: String) : PendingGitBranchOperation
+
+    data class SwitchBranch(val branchName: String) : PendingGitBranchOperation
+
+    data class CreateWorktree(
+        val branchName: String,
+        val baseBranch: String,
+        val changeTransfer: RemodexGitWorktreeChangeTransferMode,
+        val followUp: GitWorktreeFollowUp = GitWorktreeFollowUp.NONE,
+    ) : PendingGitBranchOperation
+}
+
+private enum class GitWorktreeFollowUp {
+    NONE,
+    HANDOFF_CURRENT_THREAD,
+}
 
 private data class ComposerRenderStateA(
     val draftsByThread: Map<String, String> = emptyMap(),
@@ -209,6 +254,7 @@ class AppViewModel(
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
     private var isAppForeground = false
     private var isManualScannerActive = false
+    private var pendingGitBranchOperation: PendingGitBranchOperation? = null
     private var suppressAutoReconnectUntilManualConnect = false
     internal var autoReconnectAttemptLimitOverride: Int? = null
     internal var autoReconnectBackoffMillisOverride: List<Long>? = null
@@ -1042,39 +1088,99 @@ class AppViewModel(
 
     fun checkoutGitBranch(branch: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        launchGitAction(
-            threadId = threadId,
-            title = "Branch Switch Failed",
-            fallbackMessage = "Could not switch branch.",
-        ) {
-            repository.checkoutGitBranch(threadId, branch)
+        val selectedThread = uiState.value.selectedThread ?: return
+        val gitState = uiState.value.composer.gitState
+        val trimmedBranch = branch.trim()
+        if (trimmedBranch.isEmpty()) {
+            return
         }
+        if (gitState.branches.branchesCheckedOutElsewhere.contains(trimmedBranch)) {
+            val targetPath = gitState.branches.worktreePathByBranch[trimmedBranch]
+            val normalizedCurrentPath = normalizeComparableProjectPath(selectedThread.projectPath)
+            val normalizedTargetPath = normalizeComparableProjectPath(targetPath)
+            if (normalizedTargetPath != null && normalizedTargetPath == normalizedCurrentPath) {
+                return
+            }
+            val matchingThread = normalizedTargetPath?.let { worktreePath ->
+                uiState.value.threads.firstOrNull { thread ->
+                    normalizeComparableProjectPath(thread.projectPath) == worktreePath
+                }
+            }
+            if (matchingThread != null) {
+                selectThread(matchingThread.id)
+                return
+            }
+            showGitSyncAlert(
+                threadId = threadId,
+                title = "Branch already open elsewhere",
+                message = if (trimmedBranch.isBlank()) {
+                    "This branch is already checked out in another worktree."
+                } else {
+                    "'$trimmedBranch' is already checked out in another worktree. Open that chat from the sidebar to continue there."
+                },
+            )
+            return
+        }
+        maybeRunGitBranchOperation(
+            threadId = threadId,
+            operation = PendingGitBranchOperation.SwitchBranch(trimmedBranch),
+        )
     }
 
     fun createGitBranch(branch: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        launchGitAction(
-            threadId = threadId,
-            title = "Branch Creation Failed",
-            fallbackMessage = "Could not create branch.",
-        ) {
-            repository.createGitBranch(threadId, branch)
+        val trimmedBranch = branch.trim()
+        if (trimmedBranch.isEmpty()) {
+            return
         }
+        maybeRunGitBranchOperation(
+            threadId = threadId,
+            operation = PendingGitBranchOperation.CreateBranch(trimmedBranch),
+        )
     }
 
     fun createGitWorktree(name: String) {
+        val baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null }
+        createGitWorktree(
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = RemodexGitWorktreeChangeTransferMode.COPY,
+        )
+    }
+
+    private fun createGitWorktree(
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+        followUp: GitWorktreeFollowUp = GitWorktreeFollowUp.NONE,
+    ) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        launchGitAction(
-            threadId = threadId,
-            title = "Worktree Creation Failed",
-            fallbackMessage = "Could not create worktree.",
-        ) {
-            repository.createGitWorktree(
-                threadId = threadId,
-                name = name,
-                baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null },
-            )
+        val trimmedName = name.trim()
+        val trimmedBaseBranch = baseBranch?.trim().orEmpty()
+        if (trimmedName.isEmpty() || trimmedBaseBranch.isEmpty()) {
+            return
         }
+        maybeRunGitBranchOperation(
+            threadId = threadId,
+            operation = PendingGitBranchOperation.CreateWorktree(
+                branchName = trimmedName,
+                baseBranch = trimmedBaseBranch,
+                changeTransfer = changeTransfer,
+                followUp = followUp,
+            ),
+        )
+    }
+
+    fun handoffThreadToWorktree(
+        name: String,
+        baseBranch: String?,
+    ) {
+        createGitWorktree(
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = RemodexGitWorktreeChangeTransferMode.MOVE,
+            followUp = GitWorktreeFollowUp.HANDOFF_CURRENT_THREAD,
+        )
     }
 
     fun commitGitChanges(message: String? = null) {
@@ -1085,6 +1191,17 @@ class AppViewModel(
             fallbackMessage = "Operation failed.",
         ) {
             repository.commitGitChanges(threadId, message)
+        }
+    }
+
+    fun commitAndPushGitChanges(message: String? = null) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        launchGitAction(
+            threadId = threadId,
+            title = "Git Error",
+            fallbackMessage = "Operation failed.",
+        ) {
+            repository.commitAndPushGitChanges(threadId, message)
         }
     }
 
@@ -1112,12 +1229,76 @@ class AppViewModel(
 
     fun discardRuntimeChangesAndSync() {
         val threadId = uiState.value.selectedThread?.id ?: return
-        launchGitAction(
+        val repoSync = uiState.value.composer.gitState.sync
+        val unpushedCommitWarning = when (val aheadCount = repoSync?.aheadCount ?: 0) {
+            0 -> ""
+            1 -> " This also deletes 1 local commit that has not been pushed."
+            else -> " This also deletes $aheadCount local commits that have not been pushed."
+        }
+        showGitSyncAlert(
             threadId = threadId,
-            title = "Git Error",
-            fallbackMessage = "Operation failed.",
-        ) {
-            repository.discardRuntimeChangesAndSync(threadId)
+            title = "Discard local changes?",
+            message = "This resets the current branch to match the remote and removes local uncommitted changes.$unpushedCommitWarning This cannot be undone from the app.",
+            buttons = listOf(
+                RemodexGitSyncAlertButtonUiState(
+                    title = "Cancel",
+                    role = RemodexGitSyncAlertButtonRole.CANCEL,
+                    action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                ),
+                RemodexGitSyncAlertButtonUiState(
+                    title = "Discard Changes",
+                    role = RemodexGitSyncAlertButtonRole.DESTRUCTIVE,
+                    action = RemodexGitSyncAlertAction.DISCARD_RUNTIME_CHANGES,
+                ),
+            ),
+        )
+    }
+
+    fun createPullRequest(onOpenUrl: (String) -> Unit) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val gitState = uiState.value.composer.gitState
+        val validationMessage = createPullRequestValidationMessage(gitState)
+        if (validationMessage != null) {
+            showGitSyncAlert(
+                threadId = threadId,
+                title = "Git Error",
+                message = validationMessage,
+            )
+            return
+        }
+        viewModelScope.launch {
+            clearGitSyncAlert(threadId)
+            runCatching { repository.loadGitRemoteUrl(threadId) }
+                .onSuccess { remote ->
+                    val ownerRepo = remote.ownerRepo?.trim().orEmpty()
+                    if (ownerRepo.isEmpty()) {
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = "Git Error",
+                            message = "Could not determine repository from remote URL.",
+                        )
+                        return@onSuccess
+                    }
+                    val sync = gitState.sync
+                    val branch = sync?.currentBranch?.trim().orEmpty()
+                    val base = gitState.branches.defaultBranch?.trim().orEmpty()
+                    if (branch.isEmpty() || base.isEmpty()) {
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = "Git Error",
+                            message = "Could not determine the repository branch metadata.",
+                        )
+                        return@onSuccess
+                    }
+                    onOpenUrl(buildPullRequestUrl(ownerRepo = ownerRepo, branch = branch, base = base))
+                }
+                .onFailure { error ->
+                    showGitSyncAlert(
+                        threadId = threadId,
+                        title = "Git Error",
+                        message = error.message ?: "Could not determine repository from remote URL.",
+                    )
+                }
         }
     }
 
@@ -1251,6 +1432,70 @@ class AppViewModel(
     fun dismissGitSyncAlert() {
         val threadId = uiState.value.selectedThread?.id ?: return
         clearGitSyncAlert(threadId)
+        pendingGitBranchOperation = null
+    }
+
+    fun confirmGitSyncAlert() {
+        val action = uiState.value.gitSyncAlert?.buttons
+            ?.firstOrNull { button -> button.action != RemodexGitSyncAlertAction.DISMISS_ONLY }
+            ?.action
+            ?: RemodexGitSyncAlertAction.DISMISS_ONLY
+        performGitSyncAlertAction(action)
+    }
+
+    fun performGitSyncAlertAction(action: RemodexGitSyncAlertAction) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val pendingOperation = pendingGitBranchOperation
+        clearGitSyncAlert(threadId)
+        pendingGitBranchOperation = null
+        when (action) {
+            RemodexGitSyncAlertAction.DISMISS_ONLY -> Unit
+            RemodexGitSyncAlertAction.DISCARD_RUNTIME_CHANGES -> {
+                launchGitAction(
+                    threadId = threadId,
+                    title = "Discard Failed",
+                    fallbackMessage = "Operation failed.",
+                ) {
+                    repository.discardRuntimeChangesAndSync(threadId)
+                }
+            }
+            RemodexGitSyncAlertAction.CONTINUE_GIT_BRANCH_OPERATION -> {
+                pendingOperation?.let { operation ->
+                    performPendingGitBranchOperation(threadId, operation)
+                }
+            }
+            RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION -> {
+                if (pendingOperation == null) {
+                    return
+                }
+                viewModelScope.launch {
+                    clearGitSyncAlert(threadId)
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(isLoading = true, errorMessage = null)
+                    }
+                    runCatching {
+                        repository.commitGitChanges(threadId, "WIP before switching branches")
+                    }.onSuccess { nextState ->
+                        updateGitState(threadId) {
+                            nextState.copy(errorMessage = null)
+                        }
+                        performPendingGitBranchOperation(threadId, pendingOperation)
+                    }.onFailure { error ->
+                        updateGitState(threadId) { currentState ->
+                            currentState.copy(
+                                isLoading = false,
+                                errorMessage = null,
+                            )
+                        }
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = "Commit Failed",
+                            message = error.message ?: "Could not commit the current branch.",
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun setDefaultModelId(modelId: String?) {
@@ -2004,10 +2249,112 @@ class AppViewModel(
         }
     }
 
+    private fun maybeRunGitBranchOperation(
+        threadId: String,
+        operation: PendingGitBranchOperation,
+    ) {
+        val alert = gitBranchAlert(operation, uiState.value.composer.gitState)
+        if (alert != null) {
+            pendingGitBranchOperation = operation
+            gitSyncAlerts.update { alertsByThread ->
+                alertsByThread.toMutableMap().apply {
+                    this[threadId] = alert
+                }
+            }
+            return
+        }
+        pendingGitBranchOperation = null
+        performPendingGitBranchOperation(threadId, operation)
+    }
+
+    private fun performPendingGitBranchOperation(
+        threadId: String,
+        operation: PendingGitBranchOperation,
+    ) {
+        when (operation) {
+            is PendingGitBranchOperation.CreateBranch -> {
+                launchGitAction(
+                    threadId = threadId,
+                    title = "Branch Creation Failed",
+                    fallbackMessage = "Could not create branch.",
+                ) {
+                    repository.createGitBranch(threadId, operation.branchName)
+                }
+            }
+            is PendingGitBranchOperation.SwitchBranch -> {
+                launchGitAction(
+                    threadId = threadId,
+                    title = "Branch Switch Failed",
+                    fallbackMessage = "Could not switch branch.",
+                ) {
+                    repository.checkoutGitBranch(threadId, operation.branchName)
+                }
+            }
+            is PendingGitBranchOperation.CreateWorktree -> {
+                if (operation.followUp == GitWorktreeFollowUp.HANDOFF_CURRENT_THREAD) {
+                    viewModelScope.launch {
+                        clearGitSyncAlert(threadId)
+                        updateGitState(threadId) { currentState ->
+                            currentState.copy(isLoading = true, errorMessage = null)
+                        }
+                        runCatching {
+                            val result = repository.createGitWorktreeResult(
+                                threadId = threadId,
+                                name = operation.branchName,
+                                baseBranch = operation.baseBranch,
+                                changeTransfer = operation.changeTransfer,
+                            )
+                            repository.moveThreadToProjectPath(
+                                threadId = threadId,
+                                projectPath = result.worktreePath,
+                            )
+                            result
+                        }.onSuccess { result ->
+                            refreshGitState(threadId)
+                            updateGitState(threadId) { currentState ->
+                                currentState.copy(
+                                    isLoading = false,
+                                    lastActionMessage = "Moved this thread to worktree ${result.branch}.",
+                                    errorMessage = null,
+                                )
+                            }
+                        }.onFailure { error ->
+                            updateGitState(threadId) { currentState ->
+                                currentState.copy(
+                                    isLoading = false,
+                                    errorMessage = null,
+                                )
+                            }
+                            showGitSyncAlert(
+                                threadId = threadId,
+                                title = "Worktree Creation Failed",
+                                message = error.message ?: "Could not create worktree.",
+                            )
+                        }
+                    }
+                } else {
+                    launchGitAction(
+                        threadId = threadId,
+                        title = "Worktree Creation Failed",
+                        fallbackMessage = "Could not create worktree.",
+                    ) {
+                        repository.createGitWorktree(
+                            threadId = threadId,
+                            name = operation.branchName,
+                            baseBranch = operation.baseBranch,
+                            changeTransfer = operation.changeTransfer,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun showGitSyncAlert(
         threadId: String,
         message: String,
         title: String = "Git Error",
+        buttons: List<RemodexGitSyncAlertButtonUiState> = defaultGitSyncAlertButtons(),
     ) {
         val trimmedMessage = message.trim()
         if (trimmedMessage.isEmpty()) {
@@ -2018,6 +2365,7 @@ class AppViewModel(
                 this[threadId] = RemodexGitSyncAlertUiState(
                     title = title,
                     message = trimmedMessage,
+                    buttons = buttons,
                 )
             }
         }
@@ -2033,6 +2381,161 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private fun gitBranchAlert(
+        operation: PendingGitBranchOperation,
+        gitState: RemodexGitState,
+    ): RemodexGitSyncAlertUiState? {
+        val currentBranch = gitState.sync?.currentBranch?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: gitState.branches.currentBranch?.trim().orEmpty()
+        val defaultBranch = gitState.branches.defaultBranch?.trim().orEmpty()
+        val sync = gitState.sync
+        val isDirty = sync?.isDirty == true
+        val localOnlyCommitCount = sync?.localOnlyCommitCount ?: 0
+        val onDefaultBranch = currentBranch.isNotEmpty() && currentBranch == defaultBranch
+
+        return when (operation) {
+            is PendingGitBranchOperation.CreateBranch -> {
+                when {
+                    isDirty -> RemodexGitSyncAlertUiState(
+                        title = "Bring local changes to '${operation.branchName}'?",
+                        message = newBranchDirtyAlertMessage(
+                            gitState = gitState,
+                            branchName = operation.branchName,
+                            currentBranch = currentBranch,
+                            defaultBranch = defaultBranch,
+                            localOnlyCommitCount = localOnlyCommitCount,
+                        ),
+                        buttons = listOf(
+                            RemodexGitSyncAlertButtonUiState(
+                                title = "Cancel",
+                                role = RemodexGitSyncAlertButtonRole.CANCEL,
+                                action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                            ),
+                            RemodexGitSyncAlertButtonUiState(
+                                title = "Carry to New Branch",
+                                action = RemodexGitSyncAlertAction.CONTINUE_GIT_BRANCH_OPERATION,
+                            ),
+                            RemodexGitSyncAlertButtonUiState(
+                                title = "Commit, Create & Switch",
+                                action = RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION,
+                            ),
+                        ),
+                    )
+                    onDefaultBranch && localOnlyCommitCount > 0 -> {
+                        val commitLabel = if (localOnlyCommitCount == 1) {
+                            "1 local commit"
+                        } else {
+                            "$localOnlyCommitCount local commits"
+                        }
+                        val dirtySuffix = if (isDirty) {
+                            " Uncommitted changes also stay in this working copy and will follow onto the new branch after checkout."
+                        } else {
+                            ""
+                        }
+                        RemodexGitSyncAlertUiState(
+                            title = "Local commits stay on $defaultBranch",
+                            message = "$defaultBranch already has $commitLabel that are not on the remote. Creating '${operation.branchName}' now starts the new branch from the current HEAD, but those commits stay in $defaultBranch's history.$dirtySuffix",
+                            buttons = listOf(
+                                RemodexGitSyncAlertButtonUiState(
+                                    title = "Cancel",
+                                    role = RemodexGitSyncAlertButtonRole.CANCEL,
+                                    action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                                ),
+                                RemodexGitSyncAlertButtonUiState(
+                                    title = "Create Anyway",
+                                    action = RemodexGitSyncAlertAction.CONTINUE_GIT_BRANCH_OPERATION,
+                                ),
+                            ),
+                        )
+                    }
+                    else -> null
+                }
+            }
+            is PendingGitBranchOperation.CreateWorktree -> {
+                when {
+                    isDirty && currentBranch != operation.baseBranch -> {
+                        val transferVerb = if (operation.changeTransfer == RemodexGitWorktreeChangeTransferMode.MOVE) {
+                            "move"
+                        } else {
+                            "copy"
+                        }
+                        RemodexGitSyncAlertUiState(
+                            title = "${transferVerb.replaceFirstChar(Char::uppercase)} local changes from the current branch",
+                            message = "Creating '${operation.branchName}' can $transferVerb tracked local changes only from the current branch. Switch the base branch to '$currentBranch' or clean up local changes before creating the worktree.",
+                        )
+                    }
+                    onDefaultBranch && currentBranch == operation.baseBranch && localOnlyCommitCount > 0 -> {
+                        val commitLabel = if (localOnlyCommitCount == 1) {
+                            "1 local commit"
+                        } else {
+                            "$localOnlyCommitCount local commits"
+                        }
+                        val dirtySuffix = if (isDirty) {
+                            if (operation.changeTransfer == RemodexGitWorktreeChangeTransferMode.MOVE) {
+                                " Tracked local changes will move into the new worktree; ignored files stay here."
+                            } else {
+                                " Tracked local changes will also be copied into the new worktree; ignored files stay here."
+                            }
+                        } else {
+                            ""
+                        }
+                        RemodexGitSyncAlertUiState(
+                            title = "Local commits stay on $defaultBranch",
+                            message = "$defaultBranch already has $commitLabel that are not on the remote. Creating the new worktree branch '${operation.branchName}' from ${operation.baseBranch} starts from the current HEAD, but those commits stay in $defaultBranch's history too.$dirtySuffix",
+                            buttons = listOf(
+                                RemodexGitSyncAlertButtonUiState(
+                                    title = "Cancel",
+                                    role = RemodexGitSyncAlertButtonRole.CANCEL,
+                                    action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                                ),
+                                RemodexGitSyncAlertButtonUiState(
+                                    title = "Create Anyway",
+                                    action = RemodexGitSyncAlertAction.CONTINUE_GIT_BRANCH_OPERATION,
+                                ),
+                            ),
+                        )
+                    }
+                    else -> null
+                }
+            }
+            is PendingGitBranchOperation.SwitchBranch -> {
+                if (!isDirty) {
+                    null
+                } else {
+                    RemodexGitSyncAlertUiState(
+                        title = "Commit changes before switching branch?",
+                        message = dirtyBranchAlertMessage(
+                            gitState = gitState,
+                            intro = "These local changes can block checkout or be hard to reason about after the switch. Commit them on ${currentBranch.ifEmpty { "the current branch" }} first, then switch to '${operation.branchName}'.",
+                        ),
+                        buttons = listOf(
+                            RemodexGitSyncAlertButtonUiState(
+                                title = "Cancel",
+                                role = RemodexGitSyncAlertButtonRole.CANCEL,
+                                action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                            ),
+                            RemodexGitSyncAlertButtonUiState(
+                                title = "Commit & Switch",
+                                action = RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION,
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun defaultGitSyncAlertButtons(): List<RemodexGitSyncAlertButtonUiState> {
+        return listOf(
+            RemodexGitSyncAlertButtonUiState(
+                title = "OK",
+                role = RemodexGitSyncAlertButtonRole.CANCEL,
+                action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+            ),
+        )
     }
 
     private fun launchGitAction(
@@ -2195,6 +2698,92 @@ class AppViewModel(
         return path?.trim()?.ifEmpty { null }
     }
 
+    private fun normalizeComparableProjectPath(path: String?): String? {
+        return path
+            ?.trim()
+            ?.removeSuffix("/")
+            ?.ifEmpty { null }
+    }
+
+    private fun createPullRequestValidationMessage(gitState: RemodexGitState): String? {
+        val sync = gitState.sync
+        if (sync == null) {
+            return "Git status is still loading. Wait a moment and retry."
+        }
+        val branch = sync.currentBranch?.trim().orEmpty()
+        if (branch.isEmpty()) {
+            return "No current branch found."
+        }
+        val defaultBranch = gitState.branches.defaultBranch?.trim().orEmpty()
+        if (defaultBranch.isEmpty()) {
+            return "Could not determine the repository default branch."
+        }
+        if (branch == defaultBranch) {
+            return "Switch to a feature branch before creating a PR."
+        }
+        if (!sync.isPublishedToRemote || sync.trackingBranch.isNullOrBlank()) {
+            return "Push this branch before creating a PR."
+        }
+        if (sync.aheadCount > 0) {
+            return "Push this branch before creating a PR."
+        }
+        return null
+    }
+
+    private fun buildPullRequestUrl(ownerRepo: String, branch: String, base: String): String {
+        val encodedBase = encodeGitHubCompareRef(base)
+        val encodedBranch = encodeGitHubCompareRef(branch)
+        return "https://github.com/$ownerRepo/compare/$encodedBase...$encodedBranch?expand=1"
+    }
+
+    private fun encodeGitHubCompareRef(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+            .replace("+", "%20")
+            .replace("%2F", "/")
+    }
+
+    private fun dirtyBranchAlertMessage(
+        gitState: RemodexGitState,
+        intro: String,
+    ): String {
+        val files = gitState.sync?.files.orEmpty()
+        if (files.isEmpty()) {
+            return intro
+        }
+        val previewFiles = files.take(3).map { file -> file.path }
+        val fileLines = previewFiles.joinToString(separator = "\n") { path -> "- $path" }
+        val remainingCount = files.size - previewFiles.size
+        val overflowLine = if (remainingCount > 0) {
+            "\n- +$remainingCount more files"
+        } else {
+            ""
+        }
+        return "$intro\n\nFiles with local changes:\n$fileLines$overflowLine"
+    }
+
+    private fun newBranchDirtyAlertMessage(
+        gitState: RemodexGitState,
+        branchName: String,
+        currentBranch: String,
+        defaultBranch: String,
+        localOnlyCommitCount: Int,
+    ): String {
+        val sourceBranch = currentBranch.ifEmpty { "the current branch" }
+        var intro = "You're creating '$branchName' from $sourceBranch. Carry your tracked changes onto the new branch, or commit first and then create + switch."
+        if (defaultBranch.isNotEmpty() &&
+            sourceBranch == defaultBranch &&
+            localOnlyCommitCount > 0
+        ) {
+            val commitLabel = if (localOnlyCommitCount == 1) {
+                "1 local commit"
+            } else {
+                "$localOnlyCommitCount local commits"
+            }
+            intro = "$defaultBranch already has $commitLabel that are not on the remote. Those commits stay on $defaultBranch's history. $intro"
+        }
+        return dirtyBranchAlertMessage(gitState = gitState, intro = intro)
+    }
+
     private fun composerState(
         draftText: String,
         attachments: List<RemodexComposerAttachment>,
@@ -2246,7 +2835,7 @@ class AppViewModel(
         )
     }
 
-    private companion object {
+    companion object {
         const val MaxComposerImages = 4
         const val MaxAutocompleteItems = 6
         const val MinAutocompleteQueryLength = 2

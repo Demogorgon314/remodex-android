@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -734,6 +735,7 @@ private fun MainPane(
     }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val uriHandler = LocalUriHandler.current
     var repositoryDiffSheetPresentation by remember(uiState.selectedThread?.id) {
         mutableStateOf<FileChangeSheetPresentation?>(null)
     }
@@ -831,9 +833,12 @@ private fun MainPane(
                             onCreateGitBranch = viewModel::createGitBranch,
                             onCreateGitWorktree = viewModel::createGitWorktree,
                             onCommitGitChanges = { viewModel.commitGitChanges() },
+                            onCommitAndPushGitChanges = { viewModel.commitAndPushGitChanges() },
                             onPullGitChanges = viewModel::pullGitChanges,
                             onPushGitChanges = viewModel::pushGitChanges,
+                            onCreatePullRequest = { viewModel.createPullRequest(uriHandler::openUri) },
                             onDiscardRuntimeChangesAndSync = viewModel::discardRuntimeChangesAndSync,
+                            onHandoffThreadToWorktree = viewModel::handoffThreadToWorktree,
                             onForkThread = viewModel::forkThread,
                             onOpenSubagentThread = viewModel::selectThread,
                             onHydrateSubagentThread = viewModel::hydrateThreadMetadata,
@@ -893,10 +898,25 @@ private fun MainPane(
 
         uiState.gitSyncAlert?.let { alert ->
             AlertDialog(
-                onDismissRequest = viewModel::dismissGitSyncAlert,
+                onDismissRequest = { viewModel.performGitSyncAlertAction(RemodexGitSyncAlertAction.DISMISS_ONLY) },
                 confirmButton = {
-                    TextButton(onClick = viewModel::dismissGitSyncAlert) {
-                        Text("OK")
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        alert.buttons.forEach { button ->
+                            TextButton(
+                                onClick = { viewModel.performGitSyncAlertAction(button.action) },
+                            ) {
+                                Text(
+                                    text = button.title,
+                                    color = if (button.role == RemodexGitSyncAlertButtonRole.DESTRUCTIVE) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
                 title = { Text(alert.title) },

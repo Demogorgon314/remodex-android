@@ -31,8 +31,10 @@ import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -334,12 +336,31 @@ class BridgeThreadSyncService(
             existingSnapshot = existingSnapshot,
             syncState = RemodexThreadSyncState.LIVE,
             allowHistoryMergeWhileRunning = true,
-        ) ?: existingSnapshot
+        )?.let { snapshot ->
+            val normalizedPreferredProjectPath = preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)
+            if (normalizedPreferredProjectPath != null && snapshot.projectPath != normalizedPreferredProjectPath) {
+                snapshot.copy(projectPath = normalizedPreferredProjectPath)
+            } else {
+                snapshot
+            }
+        } ?: existingSnapshot
         resumedThreadIds.add(threadId)
         if (refreshedSnapshot != null) {
             upsertThreadSnapshot(refreshedSnapshot)
         }
         return refreshedSnapshot
+    }
+
+    override suspend fun updateThreadProjectPathLocally(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot? {
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return null
+        var updatedSnapshot: ThreadSyncSnapshot? = null
+        updateThread(threadId) { snapshot ->
+            snapshot.copy(projectPath = normalizedProjectPath).also { updatedSnapshot = it }
+        }
+        return updatedSnapshot
     }
 
     override fun isThreadResumedLocally(threadId: String): Boolean {
@@ -733,16 +754,30 @@ class BridgeThreadSyncService(
         val sourceThread = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
         val runtimeConfig = sourceThread.runtimeConfig
         val targetProjectPath = when (destination) {
-            RemodexComposerForkDestination.LOCAL -> sourceThread.projectPath
+            RemodexComposerForkDestination.LOCAL -> {
+                val localCheckoutPath = loadGitState(threadId).branches.localCheckoutPath?.trim().orEmpty()
+                if (sourceThread.projectPath.isManagedWorktreePath() && localCheckoutPath.isNotEmpty()) {
+                    localCheckoutPath
+                } else {
+                    sourceThread.projectPath
+                }
+            }
             RemodexComposerForkDestination.NEW_WORKTREE -> {
                 val defaultBranch = loadGitBranches(threadId).defaultBranch
                 val threadLabel = sourceThread.name?.trim()?.takeIf(String::isNotEmpty) ?: sourceThread.title
                 val branchName = defaultForkBranchName(threadLabel)
-                createWorktree(
+                val worktreeResult = createWorktree(
                     threadId = threadId,
                     name = branchName,
                     baseBranch = baseBranch?.trim()?.takeIf(String::isNotEmpty) ?: defaultBranch,
-                ).worktreePath
+                    changeTransfer = RemodexGitWorktreeChangeTransferMode.COPY,
+                )
+                if (worktreeResult.alreadyExisted) {
+                    throw IllegalStateException(
+                        "A managed worktree for '${worktreeResult.branch}' already exists. Choose a different branch name to create a fresh forked workspace."
+                    )
+                }
+                worktreeResult.worktreePath
             }
         }
         val forkResponse = runThreadFork(
@@ -831,10 +866,19 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return RemodexGitState()
         }
-        return RemodexGitState(
-            sync = loadGitSync(threadId),
-            branches = loadGitBranches(threadId),
-        )
+        val combinedResult = runCatching {
+            runGitRequest(threadId = threadId, method = "git/branchesWithStatus")
+                .result
+                ?.jsonObjectOrNull
+        }.getOrNull()
+        if (combinedResult != null) {
+            return RemodexGitState(
+                sync = combinedResult.firstObject("status")?.let(::decodeGitRepoSync),
+                branches = decodeGitBranches(combinedResult),
+            )
+        }
+
+        return RemodexGitState(sync = loadGitSync(threadId), branches = loadGitBranches(threadId))
     }
 
     override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
@@ -882,14 +926,34 @@ class BridgeThreadSyncService(
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
     ): RemodexGitState {
-        val worktreeResult = createWorktree(threadId, name, baseBranch)
+        val worktreeResult = createWorktree(
+            threadId = threadId,
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = changeTransfer,
+        )
         return loadGitState(threadId).copy(
             lastActionMessage = if (worktreeResult.alreadyExisted) {
                 "Opened existing worktree for ${worktreeResult.branch}."
             } else {
                 "Created worktree ${worktreeResult.branch}."
             },
+        )
+    }
+
+    override suspend fun createGitWorktreeResult(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+    ): RemodexGitWorktreeResult {
+        return createWorktree(
+            threadId = threadId,
+            name = name,
+            baseBranch = baseBranch,
+            changeTransfer = changeTransfer,
         )
     }
 
@@ -907,6 +971,21 @@ class BridgeThreadSyncService(
         val summary = result.result?.jsonObjectOrNull?.firstString("summary")
         return loadGitState(threadId).copy(
             lastActionMessage = summary ?: "Committed the current local changes.",
+        )
+    }
+
+    override suspend fun commitAndPushGitChanges(
+        threadId: String,
+        message: String?,
+    ): RemodexGitState {
+        val commitState = commitGitChanges(threadId = threadId, message = message)
+        val pushedState = pushGitChanges(threadId)
+        return pushedState.copy(
+            lastActionMessage = when {
+                !pushedState.lastActionMessage.isNullOrBlank() -> "Committed and pushed the current branch."
+                !commitState.lastActionMessage.isNullOrBlank() -> "Committed and pushed the current branch."
+                else -> "Committed and pushed the current branch."
+            },
         )
     }
 
@@ -929,6 +1008,17 @@ class BridgeThreadSyncService(
             },
         )
         return loadGitState(threadId).copy(lastActionMessage = "Discarded local runtime changes and synced from remote.")
+    }
+
+    override suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl {
+        val resultObject = runGitRequest(threadId = threadId, method = "git/remoteUrl")
+            .result
+            ?.jsonObjectOrNull
+            ?: return RemodexGitRemoteUrl()
+        return RemodexGitRemoteUrl(
+            url = resultObject.firstString("url").orEmpty(),
+            ownerRepo = resultObject.firstString("ownerRepo"),
+        )
     }
 
     override suspend fun previewAssistantRevert(
@@ -1199,6 +1289,10 @@ class BridgeThreadSyncService(
             .result
             ?.jsonObjectOrNull
             ?: return RemodexGitBranches()
+        return decodeGitBranches(resultObject)
+    }
+
+    private fun decodeGitBranches(resultObject: JsonObject): RemodexGitBranches {
         return RemodexGitBranches(
             branches = resultObject.firstArray("branches").orEmpty().mapNotNull { value ->
                 (value as? JsonPrimitive)?.content?.trim().takeIf { !it.isNullOrEmpty() }
@@ -1223,6 +1317,7 @@ class BridgeThreadSyncService(
         threadId: String,
         name: String,
         baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
     ): RemodexGitWorktreeResult {
         val resultObject = runGitRequest(
             threadId = threadId,
@@ -1230,7 +1325,7 @@ class BridgeThreadSyncService(
             params = buildJsonObject {
                 put("name", JsonPrimitive(name))
                 baseBranch?.trim()?.takeIf(String::isNotEmpty)?.let { put("baseBranch", JsonPrimitive(it)) }
-                put("changeTransfer", JsonPrimitive("copy"))
+                put("changeTransfer", JsonPrimitive(changeTransfer.name.lowercase(Locale.ROOT)))
             },
         ).result?.jsonObjectOrNull ?: throw IllegalStateException("git/createWorktree response missing result.")
         return RemodexGitWorktreeResult(
@@ -1302,10 +1397,54 @@ class BridgeThreadSyncService(
     ): RpcMessage {
         val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
         require(projectPath.isNotEmpty()) { "Missing local working directory for $method." }
-        return secureConnectionCoordinator.sendRequest(
-            method = method,
-            params = JsonObject(params + ("cwd" to JsonPrimitive(projectPath))),
-        )
+        return try {
+            secureConnectionCoordinator.sendRequest(
+                method = method,
+                params = JsonObject(params + ("cwd" to JsonPrimitive(projectPath))),
+            )
+        } catch (error: Throwable) {
+            throw mappedGitRequestError(error)
+        }
+    }
+
+    private fun mappedGitRequestError(error: Throwable): Throwable {
+        val rpcError = error as? RpcError ?: return error
+        val errorCode = rpcError.data?.jsonObjectOrNull?.firstString("errorCode")
+        val message = gitUserFacingMessage(errorCode, rpcError.message)
+        return IllegalStateException(message, rpcError)
+    }
+
+    private fun gitUserFacingMessage(errorCode: String?, fallback: String): String {
+        return when (errorCode) {
+            "nothing_to_commit" -> "Nothing to commit."
+            "nothing_to_push" -> "Nothing to push."
+            "push_rejected" -> "Push rejected. Pull changes first."
+            "branch_is_main" -> "Cannot operate on the main branch."
+            "protected_branch" -> "This branch is protected."
+            "branch_behind_remote" -> "Branch is behind remote. Pull first."
+            "dirty_and_behind" -> "Uncommitted changes and branch is behind remote."
+            "checkout_conflict_dirty_tree" -> "Cannot switch branches: you have uncommitted changes."
+            "checkout_branch_in_other_worktree" -> "Cannot switch branches: this branch is already open in another worktree."
+            "pull_conflict" -> "Pull failed due to conflicts."
+            "branch_exists" -> fallback.ifBlank { "Branch already exists." }
+            "invalid_branch_name" -> fallback.ifBlank { "Branch name is not valid for Git." }
+            "missing_branch", "missing_branch_name" -> "Branch name is required."
+            "missing_base_branch" -> fallback.ifBlank { "Base branch is required." }
+            "branch_already_open_here" -> fallback.ifBlank { "This branch is already open in the current project." }
+            "branch_in_other_worktree" -> fallback.ifBlank { "This branch is already open in another worktree." }
+            "confirmation_required" -> "Confirmation is required for this action."
+            "stash_pop_conflict" -> "Stash pop failed due to conflicts."
+            "missing_working_directory" -> fallback.ifBlank { "The selected local folder is not available on this Mac." }
+            "cannot_remove_local_checkout" -> fallback.ifBlank { "Cannot remove the main local checkout." }
+            "unmanaged_worktree" -> fallback.ifBlank { "Only managed worktrees can be cleaned up automatically." }
+            "worktree_cleanup_failed" -> fallback.ifBlank { "We could not clean up the temporary worktree automatically." }
+            else -> fallback
+        }
+    }
+
+    private fun String.isManagedWorktreePath(): Boolean {
+        val normalized = trim().replace('\\', '/')
+        return normalized.contains("/.codex/worktrees/") || normalized.contains("/.codex/worktrees")
     }
 
     private fun normalizeFuzzyFilePath(
