@@ -8,6 +8,26 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 object TurnTimelineReducer {
     private const val ManualPushResetMarkerItemId = "git.push.reset.marker"
 
+    fun assistantResponseAnchorIndex(
+        items: List<RemodexConversationItem>,
+        activeTurnId: String?,
+    ): Int? {
+        if (activeTurnId != null) {
+            val activeTurnIndex = items.indexOfLast { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                    item.turnId == activeTurnId
+            }
+            if (activeTurnIndex >= 0) {
+                return activeTurnIndex
+            }
+        }
+
+        val streamingAssistantIndex = items.indexOfLast { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT && item.isStreaming
+        }
+        return streamingAssistantIndex.takeIf { it >= 0 }
+    }
+
     fun reduce(mutations: List<TimelineMutation>): List<RemodexConversationItem> {
         return mutations.fold(emptyList<RemodexConversationItem>()) { items, mutation ->
             reduce(items, mutation)

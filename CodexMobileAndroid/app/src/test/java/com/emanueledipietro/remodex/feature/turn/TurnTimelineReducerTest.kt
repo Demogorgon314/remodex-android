@@ -73,6 +73,52 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `assistant response anchor prefers the active turn response`() {
+        val items = listOf(
+            RemodexConversationItem(
+                id = "assistant-1",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "Earlier reply",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            RemodexConversationItem(
+                id = "assistant-2",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "Current reply",
+                turnId = "turn-2",
+                isStreaming = true,
+                orderIndex = 2,
+            ),
+        )
+
+        assertEquals(1, TurnTimelineReducer.assistantResponseAnchorIndex(items, activeTurnId = "turn-2"))
+    }
+
+    @Test
+    fun `assistant response anchor falls back to the latest streaming assistant`() {
+        val items = listOf(
+            RemodexConversationItem(
+                id = "assistant-1",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "Earlier reply",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            RemodexConversationItem(
+                id = "assistant-2",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "Streaming reply",
+                turnId = "turn-2",
+                isStreaming = true,
+                orderIndex = 2,
+            ),
+        )
+
+        assertEquals(1, TurnTimelineReducer.assistantResponseAnchorIndex(items, activeTurnId = null))
+    }
+
+    @Test
     fun `projected fast path updates only the streaming assistant row`() {
         val user = RemodexConversationItem(
             id = "user-1",

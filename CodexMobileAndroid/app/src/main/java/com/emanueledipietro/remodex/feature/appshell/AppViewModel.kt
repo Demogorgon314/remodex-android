@@ -102,6 +102,8 @@ data class AppUiState(
     val gitSyncAlert: RemodexGitSyncAlertUiState? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
     val completionHapticSignal: Long = 0L,
+    val composerSendDismissSignal: Long = 0L,
+    val composerSendAnchorSignal: Long = 0L,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
@@ -170,6 +172,11 @@ private data class PendingComposerSendState(
     val isSubagentsSelectionArmed: Boolean,
 )
 
+private data class ComposerSendUiSignals(
+    val dismissSignal: Long = 0L,
+    val anchorSignal: Long = 0L,
+)
+
 class AppViewModel(
     private val repository: RemodexAppRepository,
 ) : ViewModel() {
@@ -189,6 +196,7 @@ class AppViewModel(
     private val gitSyncAlerts = MutableStateFlow<Map<String, RemodexGitSyncAlertUiState>>(emptyMap())
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val completionHapticSignalState = MutableStateFlow(0L)
+    private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
@@ -309,7 +317,8 @@ class AppViewModel(
             composerRenderStateA,
             composerRenderStateB,
             gitUiTransientState,
-        ) { sessionRenderState, renderStateA, renderStateB, gitUiState ->
+            composerSendUiSignals,
+        ) { sessionRenderState, renderStateA, renderStateB, gitUiState, sendSignalsByThread ->
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
@@ -324,6 +333,7 @@ class AppViewModel(
             val gitState = selectedThread?.id?.let(renderStateB.gitStatesByThread::get) ?: RemodexGitState()
             val selectedGitBaseBranch = selectedThread?.id?.let(renderStateB.baseBranchesByThread::get)
                 ?: gitState.branches.defaultBranch.orEmpty()
+            val selectedThreadSendSignals = selectedThread?.id?.let(sendSignalsByThread::get) ?: ComposerSendUiSignals()
             AppUiState(
                 onboardingCompleted = snapshot.onboardingCompleted,
                 connectionStatus = snapshot.connectionStatus,
@@ -373,6 +383,8 @@ class AppViewModel(
                     secureConnection = snapshot.secureConnection,
                     revertedMessageIds = gitUiState.revertedMessageIds,
                 ),
+                composerSendDismissSignal = selectedThreadSendSignals.dismissSignal,
+                composerSendAnchorSignal = selectedThreadSendSignals.anchorSignal,
                 assistantRevertSheet = gitUiState.assistantRevertSheet,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
             )
@@ -617,6 +629,7 @@ class AppViewModel(
                     )
                     return@launch
                 }
+                bumpComposerSendDismissSignal(threadId)
                 clearComposer(threadId)
                 try {
                     repository.startCodeReview(
@@ -624,6 +637,7 @@ class AppViewModel(
                         target = reviewSelection.target,
                         baseBranch = composer.selectedGitBaseBranch.ifBlank { null },
                     )
+                    bumpComposerSendAnchorSignal(threadId)
                     refreshGitState(threadId)
                 } catch (error: Throwable) {
                     if (error is CancellationException) {
@@ -643,9 +657,11 @@ class AppViewModel(
                 mentionedFiles = composer.mentionedFiles,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
+            bumpComposerSendDismissSignal(threadId)
             clearComposer(threadId)
             try {
                 repository.sendPrompt(threadId, payload, composer.attachments)
+                bumpComposerSendAnchorSignal(threadId)
             } catch (error: Throwable) {
                 if (error is CancellationException) {
                     throw error
@@ -1830,6 +1846,28 @@ class AppViewModel(
             messagesByThread.toMutableMap().apply { remove(threadId) }
         }
         clearComposerAutocomplete()
+    }
+
+    private fun bumpComposerSendDismissSignal(threadId: String) {
+        composerSendUiSignals.update { signalsByThread ->
+            val current = signalsByThread[threadId] ?: ComposerSendUiSignals()
+            signalsByThread.toMutableMap().apply {
+                this[threadId] = current.copy(
+                    dismissSignal = current.dismissSignal + 1,
+                )
+            }
+        }
+    }
+
+    private fun bumpComposerSendAnchorSignal(threadId: String) {
+        composerSendUiSignals.update { signalsByThread ->
+            val current = signalsByThread[threadId] ?: ComposerSendUiSignals()
+            signalsByThread.toMutableMap().apply {
+                this[threadId] = current.copy(
+                    anchorSignal = current.anchorSignal + 1,
+                )
+            }
+        }
     }
 
     private fun restoreComposer(

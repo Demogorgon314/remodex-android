@@ -427,8 +427,16 @@ fun ConversationScreen(
     var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
     var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var handledComposerAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
+    var pendingAssistantAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     val latestRunningIndicatorMessageId = remember(timelineItems, blockAccessories) {
         timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
+    }
+    val assistantResponseAnchorIndex = remember(timelineItems, thread.activeTurnId) {
+        TurnTimelineReducer.assistantResponseAnchorIndex(
+            items = timelineItems,
+            activeTurnId = thread.activeTurnId,
+        )
     }
     val bottomAnchorRequest = remember(
         initialScrollApplied,
@@ -529,6 +537,47 @@ fun ConversationScreen(
                 onCloseComposerAutocomplete()
             }
         }
+    }
+
+    LaunchedEffect(thread.id, uiState.composerSendDismissSignal) {
+        if (uiState.composerSendDismissSignal == 0L) {
+            return@LaunchedEffect
+        }
+        focusManager.clearFocus(force = true)
+        composerFocused = false
+        composerSawImeWhileFocused = false
+        onCloseComposerAutocomplete()
+    }
+
+    LaunchedEffect(thread.id, uiState.composerSendAnchorSignal) {
+        val signal = uiState.composerSendAnchorSignal
+        if (signal == 0L || signal == handledComposerAnchorSignal) {
+            return@LaunchedEffect
+        }
+
+        handledComposerAnchorSignal = signal
+        keepTimelinePinnedToBottom = true
+        pendingAssistantAnchorSignal = signal
+
+        if (timelineItems.isNotEmpty()) {
+            withFrameNanos { }
+            timelineState.scrollToItem(bottomAnchorIndex)
+            withFrameNanos { }
+            timelineState.scrollToItem(bottomAnchorIndex)
+        }
+    }
+
+    LaunchedEffect(thread.id, pendingAssistantAnchorSignal, assistantResponseAnchorIndex) {
+        if (pendingAssistantAnchorSignal == 0L || assistantResponseAnchorIndex == null) {
+            return@LaunchedEffect
+        }
+
+        withFrameNanos { }
+        timelineState.scrollToItem(assistantResponseAnchorIndex)
+        // After we jump back to the current turn, keep follow-bottom enabled so
+        // streaming output continues to track downward like a live chat.
+        keepTimelinePinnedToBottom = true
+        pendingAssistantAnchorSignal = 0L
     }
 
     LaunchedEffect(thread.id, bottomAnchorRequest) {

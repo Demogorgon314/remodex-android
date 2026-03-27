@@ -660,12 +660,17 @@ class AppViewModelTest {
         viewModel.selectSlashCommand(RemodexSlashCommand.SUBAGENTS)
         advanceUntilIdle()
 
+        val initialDismissSignal = viewModel.uiState.value.composerSendDismissSignal
+        val initialAnchorSignal = viewModel.uiState.value.composerSendAnchorSignal
+
         viewModel.sendPrompt()
         runCurrent()
 
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertTrue(viewModel.uiState.value.composer.attachments.isEmpty())
         assertFalse(viewModel.uiState.value.composer.isSubagentsSelectionArmed)
+        assertEquals(initialDismissSignal + 1, viewModel.uiState.value.composerSendDismissSignal)
+        assertEquals(initialAnchorSignal, viewModel.uiState.value.composerSendAnchorSignal)
 
         advanceTimeBy(100)
         advanceUntilIdle()
@@ -674,6 +679,31 @@ class AppViewModelTest {
         assertEquals(1, viewModel.uiState.value.composer.attachments.size)
         assertTrue(viewModel.uiState.value.composer.isSubagentsSelectionArmed)
         assertEquals("Bridge down", viewModel.uiState.value.composer.composerMessage)
+        assertEquals(initialAnchorSignal, viewModel.uiState.value.composerSendAnchorSignal)
+    }
+
+    @Test
+    fun `successful send emits dismiss and anchor signals`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Send thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Ship this")
+        advanceUntilIdle()
+
+        val initialDismissSignal = viewModel.uiState.value.composerSendDismissSignal
+        val initialAnchorSignal = viewModel.uiState.value.composerSendAnchorSignal
+
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(initialDismissSignal + 1, viewModel.uiState.value.composerSendDismissSignal)
+        assertEquals(initialAnchorSignal + 1, viewModel.uiState.value.composerSendAnchorSignal)
     }
 
     @Test
