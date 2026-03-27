@@ -133,6 +133,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -154,6 +155,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -216,10 +219,14 @@ private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
-private val FileAutocompleteRowHeight = 50.dp
+private val FileAutocompleteRowHeight = 38.dp
 private val ConversationBottomAnchorHeight = 1.dp
 private val FileChangeAddedColor = Color(0xFF22A653)
 private val FileChangeDeletedColor = Color(0xFFE04646)
+private val ComposerMentionFileTint = Color(0xFF2563EB)
+private val ComposerMentionSkillTint = Color(0xFF4F46E5)
+private val ComposerMentionChipCornerRadius = 8.dp
+private val ComposerMentionRemoveButtonSize = 14.dp
 
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
     com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject(projectPath)
@@ -251,6 +258,39 @@ internal const val ConversationRunningIndicatorTag = "conversation_running_indic
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
 internal const val ConversationStatusSheetTag = "conversation_status_sheet"
+
+private data class ComposerAccessoryChipColors(
+    val tint: Color,
+    val background: Color,
+    val removeBackground: Color,
+    val border: BorderStroke? = null,
+)
+
+private fun rememberMentionChipColors(
+    tint: Color,
+    chrome: RemodexConversationChrome,
+): ComposerAccessoryChipColors {
+    val backgroundAlpha = if (chrome.canvas.luminance() < 0.45f) 0.18f else 0.08f
+    val removeAlpha = if (chrome.canvas.luminance() < 0.45f) 0.24f else 0.14f
+    return ComposerAccessoryChipColors(
+        tint = tint,
+        background = tint.copy(alpha = backgroundAlpha),
+        removeBackground = tint.copy(alpha = removeAlpha),
+    )
+}
+
+internal fun syncComposerInputValue(
+    currentValue: TextFieldValue,
+    externalText: String,
+): TextFieldValue {
+    if (currentValue.text == externalText) {
+        return currentValue
+    }
+    return TextFieldValue(
+        text = externalText,
+        selection = TextRange(externalText.length),
+    )
+}
 
 private data class ConversationBlockAccessoryState(
     val showsRunningIndicator: Boolean = false,
@@ -2318,6 +2358,23 @@ private fun ComposerCard(
 ) {
     val chrome = remodexConversationChrome()
     val composer = uiState.composer
+    var composerInputValue by rememberSaveable(
+        uiState.selectedThread?.id,
+        stateSaver = TextFieldValue.Saver,
+    ) {
+        mutableStateOf(
+            TextFieldValue(
+                text = composer.draftText,
+                selection = TextRange(composer.draftText.length),
+            ),
+        )
+    }
+    LaunchedEffect(composer.draftText) {
+        composerInputValue = syncComposerInputValue(
+            currentValue = composerInputValue,
+            externalText = composer.draftText,
+        )
+    }
     val queuedCount = composer.queuedDrafts.size
     val orderedModels = remember(composer.runtimeConfig.availableModels) {
         RemodexRuntimeMetaMapper.orderedModels(composer.runtimeConfig.availableModels)
@@ -2376,7 +2433,7 @@ private fun ComposerCard(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
             ) {
-                if (composer.draftText.isBlank()) {
+                if (composerInputValue.text.isBlank()) {
                     Text(
                         text = if (composer.canStop) {
                             "Queue a follow-up"
@@ -2388,8 +2445,13 @@ private fun ComposerCard(
                     )
                 }
                 BasicTextField(
-                    value = composer.draftText,
-                    onValueChange = onComposerInputChanged,
+                    value = composerInputValue,
+                    onValueChange = { nextValue ->
+                        composerInputValue = nextValue
+                        if (nextValue.text != composer.draftText) {
+                            onComposerInputChanged(nextValue.text)
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .onFocusChanged { focusState ->
@@ -2618,6 +2680,15 @@ private fun ComposerAccessoryStrip(
     onClearSubagentsSelection: () -> Unit,
 ) {
     val composer = uiState.composer
+    val chrome = remodexConversationChrome()
+    val neutralChipColors = remember(chrome) {
+        ComposerAccessoryChipColors(
+            tint = chrome.titleText,
+            background = chrome.mutedSurface,
+            removeBackground = chrome.subtleBorder.copy(alpha = 0.5f),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+        )
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -2639,10 +2710,16 @@ private fun ComposerAccessoryStrip(
         }
 
         if (composer.mentionedFiles.isNotEmpty()) {
+            val fileChipColors = rememberMentionChipColors(
+                tint = ComposerMentionFileTint,
+                chrome = chrome,
+            )
             AccessoryChipRow {
                 composer.mentionedFiles.forEach { mention ->
                     AccessoryChip(
-                        label = "@${mention.fileName}",
+                        label = mention.fileName,
+                        leadingGlyph = "</>",
+                        colors = fileChipColors,
                         onRemove = { onRemoveMentionedFile(mention.id) },
                     )
                 }
@@ -2650,10 +2727,16 @@ private fun ComposerAccessoryStrip(
         }
 
         if (composer.mentionedSkills.isNotEmpty()) {
+            val skillChipColors = rememberMentionChipColors(
+                tint = ComposerMentionSkillTint,
+                chrome = chrome,
+            )
             AccessoryChipRow {
                 composer.mentionedSkills.forEach { mention ->
                     AccessoryChip(
-                        label = "\$${mention.name}",
+                        label = formatSkillDisplayName(mention.name),
+                        leadingGlyph = "$",
+                        colors = skillChipColors,
                         onRemove = { onRemoveMentionedSkill(mention.id) },
                     )
                 }
@@ -2664,6 +2747,7 @@ private fun ComposerAccessoryStrip(
             AccessoryChipRow {
                 AccessoryChip(
                     label = "Code Review: ${target.title}",
+                    colors = neutralChipColors,
                     onRemove = onClearReviewSelection,
                 )
             }
@@ -2673,6 +2757,7 @@ private fun ComposerAccessoryStrip(
             AccessoryChipRow {
                 AccessoryChip(
                     label = "Subagents",
+                    colors = neutralChipColors,
                     onRemove = onClearSubagentsSelection,
                 )
             }
@@ -2696,33 +2781,55 @@ private fun AccessoryChipRow(
 @Composable
 private fun AccessoryChip(
     label: String,
+    leadingGlyph: String? = null,
+    colors: ComposerAccessoryChipColors,
     onRemove: () -> Unit,
 ) {
-    val chrome = remodexConversationChrome()
     Surface(
-        color = chrome.mutedSurface,
-        shape = RemodexConversationShapes.pill,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
+        color = colors.background,
+        shape = RoundedCornerShape(ComposerMentionChipCornerRadius),
+        border = colors.border,
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
         Row(
             modifier = Modifier
                 .clickable(onClick = onRemove)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            if (leadingGlyph != null) {
+                Text(
+                    text = leadingGlyph,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.sp,
+                    ),
+                    color = colors.tint,
+                )
+            }
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = chrome.titleText,
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                color = colors.tint,
             )
-            Icon(
-                imageVector = Icons.Outlined.Close,
-                contentDescription = "Remove $label",
-                tint = chrome.secondaryText,
-            )
+            Box(
+                modifier = Modifier
+                    .size(ComposerMentionRemoveButtonSize)
+                    .background(
+                        color = colors.removeBackground,
+                        shape = CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = "Remove $label",
+                    modifier = Modifier.size(8.dp),
+                    tint = colors.tint,
+                )
+            }
         }
     }
 }
@@ -3004,7 +3111,7 @@ private fun FileAutocompleteRow(
     ) {
         Text(
             text = item.fileName,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
             fontWeight = FontWeight.SemiBold,
             color = chrome.titleText,
             maxLines = 1,
@@ -3012,7 +3119,7 @@ private fun FileAutocompleteRow(
         )
         Text(
             text = item.path,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = chrome.secondaryText,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -3030,7 +3137,7 @@ private fun SkillAutocompleteRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(SkillAutocompleteRowHeight)
+            .heightIn(min = SkillAutocompleteRowHeight)
             .clickable(
                 onClick = {
                     performLightHaptic()
@@ -3048,7 +3155,7 @@ private fun SkillAutocompleteRow(
             Text(
                 text = formatSkillDisplayName(skill.name),
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                 fontWeight = FontWeight.SemiBold,
                 color = chrome.titleText,
                 maxLines = 1,
