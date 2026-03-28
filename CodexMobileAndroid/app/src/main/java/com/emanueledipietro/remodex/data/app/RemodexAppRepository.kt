@@ -140,6 +140,11 @@ interface RemodexAppRepository {
         baseBranch: String? = null,
     ): String?
 
+    suspend fun forkThreadIntoProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): String?
+
     suspend fun loadGitState(threadId: String): RemodexGitState
 
     suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()

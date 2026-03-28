@@ -83,6 +83,12 @@ class RemodexRuntimeConfigTest {
         assertNull(config.serviceTier)
     }
 
+    @Test
+    fun `access mode exposes sandbox values expected by current bridge runtimes`() {
+        assertEquals("workspace-write", RemodexAccessMode.ON_REQUEST.sandboxLegacyValue)
+        assertEquals("danger-full-access", RemodexAccessMode.FULL_ACCESS.sandboxLegacyValue)
+    }
+
     private fun gpt54Model(): RemodexModelOption {
         return RemodexModelOption(
             id = "gpt-5.4",

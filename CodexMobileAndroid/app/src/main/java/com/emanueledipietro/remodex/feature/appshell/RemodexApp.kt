@@ -839,6 +839,7 @@ private fun MainPane(
                             onCreatePullRequest = { viewModel.createPullRequest(uriHandler::openUri) },
                             onDiscardRuntimeChangesAndSync = viewModel::discardRuntimeChangesAndSync,
                             onHandoffThreadToWorktree = viewModel::handoffThreadToWorktree,
+                            onForkThreadIntoNewWorktree = viewModel::forkThreadIntoNewWorktree,
                             onForkThread = viewModel::forkThread,
                             onOpenSubagentThread = viewModel::selectThread,
                             onHydrateSubagentThread = viewModel::hydrateThreadMetadata,

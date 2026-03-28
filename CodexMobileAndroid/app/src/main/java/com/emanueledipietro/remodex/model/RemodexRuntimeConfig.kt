@@ -38,6 +38,12 @@ enum class RemodexAccessMode {
             ON_REQUEST -> listOf("on-request", "onRequest")
             FULL_ACCESS -> listOf("never")
         }
+
+    val sandboxLegacyValue: String
+        get() = when (this) {
+            ON_REQUEST -> "workspace-write"
+            FULL_ACCESS -> "danger-full-access"
+        }
 }
 
 @Serializable

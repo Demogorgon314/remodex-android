@@ -913,6 +913,23 @@ class DefaultRemodexAppRepository(
             destination = destination,
             baseBranch = baseBranch,
         ) ?: return null
+        return selectForkedThread(forkedThread)
+    }
+
+    override suspend fun forkThreadIntoProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): String? {
+        val forkedThread = threadCommandService.forkThreadIntoProjectPath(
+            threadId = threadId,
+            projectPath = projectPath,
+        ) ?: return null
+        return selectForkedThread(forkedThread)
+    }
+
+    private suspend fun selectForkedThread(
+        forkedThread: ThreadSyncSnapshot,
+    ): String {
         refreshBaseThreadsFromSync()
         appPreferencesRepository.setSelectedThreadId(forkedThread.id)
         sessionState.update { snapshot ->

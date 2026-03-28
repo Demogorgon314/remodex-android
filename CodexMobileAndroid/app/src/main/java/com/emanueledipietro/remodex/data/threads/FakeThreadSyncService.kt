@@ -358,6 +358,38 @@ class FakeThreadSyncService(
         return forked
     }
 
+    override suspend fun forkThreadIntoProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot? {
+        val source = backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId } ?: return null
+        val forked = ThreadSyncSnapshot(
+            id = "thread-${UUID.randomUUID()}",
+            title = "${source.title} Fork",
+            preview = "Forked into a prepared worktree.",
+            projectPath = projectPath,
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = System.currentTimeMillis(),
+            isRunning = false,
+            runtimeConfig = source.runtimeConfig,
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "fork-${UUID.randomUUID()}",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        text = "Forked from `${source.id}` into a prepared worktree.",
+                        orderIndex = 0L,
+                    ),
+                ),
+            ),
+        )
+        backingThreads.update { threads ->
+            (listOf(forked) + threads).sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
+        gitStateByThreadId[forked.id] = seedGitState(forked)
+        return forked
+    }
+
     override suspend fun fuzzyFileSearch(
         threadId: String,
         query: String,

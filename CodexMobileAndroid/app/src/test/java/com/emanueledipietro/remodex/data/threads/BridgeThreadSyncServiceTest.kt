@@ -343,6 +343,98 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `fork thread encodes sandbox using bridge runtime values`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fork-sandbox",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var capturedForkParams: JsonObject? = null
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-source"))
+                                        put("title", JsonPrimitive("Source thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-source"))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/fork" to { message ->
+                    capturedForkParams = message.params?.jsonObjectOrNull
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-forked"))
+                                put("title", JsonPrimitive("Forked thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-local"))
+                            },
+                        )
+                    }
+                },
+                "thread/read" to { request ->
+                    val threadId = request.params?.jsonObjectOrNull?.firstString("threadId")
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive(threadId ?: "thread-forked"))
+                                put("title", JsonPrimitive("Forked thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-local"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.forkThreadIntoProjectPath(
+                threadId = "thread-source",
+                projectPath = "/tmp/project-local",
+            )
+            advanceUntilIdle()
+
+            assertEquals("workspace-write", capturedForkParams?.firstString("sandbox"))
+            assertEquals("on-request", capturedForkParams?.firstString("approvalPolicy"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `image url fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithImageUrlFieldFallbackValue(

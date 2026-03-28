@@ -383,6 +383,7 @@ fun ConversationScreen(
     onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
     onHandoffThreadToWorktree: (String, String) -> Unit,
+    onForkThreadIntoNewWorktree: (String, String) -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
@@ -402,6 +403,7 @@ fun ConversationScreen(
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
@@ -511,6 +513,16 @@ fun ConversationScreen(
             if (command == RemodexSlashCommand.STATUS) {
                 statusSheetExpanded = true
                 onRefreshUsageStatus()
+            }
+        }
+    }
+    val handleForkThread: (RemodexComposerForkDestination) -> Unit = remember(onForkThread) {
+        { destination ->
+            if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
+                worktreeSheetMode = WorktreeSheetMode.FORK
+                worktreeHandoffSheetExpanded = true
+            } else {
+                onForkThread(destination)
             }
         }
     }
@@ -822,7 +834,7 @@ fun ConversationScreen(
                                     onSelectSlashCommand = handleSelectSlashCommand,
                                     onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                     onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                    onForkThread = onForkThread,
+                                    onForkThread = handleForkThread,
                                     modifier = Modifier
                                         .padding(bottom = 6.dp),
                                 )
@@ -850,7 +862,7 @@ fun ConversationScreen(
                                 onClearReviewSelection = onClearReviewSelection,
                                 onClearSubagentsSelection = onClearSubagentsSelection,
                                 onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                onForkThread = onForkThread,
+                                onForkThread = handleForkThread,
                                 onComposerFocusChanged = { isFocused ->
                                     composerFocused = isFocused
                                 },
@@ -868,7 +880,10 @@ fun ConversationScreen(
                             onSelectAccessMode = onSelectAccessMode,
                             onRefreshUsageStatus = onRefreshUsageStatus,
                             onOpenGitSheet = { gitSheetExpanded = true },
-                            onOpenWorktreeHandoff = { worktreeHandoffSheetExpanded = true },
+                            onOpenWorktreeHandoff = {
+                                worktreeSheetMode = WorktreeSheetMode.HANDOFF
+                                worktreeHandoffSheetExpanded = true
+                            },
                         )
                     }
                 }
@@ -877,12 +892,7 @@ fun ConversationScreen(
 
         if (worktreeHandoffSheetExpanded) {
             WorktreeHandoffSheet(
-                title = if (thread.messages.isEmpty()) "New worktree" else "Hand off thread to worktree",
-                message = if (thread.messages.isEmpty()) {
-                    "Create and check out a branch in a new worktree, then continue this local chat there."
-                } else {
-                    "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
-                },
+                mode = worktreeSheetMode,
                 preferredBaseBranch = preferredWorktreeBaseBranch(
                     gitState = uiState.composer.gitState,
                     selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
@@ -890,7 +900,10 @@ fun ConversationScreen(
                 onDismiss = { worktreeHandoffSheetExpanded = false },
                 onSubmit = { branchName, baseBranch ->
                     worktreeHandoffSheetExpanded = false
-                    onHandoffThreadToWorktree(branchName, baseBranch)
+                    when (worktreeSheetMode) {
+                        WorktreeSheetMode.HANDOFF -> onHandoffThreadToWorktree(branchName, baseBranch)
+                        WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
+                    }
                 },
             )
         }
@@ -2326,6 +2339,11 @@ private fun preferredWorktreeBaseBranch(
         ?: ""
 }
 
+private enum class WorktreeSheetMode {
+    HANDOFF,
+    FORK,
+}
+
 private fun shouldShowDiscardRuntimeChangesAndSync(sync: RemodexGitRepoSync?): Boolean {
     if (sync == null) {
         return false
@@ -2410,8 +2428,7 @@ private fun DetailedGitSheet(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WorktreeHandoffSheet(
-    title: String,
-    message: String,
+    mode: WorktreeSheetMode,
     preferredBaseBranch: String,
     onDismiss: () -> Unit,
     onSubmit: (String, String) -> Unit,
@@ -2427,11 +2444,19 @@ private fun WorktreeHandoffSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = title,
+                text = when (mode) {
+                    WorktreeSheetMode.HANDOFF -> "Hand off thread to worktree"
+                    WorktreeSheetMode.FORK -> "Fork thread into new worktree"
+                },
                 style = MaterialTheme.typography.titleLarge,
             )
             Text(
-                text = message,
+                text = when (mode) {
+                    WorktreeSheetMode.HANDOFF ->
+                        "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
+                    WorktreeSheetMode.FORK ->
+                        "Create and check out a branch in a new worktree, then fork this conversation into the new checkout. Tracked local changes are copied there too, while the current thread and Local checkout stay exactly where they are."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -2455,7 +2480,12 @@ private fun WorktreeHandoffSheet(
                 enabled = branchDraft.isNotBlank() && trimmedBaseBranch.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(title)
+                Text(
+                    when (mode) {
+                        WorktreeSheetMode.HANDOFF -> "Hand off"
+                        WorktreeSheetMode.FORK -> "Fork"
+                    },
+                )
             }
         }
     }

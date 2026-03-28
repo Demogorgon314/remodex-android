@@ -92,6 +92,11 @@ interface ThreadCommandService {
         baseBranch: String? = null,
     ): ThreadSyncSnapshot?
 
+    suspend fun forkThreadIntoProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot?
+
     suspend fun fuzzyFileSearch(
         threadId: String,
         query: String,

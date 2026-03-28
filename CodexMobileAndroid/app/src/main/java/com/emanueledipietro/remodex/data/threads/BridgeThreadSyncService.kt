@@ -790,6 +790,24 @@ class BridgeThreadSyncService(
         return backingThreads.value.firstOrNull { snapshot -> snapshot.id == forkResponse.id } ?: forkResponse
     }
 
+    override suspend fun forkThreadIntoProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSyncSnapshot? {
+        if (!isConnected()) {
+            return null
+        }
+        val sourceThread = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        val forkResponse = runThreadFork(
+            threadId = threadId,
+            projectPath = projectPath.trim().takeIf(String::isNotEmpty),
+            runtimeConfig = sourceThread.runtimeConfig,
+        ) ?: return null
+        refreshThreads()
+        hydrateThread(forkResponse.id)
+        return backingThreads.value.firstOrNull { snapshot -> snapshot.id == forkResponse.id } ?: forkResponse
+    }
+
     override suspend fun fuzzyFileSearch(
         threadId: String,
         query: String,
@@ -1353,7 +1371,7 @@ class BridgeThreadSyncService(
                         runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
                     }
                     if (includeSandbox) {
-                        put("sandbox", JsonPrimitive(runtimeConfig.accessMode.approvalPolicyCandidates.first()))
+                        put("sandbox", JsonPrimitive(runtimeConfig.accessMode.sandboxLegacyValue))
                     }
                 }
             }

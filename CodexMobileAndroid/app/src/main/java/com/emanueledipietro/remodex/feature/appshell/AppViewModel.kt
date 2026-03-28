@@ -1316,6 +1316,58 @@ class AppViewModel(
         }
     }
 
+    fun forkThreadIntoNewWorktree(
+        name: String,
+        baseBranch: String?,
+    ) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val trimmedName = name.trim()
+        val trimmedBaseBranch = baseBranch?.trim().orEmpty()
+        if (trimmedName.isEmpty() || trimmedBaseBranch.isEmpty()) {
+            return
+        }
+
+        viewModelScope.launch {
+            clearComposerAutocomplete()
+            dismissAssistantRevertSheet()
+            clearGitSyncAlert(threadId)
+            updateGitState(threadId) { currentState ->
+                currentState.copy(isLoading = true, errorMessage = null)
+            }
+            runCatching {
+                val worktreeResult = repository.createGitWorktreeResult(
+                    threadId = threadId,
+                    name = trimmedName,
+                    baseBranch = trimmedBaseBranch,
+                    changeTransfer = RemodexGitWorktreeChangeTransferMode.COPY,
+                )
+                if (worktreeResult.alreadyExisted) {
+                    throw IllegalStateException(
+                        "A managed worktree for '${worktreeResult.branch}' already exists. Choose a different branch name to create a fresh forked workspace."
+                    )
+                }
+                repository.forkThreadIntoProjectPath(
+                    threadId = threadId,
+                    projectPath = worktreeResult.worktreePath,
+                )
+            }.onSuccess { nextThreadId ->
+                updateGitState(threadId) { currentState ->
+                    currentState.copy(isLoading = false, errorMessage = null)
+                }
+                nextThreadId?.let(::refreshGitState)
+            }.onFailure { error ->
+                updateGitState(threadId) { currentState ->
+                    currentState.copy(isLoading = false, errorMessage = null)
+                }
+                showGitSyncAlert(
+                    threadId = threadId,
+                    title = "Worktree Fork Failed",
+                    message = error.message ?: "Could not fork the thread into a new worktree.",
+                )
+            }
+        }
+    }
+
     fun startAssistantRevertPreview(messageId: String) {
         val thread = uiState.value.selectedThread ?: return
         val message = thread.messages.firstOrNull { item -> item.id == messageId } ?: return

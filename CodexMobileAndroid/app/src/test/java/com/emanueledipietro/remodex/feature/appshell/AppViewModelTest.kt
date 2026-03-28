@@ -1246,6 +1246,44 @@ class AppViewModelTest {
         )
     }
 
+    @Test
+    fun `fork into new worktree creates a copy worktree then forks into that project path`() = runTest {
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Git thread",
+            projectPath = "/tmp/remodex",
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+            gitWorktreeResult = com.emanueledipietro.remodex.model.RemodexGitWorktreeResult(
+                branch = "feature/forked",
+                worktreePath = "/tmp/remodex/.codex/worktrees/feature/forked",
+                alreadyExisted = false,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.forkThreadIntoNewWorktree(
+            name = "feature/forked",
+            baseBranch = "main",
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(Triple("thread-1", "feature/forked", "main")),
+            repository.createGitWorktreeResultRequests,
+        )
+        assertEquals(
+            listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/forked"),
+            repository.forkThreadIntoProjectPathRequests,
+        )
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
@@ -1267,6 +1305,7 @@ class AppViewModelTest {
         val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
         val discardRuntimeChangesRequests = mutableListOf<String>()
         val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
+        val forkThreadIntoProjectPathRequests = mutableListOf<Pair<String, String>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
@@ -1447,6 +1486,14 @@ class AppViewModelTest {
             destination: RemodexComposerForkDestination,
             baseBranch: String?,
         ): String? = null
+
+        override suspend fun forkThreadIntoProjectPath(
+            threadId: String,
+            projectPath: String,
+        ): String? {
+            forkThreadIntoProjectPathRequests += threadId to projectPath
+            return "thread-forked"
+        }
 
         override suspend fun loadGitState(threadId: String): RemodexGitState {
             gitStateError?.let { throw it }
