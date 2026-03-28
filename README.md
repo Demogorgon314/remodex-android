@@ -46,30 +46,40 @@ Build the iOS app from source in Xcode, install your own signed build on-device,
 
 If you scan the pairing QR with a generic camera or QR reader before installing the app, your device may treat the QR payload as plain text and open a web search instead of pairing.
 
-## Android Preview Client
+## Android Client
 
-`CodexMobileAndroid` is now the Android client workspace for the same local-first pairing model. You can build it from Android Studio or with Gradle:
+`CodexMobileAndroid` is the Android app workspace for the same local-first pairing model. You can build a local debug build from Android Studio or with Gradle:
 
 ```sh
 cd CodexMobileAndroid
 ./gradlew :app:assembleDebug
 ```
 
-Current Android scope now follows the iOS client much more closely: onboarding, QR recovery, trusted reconnect, grouped thread browsing, pinned plans, reducer-backed timelines, send/stop/queue composer flows, `@files`, `$skills`, `/commands`, subagent and inline review entry points, git/worktree controls, assistant undo previews, image intake from the Android photo picker, local notifications, and managed push registration for Android when Firebase is configured.
+Current Android scope now covers the same local-first pairing and remote-control flow as iOS, including:
+
+- onboarding, QR bootstrap/recovery, and trusted reconnect
+- grouped thread browsing, search, pinned plans, queued drafts, and reducer-backed timelines
+- send/stop/queue composer flows, plan mode, reasoning controls, and access mode controls
+- `@files`, `$skills`, `/review`, `/fork`, `/status`, and `/subagents`
+- git/worktree actions, branch handoff, and assistant undo previews
+- image attachments from the system photo picker and direct camera capture
+- local notifications, plus managed push registration when Firebase is configured
+
+The Android app currently ships from source in this repo rather than a public store build.
 
 Managed push on Android requires Firebase configuration that is intentionally not committed to this repository:
 
 - add your own `CodexMobileAndroid/app/google-services.json` for the Android app build
 - provide relay-side FCM credentials through Google Application Default Credentials or an equivalent service-account configuration
 
-Direct camera capture is still the main intentionally deferred Android gap; the current Android composer uses the system photo picker for image intake.
+Release packaging is also wired up in the Android project, but `:app:assembleRelease` requires signing credentials. The project accepts the `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` environment variables, and `CodexMobileAndroid/scripts/generate-release-secrets.sh` can generate a local keystore plus matching GitHub Actions secrets.
 
 ## Architecture
 
 ```
 ┌──────────────┐       Paired session   ┌───────────────┐       stdin/stdout       ┌─────────────┐
-│  Remodex iOS │ ◄────────────────────► │ remodex (Mac) │ ◄──────────────────────► │ codex       │
-│  app         │    WebSocket bridge    │ bridge        │    JSON-RPC              │ app-server  │
+│  Remodex     │ ◄────────────────────► │ remodex (Mac) │ ◄──────────────────────► │ codex       │
+│  mobile app  │    WebSocket bridge    │ bridge        │    JSON-RPC              │ app-server  │
 └──────────────┘                        └───────────────┘                          └─────────────┘
                                                │                                         │
                                                │  AppleScript route bounce                │ JSONL rollout
@@ -82,15 +92,15 @@ Direct camera capture is still the main intentionally deferred Android gap; the 
 
 1. Run `remodex up` on your Mac
 2. On macOS, Remodex installs/starts a lightweight background bridge service and prints a QR for first-time pairing or recovery
-3. Scan the QR once with the Remodex iOS app to trust that Mac
-4. After the first handshake, the iPhone can resolve the Mac's live session through the configured relay and reconnect automatically
+3. Scan the QR once with the Remodex mobile app to trust that Mac
+4. After the first handshake, the phone can resolve the Mac's live session through the configured relay and reconnect automatically
 5. Your phone sends instructions to Codex through the bridge and receives responses in real-time
 6. The bridge handles git operations and local session persistence on your Mac
 7. `Codex.app` can read the same thread history from disk, but it is not a true live mirror unless you enable the optional refresh workaround
 
 ## Repository Structure
 
-This repo contains the local bridge, the iOS app target, and their tests:
+This repo contains the local bridge, the Android app project, the iOS app target, and their tests:
 
 ```
 ├── phodex-bridge/                # Node.js bridge package used by `remodex`
@@ -114,7 +124,7 @@ This repo contains the local bridge, the iOS app target, and their tests:
 - **Node.js** v18+
 - **[Codex CLI](https://github.com/openai/codex)** installed and in your PATH
 - **[Codex desktop app](https://openai.com/index/codex/)** (optional — for viewing threads on your Mac)
-- **A signed Remodex iOS build** installed on your iPhone or iPad before scanning the pairing QR
+- **A signed Remodex mobile build** installed on your phone before scanning the pairing QR
 - **macOS** (for desktop refresh features — the core bridge works on any OS)
 - **Xcode 16+** (only if building the iOS app from source)
 - **Android Studio / JDK 11+** (only if building the Android client from source)
@@ -162,7 +172,7 @@ cd remodex
 ./run-local-remodex.sh
 ```
 
-That launcher starts a local relay, points the bridge at `ws://<your-host>:9000/relay`, and prints the pairing QR for the iPhone app.
+That launcher starts a local relay, points the bridge at `ws://<your-host>:9000/relay`, and prints the pairing QR for the mobile app.
 
 For iPhone self-hosting, the recommended path is Tailscale or another stable private network. Plain LAN pairing over `ws://<lan-ip>` on the same Wi-Fi is still available for local testing, but it can be unreliable on some iOS devices even when the relay and Wi-Fi are healthy.
 
