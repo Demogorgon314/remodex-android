@@ -1918,9 +1918,10 @@ class BridgeThreadSyncService(
         val turnId = extractAssistantTurnId(paramsObject, eventObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
-        if (resolvedTurnId != null) {
-            threadIdByTurnId[resolvedTurnId] = threadId
+        if (resolvedTurnId.isNullOrBlank()) {
+            return
         }
+        threadIdByTurnId[resolvedTurnId] = threadId
         val itemId = extractItemId(
             paramsObject = paramsObject,
             eventObject = eventObject,
@@ -2315,6 +2316,9 @@ class BridgeThreadSyncService(
             kind = ConversationItemKind.CHAT,
         )
         if (!isCompleted) {
+            if (resolvedTurnId.isNullOrBlank()) {
+                return
+            }
             upsertStreamingItem(
                 threadId = threadId,
                 item = timelineItem(

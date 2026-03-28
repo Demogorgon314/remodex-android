@@ -167,6 +167,130 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `assistant delta without resolved turn id is ignored during reconnect fallback like ios`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = ScriptedRpcRelayWebSocketFactory(
+                macDeviceId = "mac-turnless-assistant-delta",
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turnless-assistant",
+                    title = "Turn-less assistant delta",
+                    preview = "",
+                    projectPath = "/tmp/project-turnless-assistant",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "markThreadAsRunningFallback",
+            "thread-turnless-assistant",
+        )
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turnless-assistant"))
+                put("delta", JsonPrimitive("Hello from the reconnect gap"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turnless-assistant" }
+        val items = TurnTimelineReducer.reduce(thread.timelineMutations)
+
+        assertTrue(thread.isRunning)
+        assertTrue(items.none { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.text.contains("Hello from the reconnect gap")
+        })
+    }
+
+    @Test
+    fun `assistant item started without resolved turn id does not create orphan streaming row`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = ScriptedRpcRelayWebSocketFactory(
+                macDeviceId = "mac-turnless-assistant-start",
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turnless-start",
+                    title = "Turn-less assistant start",
+                    preview = "",
+                    projectPath = "/tmp/project-turnless-start",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "markThreadAsRunningFallback",
+            "thread-turnless-start",
+        )
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turnless-start"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-item-1"))
+                        put("type", JsonPrimitive("agent_message"))
+                    },
+                )
+            },
+            false,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turnless-start" }
+        val items = TurnTimelineReducer.reduce(thread.timelineMutations)
+
+        assertTrue(thread.isRunning)
+        assertTrue(items.none { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT && item.isStreaming
+        })
+    }
+
+    @Test
     fun `approval policy fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithApprovalPolicyFallbackValue(
@@ -2550,6 +2674,29 @@ class BridgeThreadSyncServiceTest {
             Thread.sleep(10)
         }
         fail("Expected $expectedCount threads but found ${service.threads.value.size}")
+    }
+
+    private fun invokePrivateMethod(
+        target: Any,
+        methodName: String,
+        vararg args: Any?,
+    ): Any? {
+        val method = target.javaClass.declaredMethods.firstOrNull { candidate ->
+            candidate.name == methodName && candidate.parameterCount == args.size
+        } ?: error("Missing method $methodName with ${args.size} parameters")
+        method.isAccessible = true
+        return method.invoke(target, *args)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun seedThreads(
+        service: BridgeThreadSyncService,
+        snapshots: List<ThreadSyncSnapshot>,
+    ) {
+        val field = service.javaClass.getDeclaredField("backingThreads")
+        field.isAccessible = true
+        val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<List<ThreadSyncSnapshot>>
+        state.value = snapshots
     }
 
 }
