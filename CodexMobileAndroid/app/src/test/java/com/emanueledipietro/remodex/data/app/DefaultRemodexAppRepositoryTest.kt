@@ -31,6 +31,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -45,6 +46,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -364,6 +366,54 @@ class DefaultRemodexAppRepositoryTest {
         assertTrue(selectedThread?.messages.orEmpty().any { item ->
             item.text.contains("Ship the Android notification channels next.")
         })
+    }
+
+    @Test
+    fun `send prompt publishes a pending user message before command service send returns`() = runTest {
+        val syncService = BlockingSendPromptSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val sendJob = backgroundScope.launch {
+            repository.sendPrompt(
+                threadId = "thread-notifications",
+                prompt = "Show this message before the bridge send finishes.",
+                attachments = emptyList(),
+            )
+        }
+        runCurrent()
+
+        val selectedThread = repository.session.value.selectedThread
+        val optimisticMessage = selectedThread?.messages.orEmpty().lastOrNull()
+
+        assertEquals("thread-notifications", selectedThread?.id)
+        assertTrue(selectedThread?.isRunning == true)
+        assertEquals(
+            "Show this message before the bridge send finishes.",
+            selectedThread?.preview,
+        )
+        assertEquals(
+            RemodexMessageDeliveryState.PENDING,
+            optimisticMessage?.deliveryState,
+        )
+        assertEquals(
+            "Show this message before the bridge send finishes.",
+            optimisticMessage?.text,
+        )
+
+        syncService.allowSend()
+        advanceUntilIdle()
+        sendJob.join()
     }
 
     @Test
@@ -1093,6 +1143,26 @@ class DefaultRemodexAppRepositoryTest {
             attachments: List<RemodexComposerAttachment>,
         ) {
             sendPromptCalls += 1
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class BlockingSendPromptSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate {
+        private val sendGate = CompletableDeferred<Unit>()
+
+        fun allowSend() {
+            sendGate.complete(Unit)
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            sendGate.await()
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
         }
     }

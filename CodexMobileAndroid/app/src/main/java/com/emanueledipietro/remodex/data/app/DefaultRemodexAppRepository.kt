@@ -26,6 +26,8 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
+import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -35,6 +37,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
@@ -86,6 +89,11 @@ class DefaultRemodexAppRepository(
     ),
     scope: CoroutineScope,
 ) : RemodexAppRepository {
+    private data class LocalOptimisticUserMessage(
+        val threadId: String,
+        val messageId: String,
+    )
+
     private val repositoryScope = scope
     private val timelineProjectionCacheLock = Any()
     private val timelineProjectionCacheByThread = mutableMapOf<String, ThreadTimelineProjectionCache>()
@@ -361,7 +369,7 @@ class DefaultRemodexAppRepository(
             preferredProjectPath = preferredProjectPath,
             runtimeDefaults = runtimeDefaults,
         ) ?: return
-        refreshBaseThreadsFromSync()
+        refreshBaseThreadsLocallyFromSnapshots(listOf(createdThread))
         inheritRuntimeFromThreadId?.let { sourceThreadId ->
             inheritRuntimeOverride(
                 sourceThreadId = sourceThreadId,
@@ -502,7 +510,7 @@ class DefaultRemodexAppRepository(
                     candidate.id == continuationThreadId
                 } ?: thread
                 val resumedContinuationThread = resumeThreadBeforeSend(thread = continuationThread)
-                threadCommandService.sendPrompt(
+                sendPromptWithLocalOptimistic(
                     threadId = continuationThreadId,
                     prompt = trimmedPrompt,
                     runtimeConfig = resumedContinuationThread.runtimeConfig,
@@ -533,7 +541,7 @@ class DefaultRemodexAppRepository(
         }
 
         try {
-            threadCommandService.sendPrompt(
+            sendPromptWithLocalOptimistic(
                 threadId = threadId,
                 prompt = trimmedPrompt,
                 runtimeConfig = thread.runtimeConfig,
@@ -551,11 +559,11 @@ class DefaultRemodexAppRepository(
                 candidate.id == continuationThreadId
             } ?: thread
             val resumedContinuationThread = resumeThreadBeforeSend(thread = continuationThread)
-            threadCommandService.sendPrompt(
+            sendPromptWithLocalOptimistic(
                 threadId = continuationThreadId,
                 prompt = trimmedPrompt,
-                runtimeConfig = resumedContinuationThread.runtimeConfig,
                 attachments = attachments,
+                runtimeConfig = resumedContinuationThread.runtimeConfig,
             )
         }
         refreshBaseThreadsFromSync()
@@ -1043,11 +1051,15 @@ class DefaultRemodexAppRepository(
         val resumeService = resumeService() ?: return
         val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return
         val previousProjectPath = thread.projectPath
-        resumeService.updateThreadProjectPathLocally(
+        val locallyUpdatedThread = resumeService.updateThreadProjectPathLocally(
             threadId = threadId,
             projectPath = normalizedProjectPath,
         )
-        refreshBaseThreadsFromSync()
+        if (locallyUpdatedThread != null) {
+            refreshBaseThreadsLocallyFromSnapshots(listOf(locallyUpdatedThread))
+        } else {
+            refreshBaseThreadsFromSync()
+        }
 
         // Brand-new local threads already carry the desired cwd for the first turn, but
         // the bridge cannot always resume them until a rollout exists.
@@ -1239,13 +1251,26 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun refreshBaseThreadsFromSync() {
-        val mergedBaseThreads = mergeBaseThreadsFromSync(
-            threadSyncService.threads.value
+        val mergedBaseThreads = mergeBaseThreadsFromSyncSnapshots(threadSyncService.threads.value)
+        refreshThreadsLocally(mergedBaseThreads)
+    }
+
+    private fun refreshBaseThreadsLocallyFromSnapshots(
+        snapshots: List<ThreadSyncSnapshot>,
+    ) {
+        val mergedBaseThreads = mergeBaseThreadsFromSyncSnapshots(snapshots)
+        refreshThreadsLocally(mergedBaseThreads)
+    }
+
+    private fun mergeBaseThreadsFromSyncSnapshots(
+        snapshots: List<ThreadSyncSnapshot>,
+    ): List<RemodexThreadSummary> {
+        return mergeBaseThreadsFromSync(
+            snapshots
                 .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
                 .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
                 .map(CachedThreadRecord::toBaseThreadSummary),
         )
-        refreshThreadsLocally(mergedBaseThreads)
     }
 
     private fun selectedThreadSnapshotForThreadId(threadId: String): RemodexThreadSummary? {
@@ -1281,6 +1306,151 @@ class DefaultRemodexAppRepository(
                 null
             },
             hasServiceTierPreference = inheritedRuntime != null || storedDefaults.hasServiceTierPreference,
+        )
+    }
+
+    private fun publishOptimisticPendingUserMessage(
+        threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+        runtimeConfig: RemodexRuntimeConfig,
+    ): LocalOptimisticUserMessage? {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return null
+        }
+        val messageText = optimisticPendingUserMessageText(
+            prompt = prompt,
+            attachments = attachments,
+        )
+        if (messageText.isEmpty()) {
+            return null
+        }
+        val now = System.currentTimeMillis()
+        val messageId = "user-local-${UUID.randomUUID()}"
+        var didUpdateThread = false
+        val updatedThreads = baseThreadsState.value.map { currentThread ->
+            if (currentThread.id != normalizedThreadId) {
+                currentThread
+            } else {
+                didUpdateThread = true
+                currentThread.copy(
+                    preview = messageText,
+                    lastUpdatedLabel = "Updated just now",
+                    isRunning = true,
+                    runtimeConfig = runtimeConfig,
+                    messages = (currentThread.messages + RemodexConversationItem(
+                        id = messageId,
+                        speaker = com.emanueledipietro.remodex.model.ConversationSpeaker.USER,
+                        text = messageText,
+                        deliveryState = RemodexMessageDeliveryState.PENDING,
+                        createdAtEpochMs = now,
+                        attachments = attachments.map { attachment ->
+                            RemodexConversationAttachment(
+                                id = attachment.id,
+                                uriString = attachment.uriString,
+                                displayName = attachment.displayName,
+                            )
+                        },
+                        orderIndex = nextLocalOrderIndex(currentThread),
+                    )).sortedBy(RemodexConversationItem::orderIndex),
+                )
+            }
+        }
+        if (!didUpdateThread) {
+            return null
+        }
+        refreshThreadsLocally(
+            baseThreads = updatedThreads,
+        )
+        return LocalOptimisticUserMessage(
+            threadId = normalizedThreadId,
+            messageId = messageId,
+        )
+    }
+
+    private suspend fun sendPromptWithLocalOptimistic(
+        threadId: String,
+        prompt: String,
+        runtimeConfig: RemodexRuntimeConfig,
+        attachments: List<RemodexComposerAttachment>,
+    ) {
+        val optimisticMessage = publishOptimisticPendingUserMessage(
+            threadId = threadId,
+            prompt = prompt,
+            attachments = attachments,
+            runtimeConfig = runtimeConfig,
+        )
+        try {
+            threadCommandService.sendPrompt(
+                threadId = threadId,
+                prompt = prompt,
+                runtimeConfig = runtimeConfig,
+                attachments = attachments,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (shouldTreatAsThreadNotFoundValue(error)) {
+                optimisticMessage?.let { removeLocalOptimisticUserMessage(it) }
+            } else {
+                optimisticMessage?.let { markLocalOptimisticUserMessageFailed(it) }
+            }
+            throw error
+        }
+    }
+
+    private fun markLocalOptimisticUserMessageFailed(
+        optimisticMessage: LocalOptimisticUserMessage,
+    ) {
+        updateLocalOptimisticUserMessage(
+            optimisticMessage = optimisticMessage,
+        ) { currentMessage ->
+            currentMessage.copy(deliveryState = RemodexMessageDeliveryState.FAILED)
+        }
+    }
+
+    private fun removeLocalOptimisticUserMessage(
+        optimisticMessage: LocalOptimisticUserMessage,
+    ) {
+        val updatedThreads = baseThreadsState.value.map { currentThread ->
+            if (currentThread.id != optimisticMessage.threadId) {
+                currentThread
+            } else {
+                currentThread.copy(
+                    messages = currentThread.messages.filterNot { message ->
+                        message.id == optimisticMessage.messageId
+                    },
+                )
+            }
+        }
+        refreshThreadsLocally(
+            baseThreads = updatedThreads,
+        )
+    }
+
+    private fun updateLocalOptimisticUserMessage(
+        optimisticMessage: LocalOptimisticUserMessage,
+        transform: (RemodexConversationItem) -> RemodexConversationItem,
+    ) {
+        val updatedThreads = baseThreadsState.value.map { currentThread ->
+            if (currentThread.id != optimisticMessage.threadId) {
+                currentThread
+            } else {
+                currentThread.copy(
+                    messages = currentThread.messages.map { currentMessage ->
+                        if (currentMessage.id == optimisticMessage.messageId) {
+                            transform(currentMessage)
+                        } else {
+                            currentMessage
+                        }
+                    },
+                )
+            }
+        }
+        refreshThreadsLocally(
+            baseThreads = updatedThreads,
         )
     }
 
@@ -1480,6 +1650,25 @@ private data class SyncedThreadProjection(
     val cachedThreads: List<CachedThreadRecord>,
     val mergedBaseThreads: List<RemodexThreadSummary>,
 )
+
+private fun optimisticPendingUserMessageText(
+    prompt: String,
+    attachments: List<RemodexComposerAttachment>,
+): String {
+    val trimmedPrompt = prompt.trim()
+    if (trimmedPrompt.isNotEmpty()) {
+        return trimmedPrompt
+    }
+    return when (attachments.size) {
+        0 -> "Sent a prompt from Android."
+        1 -> "Shared 1 image from Android."
+        else -> "Shared ${attachments.size} images from Android."
+    }
+}
+
+private fun nextLocalOrderIndex(thread: RemodexThreadSummary): Long {
+    return thread.messages.maxOfOrNull(RemodexConversationItem::orderIndex)?.plus(1L) ?: 0L
+}
 
 private const val ThreadCacheStreamingWriteDebounceMs = 120L
 private const val SelectedThreadStreamingThreadListDebounceMs = 180L

@@ -721,10 +721,10 @@ class AppViewModel(
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
             bumpComposerSendDismissSignal(threadId)
+            bumpComposerSendAnchorSignal(threadId)
             clearComposer(threadId)
             try {
                 repository.sendPrompt(threadId, payload, composer.attachments)
-                bumpComposerSendAnchorSignal(threadId)
             } catch (error: Throwable) {
                 if (error is CancellationException) {
                     throw error
