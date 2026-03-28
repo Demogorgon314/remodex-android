@@ -96,6 +96,7 @@ data class AppUiState(
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
+    val isSelectedThreadHydrating: Boolean = false,
     val gptAccountSnapshot: RemodexGptAccountSnapshot = RemodexGptAccountSnapshot(),
     val gptAccountErrorMessage: String? = null,
     val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
@@ -247,6 +248,7 @@ class AppViewModel(
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
+    private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
@@ -448,26 +450,39 @@ class AppViewModel(
             Triple(threadCompletionBanner, completionHapticSignal, transientBanner)
         }
 
-    private val decoratedUiState =
+    private val chromeDecoratedUiState =
         combine(
             baseUiState,
+            hydratingThreadCounts,
             threadChromeState,
             isRefreshingThreadsState,
             isRefreshingUsageState,
-            settingsRenderState,
         ) {
             baseState: AppUiState,
+            activeHydrations: Map<String, Int>,
             threadChrome: Triple<ThreadCompletionBannerUiState?, Long, String?>,
             isRefreshingThreads: Boolean,
             isRefreshingUsage: Boolean,
-            settingsState: SettingsRenderState,
             ->
+            val selectedThreadId = baseState.selectedThread?.id
             baseState.copy(
+                isSelectedThreadHydrating = selectedThreadId?.let { threadId ->
+                    activeHydrations[threadId]?.let { count -> count > 0 } == true
+                } ?: false,
                 transientBanner = threadChrome.third,
                 threadCompletionBanner = threadChrome.first,
                 completionHapticSignal = threadChrome.second,
                 isRefreshingThreads = isRefreshingThreads,
                 isRefreshingUsage = isRefreshingUsage,
+            )
+        }
+
+    private val decoratedUiState =
+        combine(
+            chromeDecoratedUiState,
+            settingsRenderState,
+        ) { baseState: AppUiState, settingsState: SettingsRenderState ->
+            baseState.copy(
                 gptAccountSnapshot = settingsState.gptAccountSnapshot,
                 gptAccountErrorMessage = settingsState.gptAccountErrorMessage,
                 bridgeVersionStatus = settingsState.bridgeVersionStatus,
@@ -532,9 +547,7 @@ class AppViewModel(
                             (isConnected && !lastHydrationConnected)
                     if (shouldHydrateSelectedThread) {
                         lastHydratedSelectedThreadId = selectedThreadId
-                        viewModelScope.launch {
-                            repository.hydrateThread(selectedThreadId)
-                        }
+                        launchThreadHydration(selectedThreadId)
                     }
                 }
                 lastHydrationConnected = isConnected
@@ -592,7 +605,9 @@ class AppViewModel(
 
     fun selectThread(threadId: String) {
         viewModelScope.launch {
-            repository.selectThread(threadId)
+            withTrackedThreadHydration(threadId) {
+                repository.selectThread(threadId)
+            }
             refreshGitState(threadId)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
@@ -603,9 +618,7 @@ class AppViewModel(
         if (threadId.isBlank()) {
             return
         }
-        viewModelScope.launch {
-            repository.hydrateThread(threadId)
-        }
+        launchThreadHydration(threadId)
     }
 
     fun createThread(preferredProjectPath: String? = null) {
@@ -614,6 +627,51 @@ class AppViewModel(
             repository.session.value.selectedThread?.id?.let(::refreshGitState)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
+        }
+    }
+
+    private fun launchThreadHydration(threadId: String) {
+        if (threadId.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            withTrackedThreadHydration(threadId) {
+                repository.hydrateThread(threadId)
+            }
+        }
+    }
+
+    private suspend fun withTrackedThreadHydration(
+        threadId: String,
+        block: suspend () -> Unit,
+    ) {
+        if (threadId.isBlank()) {
+            block()
+            return
+        }
+        markThreadHydrationStarted(threadId)
+        try {
+            block()
+        } finally {
+            markThreadHydrationFinished(threadId)
+        }
+    }
+
+    private fun markThreadHydrationStarted(threadId: String) {
+        hydratingThreadCounts.update { current ->
+            val nextCount = (current[threadId] ?: 0) + 1
+            current + (threadId to nextCount)
+        }
+    }
+
+    private fun markThreadHydrationFinished(threadId: String) {
+        hydratingThreadCounts.update { current ->
+            val nextCount = (current[threadId] ?: 0) - 1
+            if (nextCount > 0) {
+                current + (threadId to nextCount)
+            } else {
+                current - threadId
+            }
         }
     }
 

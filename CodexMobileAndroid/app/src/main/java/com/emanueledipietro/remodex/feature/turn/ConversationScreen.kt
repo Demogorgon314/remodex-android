@@ -212,6 +212,7 @@ import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
+import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import androidx.compose.ui.window.Dialog
@@ -272,6 +273,8 @@ internal const val ConversationRunningIndicatorTag = "conversation_running_indic
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
 internal const val ConversationStatusSheetTag = "conversation_status_sheet"
+internal const val ConversationWelcomeStateTag = "conversation_welcome_state"
+internal const val ConversationWelcomeLoadingTag = "conversation_welcome_loading"
 internal const val GitSheetTag = "git_sheet"
 internal const val GitCheckoutPickerTriggerTag = "git_checkout_picker_trigger"
 internal const val GitComparePickerTriggerTag = "git_compare_picker_trigger"
@@ -472,7 +475,7 @@ fun ConversationScreen(
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
-    onPrepareForkDestinationSelection: () -> Unit,
+    onPrepareForkDestinationSelection: () -> Unit = {},
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
     onRefreshUsageStatus: () -> Unit = {},
@@ -480,13 +483,13 @@ fun ConversationScreen(
     onCreateGitBranch: (String) -> Unit,
     onCreateGitWorktree: (String) -> Unit,
     onCommitGitChanges: () -> Unit,
-    onCommitAndPushGitChanges: () -> Unit,
+    onCommitAndPushGitChanges: () -> Unit = {},
     onPullGitChanges: () -> Unit,
     onPushGitChanges: () -> Unit,
-    onCreatePullRequest: () -> Unit,
+    onCreatePullRequest: () -> Unit = {},
     onDiscardRuntimeChangesAndSync: () -> Unit,
-    onHandoffThreadToWorktree: (String, String) -> Unit,
-    onForkThreadIntoNewWorktree: (String, String) -> Unit,
+    onHandoffThreadToWorktree: (String, String) -> Unit = { _, _ -> },
+    onForkThreadIntoNewWorktree: (String, String) -> Unit = { _, _ -> },
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
@@ -536,6 +539,8 @@ fun ConversationScreen(
     val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val showsEmptyTimelineState = timelineItems.isEmpty() && pinnedPlanItem == null
+    val showsTimelineLoadingState =
+        showsEmptyTimelineState && (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
     val lastTimelineItem = timelineItems.lastOrNull()
     val lastTimelineItemId = lastTimelineItem?.id
     val bottomAnchorIndex = timelineItems.size
@@ -777,7 +782,7 @@ fun ConversationScreen(
                                 .padding(horizontal = 16.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            EmptyThreadTimelineCard()
+                            ThreadWelcomeTimelineState(isLoading = showsTimelineLoadingState)
                         }
                     } else {
                         LazyColumn(
@@ -1391,26 +1396,100 @@ private fun EmptyConversationState(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun EmptyThreadTimelineCard() {
+private fun ThreadWelcomeTimelineState(
+    isLoading: Boolean,
+    modifier: Modifier = Modifier,
+) {
     val chrome = remodexConversationChrome()
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 32.dp),
+            .padding(vertical = 32.dp)
+            .testTag(ConversationWelcomeStateTag),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        RemodexBrandMark(
+            modifier = Modifier.size(56.dp),
+            cornerRadius = 18.dp,
+            borderColor = chrome.subtleBorder,
+        )
         Text(
-            text = "No messages yet",
-            style = MaterialTheme.typography.titleMedium,
+            text = "Hi! How can I help you?",
+            style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
             color = chrome.titleText,
         )
         Text(
-            text = "The next reply from your Mac will show up here.",
+            text = "Chats are End-to-end encrypted",
             style = MaterialTheme.typography.bodyMedium,
             color = chrome.secondaryText,
         )
+        if (isLoading) {
+            WelcomeLoadingIndicator()
+        }
+    }
+}
+
+@Composable
+private fun WelcomeLoadingIndicator() {
+    val chrome = remodexConversationChrome()
+    val transition = rememberInfiniteTransition(label = "conversation_welcome_loading")
+    val firstDotAlpha by transition.animateFloat(
+        initialValue = 0.28f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 700, easing = LinearEasing, delayMillis = 0),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "conversation_welcome_loading_dot_1",
+    )
+    val secondDotAlpha by transition.animateFloat(
+        initialValue = 0.28f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 700, easing = LinearEasing, delayMillis = 140),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "conversation_welcome_loading_dot_2",
+    )
+    val thirdDotAlpha by transition.animateFloat(
+        initialValue = 0.28f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 700, easing = LinearEasing, delayMillis = 280),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "conversation_welcome_loading_dot_3",
+    )
+
+    Row(
+        modifier = Modifier
+            .padding(top = 4.dp)
+            .testTag(ConversationWelcomeLoadingTag),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        WelcomeLoadingDot(alpha = firstDotAlpha, color = chrome.secondaryText)
+        WelcomeLoadingDot(alpha = secondDotAlpha, color = chrome.secondaryText)
+        WelcomeLoadingDot(alpha = thirdDotAlpha, color = chrome.secondaryText)
+    }
+}
+
+@Composable
+private fun WelcomeLoadingDot(
+    alpha: Float,
+    color: Color,
+) {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .graphicsLayer { this.alpha = alpha }
+            .background(
+                color = color,
+                shape = CircleShape,
+            ),
+    ) {
     }
 }
 

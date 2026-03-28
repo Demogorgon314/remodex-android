@@ -128,6 +128,27 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `selected thread hydration state stays visible until hydrate completes`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            hydrateDelayMs = 1_000L
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Recovered thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+
+        val viewModel = AppViewModel(repository)
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.isSelectedThreadHydrating)
+
+        advanceTimeBy(repository.hydrateDelayMs)
+        runCurrent()
+
+        assertFalse(viewModel.uiState.value.isSelectedThreadHydrating)
+    }
+
+    @Test
     fun `selected thread hydrates again when connection becomes active`() = runTest {
         val repository = TestRemodexAppRepository()
         repository.snapshot.value = repository.snapshot.value.copy(
@@ -1412,6 +1433,7 @@ class AppViewModelTest {
         var retryConnectionCalls = 0
         var disconnectCalls = 0
         var refreshDelayMs = 1_000L
+        var hydrateDelayMs = 0L
         var sendPromptDelayMs = 0L
         var sendPromptError: Throwable? = null
         var gitDiffRequests = 0
@@ -1464,6 +1486,7 @@ class AppViewModelTest {
 
         override suspend fun hydrateThread(threadId: String) {
             hydrateRequests += threadId
+            delay(hydrateDelayMs)
         }
 
         override suspend fun selectThread(threadId: String) {

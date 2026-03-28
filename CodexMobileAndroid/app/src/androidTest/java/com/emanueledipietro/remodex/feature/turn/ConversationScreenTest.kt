@@ -409,6 +409,113 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun emptyConversationShowsIosStyledWelcomeState() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(autocompleteState = RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithTag(ConversationWelcomeStateTag).assertCountEquals(1)
+        composeRule.onAllNodesWithText("Hi! How can I help you?").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Chats are End-to-end encrypted").assertCountEquals(1)
+        composeRule.onAllNodesWithTag(ConversationWelcomeLoadingTag).assertCountEquals(0)
+    }
+
+    @Test
+    fun hydratingEmptyConversationShowsLoadingIndicatorInsteadOfLegacyEmptyState() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        isSelectedThreadHydrating = true,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithTag(ConversationWelcomeLoadingTag).assertCountEquals(1)
+        composeRule.onAllNodesWithText("No messages yet").assertCountEquals(0)
+    }
+
+    @Test
     fun completedAssistantBlockShowsCopyAccessory() {
         composeRule.setContent {
             RemodexTheme {
@@ -736,6 +843,7 @@ class ConversationScreenTest {
         autocompleteState: RemodexComposerAutocompleteState,
         isRunning: Boolean = false,
         canStop: Boolean = false,
+        isSelectedThreadHydrating: Boolean = false,
         messages: List<RemodexConversationItem> = emptyList(),
     ): AppUiState {
         val thread = RemodexThreadSummary(
@@ -752,6 +860,7 @@ class ConversationScreenTest {
         return AppUiState(
             selectedThread = thread,
             threads = listOf(thread),
+            isSelectedThreadHydrating = isSelectedThreadHydrating,
             composer = ComposerUiState(
                 draftText = "",
                 canStop = canStop,
