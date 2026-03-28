@@ -4765,7 +4765,7 @@ private fun GitBranchPickerDialog(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 180.dp, max = 360.dp),
+                            .heightIn(min = 180.dp, max = 300.dp),
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
                         item("section-header") {
@@ -4841,52 +4841,50 @@ private fun GitBranchPickerDialog(
                                 )
                             }
                         }
+                    }
+                }
+                Surface(
+                    color = chrome.panelSurface,
+                    shape = RemodexConversationShapes.card,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         if (supportsBranchCreation) {
-                            item("create-divider") {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(vertical = 8.dp),
-                                )
-                            }
                             suggestedCreateBranchName?.let { branchName ->
-                                item("create-suggested") {
-                                    GitBranchPickerActionRow(
-                                        label = "Create and checkout '$branchName'",
-                                        leadingIcon = Icons.Outlined.Add,
-                                        enabled = !gitState.isLoading,
-                                        onClick = { onCreateBranch(branchName) },
-                                    )
-                                }
-                            }
-                            item("create-manual") {
                                 GitBranchPickerActionRow(
-                                    label = "New branch...",
-                                    leadingIcon = Icons.Outlined.Checklist,
+                                    label = "Create and checkout '$branchName'",
+                                    leadingIcon = Icons.Outlined.Add,
                                     enabled = !gitState.isLoading,
-                                    onClick = {
-                                        val normalizedSearchBranch = remodexNormalizedCreatedBranchName(searchText)
-                                        branchDraft = if (normalizedSearchBranch.isEmpty()) {
-                                            "remodex/"
-                                        } else {
-                                            normalizedSearchBranch
-                                        }
-                                        createBranchDialogExpanded = true
-                                    },
+                                    onClick = { onCreateBranch(branchName) },
                                 )
+                                HorizontalDivider()
                             }
-                        }
-                        item("reload-divider") {
-                            HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 8.dp),
-                            )
-                        }
-                        item("reload-action") {
                             GitBranchPickerActionRow(
-                                label = if (gitState.isLoading) "Refreshing..." else "Reload branch list",
-                                leadingIcon = Icons.Outlined.Refresh,
+                                label = "New branch...",
+                                leadingIcon = Icons.Outlined.Checklist,
                                 enabled = !gitState.isLoading,
-                                onClick = onRefresh,
+                                onClick = {
+                                    val normalizedSearchBranch = remodexNormalizedCreatedBranchName(searchText)
+                                    branchDraft = if (normalizedSearchBranch.isEmpty()) {
+                                        "remodex/"
+                                    } else {
+                                        normalizedSearchBranch
+                                    }
+                                    createBranchDialogExpanded = true
+                                },
                             )
+                            HorizontalDivider()
                         }
+                        GitBranchPickerActionRow(
+                            label = if (gitState.isLoading) "Refreshing..." else "Reload branch list",
+                            leadingIcon = Icons.Outlined.Refresh,
+                            enabled = !gitState.isLoading,
+                            onClick = onRefresh,
+                        )
                     }
                 }
             }
