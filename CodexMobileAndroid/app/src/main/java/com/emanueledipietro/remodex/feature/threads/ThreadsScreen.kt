@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.emanueledipietro.remodex.feature.threads
 
 import androidx.compose.foundation.ExperimentalFoundationApi

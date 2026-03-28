@@ -91,11 +91,14 @@ android {
 }
 
 val requestedTasks = gradle.startParameter.taskNames
-val releaseTaskRequested = requestedTasks.any { taskName ->
-    taskName.contains("Release", ignoreCase = true)
+val releasePackagingTaskRequested = requestedTasks.any { taskName ->
+    when (taskName.substringAfterLast(':').lowercase()) {
+        "assemblerelease", "bundlerelease", "packagerelease", "validatesigningrelease" -> true
+        else -> false
+    }
 }
 
-if (releaseTaskRequested && !hasReleaseSigning) {
+if (releasePackagingTaskRequested && !hasReleaseSigning) {
     throw GradleException(
         "Release signing is required for release tasks. Set remodexAndroidKeystorePath/remodexAndroidKeystorePassword/" +
             "remodexAndroidKeyAlias/remodexAndroidKeyPassword or the ANDROID_KEYSTORE_PATH/" +
