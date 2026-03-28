@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,8 +34,6 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -176,8 +175,8 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         SettingsCard(title = "Archived Chats") {
             SettingsNavigationRow(
@@ -507,23 +506,27 @@ private fun SettingsCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             text = title.uppercase(Locale.getDefault()),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f),
             modifier = Modifier.padding(horizontal = 4.dp),
         )
         Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
             shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+            ),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(horizontal = 16.dp, vertical = 15.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 content = content,
             )
         }
@@ -541,29 +544,45 @@ private fun SettingsButton(
     onClick: () -> Unit,
     role: SettingsButtonRole = SettingsButtonRole.NORMAL,
 ) {
-    Button(
-        onClick = onClick,
+    val containerColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
+        MaterialTheme.colorScheme.error.copy(alpha = 0.07f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.9f)
+    }
+    val borderColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
+        MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.95f)
+    }
+    val contentColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
-                MaterialTheme.colorScheme.error.copy(alpha = 0.10f)
-            } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
-            },
-            contentColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
-                MaterialTheme.colorScheme.error
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-        ),
         shape = RoundedCornerShape(12.dp),
-        elevation = null,
+        color = containerColor,
+        border = BorderStroke(
+            width = 1.dp,
+            color = borderColor,
+        ),
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Medium,
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 11.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = contentColor,
+            )
+        }
     }
 }
 
@@ -574,41 +593,47 @@ private fun SettingsNavigationRow(
     leading: @Composable BoxScope.() -> Unit,
     trailingText: String? = null,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                shape = RoundedCornerShape(14.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f),
+        ),
     ) {
-        Box(
-            modifier = Modifier.size(18.dp),
-            contentAlignment = Alignment.Center,
-            content = leading,
-        )
-        Text(
-            text = title,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Medium,
-        )
-        trailingText?.let {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier.size(16.dp),
+                contentAlignment = Alignment.Center,
+                content = leading,
+            )
             Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            trailingText?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
             )
         }
-        Icon(
-            imageVector = Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -622,13 +647,14 @@ private fun SettingsStatusRow(
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         icon?.let {
             Icon(
                 imageVector = it,
                 contentDescription = null,
                 tint = iconTint,
+                modifier = Modifier.size(18.dp),
             )
         }
         Text(
@@ -661,7 +687,7 @@ private fun SettingsKeyValueRow(
         Spacer(modifier = Modifier.weight(1f))
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
             color = valueColor,
             maxLines = 1,
@@ -674,17 +700,21 @@ private fun SettingsKeyValueRow(
 private fun SettingsStatusPill(
     label: String,
 ) {
-    Text(
-        text = label,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier
-            .background(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                shape = CircleShape,
-            )
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    )
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        shape = CircleShape,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.95f),
+        ),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        )
+    }
 }
 
 private data class SettingsOption(
@@ -711,13 +741,17 @@ private fun SettingsSelectionRow(
             fontWeight = FontWeight.Medium,
         )
         Box {
-            TextButton(onClick = { expanded = true }) {
-                Text(
-                    text = currentLabel,
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            }
+            Text(
+                text = currentLabel,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clickable { expanded = true }
+                    .padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+            )
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
@@ -758,6 +792,7 @@ private fun SettingsRefreshHeader(
             )
             Text(
                 text = if (isRefreshing) "Refreshing..." else title,
+                style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(start = 6.dp),
             )
         }
@@ -777,7 +812,7 @@ private fun UsageSummaryCardContent(
 
     Text(
         text = "Rate limits",
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
     )
 
@@ -815,11 +850,11 @@ private fun UsageSummaryCardContent(
         }
     }
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
     Text(
         text = "Context window",
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
     )
 
@@ -913,15 +948,15 @@ private fun UsageProgressBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                 shape = CircleShape,
             ),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth(clampedProgress)
-                .size(width = 0.dp, height = 12.dp)
-                .background(MaterialTheme.colorScheme.onSurface, CircleShape),
+                .size(width = 0.dp, height = 10.dp)
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f), CircleShape),
         )
     }
 }
@@ -932,77 +967,101 @@ private fun SettingsTrustedMacCard(
     connectionStatusLabel: String,
     onEditName: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                shape = RoundedCornerShape(18.dp),
-            )
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f),
+        ),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                            shape = CircleShape,
-                        ),
-                    contentAlignment = Alignment.Center,
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Computer,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
+                    Surface(
+                        modifier = Modifier.size(32.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                        shape = CircleShape,
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+                        ),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Outlined.Computer,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            text = "Mac",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = presentation.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        text = "Mac",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = presentation.name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+
+                Surface(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clickable(onClick = onEditName),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                    shape = CircleShape,
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+                    ),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = "Edit Mac name",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
                 }
             }
 
-            IconButton(onClick = onEditName) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = "Edit Mac name",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingsStatusPill(label = connectionStatusLabel)
+                SettingsStatusPill(label = presentation.title)
+            }
+
+            presentation.systemName?.let { systemName ->
+                SettingsKeyValueRow(title = "System", value = systemName)
+            }
+            presentation.detail?.let { detail ->
+                SettingsKeyValueRow(
+                    title = "Status",
+                    value = detail,
+                    valueColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingsStatusPill(label = connectionStatusLabel)
-            SettingsStatusPill(label = presentation.title)
-        }
-
-        presentation.systemName?.let { systemName ->
-            SettingsKeyValueRow(title = "System", value = systemName)
-        }
-        presentation.detail?.let { detail ->
-            SettingsKeyValueRow(title = "Status", value = detail)
         }
     }
 }
