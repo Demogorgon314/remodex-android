@@ -71,6 +71,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
@@ -271,6 +272,11 @@ internal const val ConversationRunningIndicatorTag = "conversation_running_indic
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
 internal const val ConversationStatusSheetTag = "conversation_status_sheet"
+internal const val GitSheetTag = "git_sheet"
+internal const val GitCheckoutPickerTriggerTag = "git_checkout_picker_trigger"
+internal const val GitComparePickerTriggerTag = "git_compare_picker_trigger"
+internal const val GitBranchPickerDialogTag = "git_branch_picker_dialog"
+internal const val GitBranchPickerSearchFieldTag = "git_branch_picker_search_field"
 
 private data class ComposerAccessoryChipColors(
     val tint: Color,
@@ -278,6 +284,96 @@ private data class ComposerAccessoryChipColors(
     val removeBackground: Color,
     val border: BorderStroke? = null,
 )
+
+private enum class GitBranchPickerMode {
+    CHECKOUT,
+    BASE_BRANCH,
+}
+
+internal fun remodexNormalizedCreatedBranchName(rawName: String): String {
+    val trimmedName = rawName.trim()
+    if (trimmedName.isEmpty()) {
+        return ""
+    }
+    return if (trimmedName.startsWith("remodex/")) {
+        trimmedName
+    } else {
+        "remodex/$trimmedName"
+    }
+}
+
+internal fun remodexCurrentBranchSelectionIsDisabled(
+    branch: String,
+    currentBranch: String,
+    allowsSelectingCurrentBranch: Boolean,
+): Boolean {
+    if (allowsSelectingCurrentBranch) {
+        return false
+    }
+    return branch.trim() == currentBranch.trim()
+}
+
+internal fun gitBranchPickerOrderedBranches(
+    branches: List<String>,
+    selectedBranch: String,
+    defaultBranch: String?,
+    searchQuery: String,
+): List<String> {
+    val trimmedQuery = searchQuery.trim()
+    val filteredBranches = if (trimmedQuery.isEmpty()) {
+        branches
+    } else {
+        val normalizedQuery = trimmedQuery.lowercase(Locale.ROOT)
+        branches.filter { branch ->
+            branch.lowercase(Locale.ROOT).contains(normalizedQuery)
+        }
+    }
+
+    if (trimmedQuery.isNotEmpty()) {
+        return filteredBranches
+    }
+
+    if (selectedBranch.isBlank() || selectedBranch == defaultBranch) {
+        return filteredBranches
+    }
+
+    val selectedIndex = filteredBranches.indexOf(selectedBranch)
+    if (selectedIndex < 0) {
+        return filteredBranches
+    }
+
+    return buildList(filteredBranches.size) {
+        add(selectedBranch)
+        filteredBranches.forEachIndexed { index, branch ->
+            if (index != selectedIndex) {
+                add(branch)
+            }
+        }
+    }
+}
+
+internal fun gitBranchPickerSuggestedCreateBranchName(
+    searchQuery: String,
+    branches: List<String>,
+    defaultBranch: String?,
+    allowsSelectingCurrentBranch: Boolean,
+): String? {
+    if (!allowsSelectingCurrentBranch) {
+        return null
+    }
+
+    val candidate = remodexNormalizedCreatedBranchName(searchQuery)
+    if (candidate.isEmpty()) {
+        return null
+    }
+
+    val allBranchNames = branches + listOfNotNull(defaultBranch)
+    return if (allBranchNames.any { it.equals(candidate, ignoreCase = true) }) {
+        null
+    } else {
+        candidate
+    }
+}
 
 private fun rememberMentionChipColors(
     tint: Color,
@@ -1533,7 +1629,8 @@ private fun GitContextCard(
         return
     }
 
-    var branchDraft by rememberSaveable { mutableStateOf("") }
+    var worktreeDraft by rememberSaveable { mutableStateOf("") }
+    var activeBranchPickerMode by rememberSaveable { mutableStateOf<GitBranchPickerMode?>(null) }
 
     Card(
         colors = CardDefaults.cardColors(
@@ -1588,34 +1685,22 @@ private fun GitContextCard(
                     color = chrome.accent,
                 )
             }
-            RuntimeControlsSection(
+            GitBranchPickerTrigger(
                 title = "Compare Against",
-                options = gitState.branches.branches,
-                selected = selectedBaseBranch.takeIf(String::isNotBlank),
-                label = { it },
-                includeClearChoice = false,
-                itemKey = { it },
-                onSelect = onSelectBaseBranch,
+                value = selectedGitBaseBranchLabel(gitState, selectedBaseBranch),
+                modifier = Modifier.testTag(GitComparePickerTriggerTag),
+                onClick = { activeBranchPickerMode = GitBranchPickerMode.BASE_BRANCH },
             )
-            RuntimeControlsSection(
+            GitBranchPickerTrigger(
                 title = "Checkout",
-                options = gitState.branches.branches,
-                selected = gitState.branches.currentBranch,
-                label = { branch ->
-                    if (gitState.branches.branchesCheckedOutElsewhere.contains(branch)) {
-                        "$branch (elsewhere)"
-                    } else {
-                        branch
-                    }
-                },
-                includeClearChoice = false,
-                itemKey = { it },
-                onSelect = onCheckoutBranch,
+                value = selectedGitCheckoutBranchLabel(gitState),
+                modifier = Modifier.testTag(GitCheckoutPickerTriggerTag),
+                onClick = { activeBranchPickerMode = GitBranchPickerMode.CHECKOUT },
             )
             OutlinedTextField(
-                value = branchDraft,
-                onValueChange = { branchDraft = it },
-                label = { Text("Branch or worktree name") },
+                value = worktreeDraft,
+                onValueChange = { worktreeDraft = it },
+                label = { Text("Worktree name") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
                 modifier = Modifier.fillMaxWidth(),
@@ -1641,19 +1726,9 @@ private fun GitContextCard(
                 }
                 OutlinedButton(
                     onClick = {
-                        if (branchDraft.isNotBlank()) {
-                            onCreateBranch(branchDraft.trim())
-                            branchDraft = ""
-                        }
-                    },
-                ) {
-                    Text("Create branch")
-                }
-                OutlinedButton(
-                    onClick = {
-                        if (branchDraft.isNotBlank()) {
-                            onCreateWorktree(branchDraft.trim())
-                            branchDraft = ""
+                        if (worktreeDraft.isNotBlank()) {
+                            onCreateWorktree(worktreeDraft.trim())
+                            worktreeDraft = ""
                         }
                     },
                 ) {
@@ -1669,6 +1744,28 @@ private fun GitContextCard(
                 }
             }
         }
+    }
+
+    activeBranchPickerMode?.let { mode ->
+        GitBranchPickerDialog(
+            mode = mode,
+            gitState = gitState,
+            selectedBaseBranch = selectedBaseBranch,
+            onDismiss = { activeBranchPickerMode = null },
+            onSelectBaseBranch = { branch ->
+                activeBranchPickerMode = null
+                onSelectBaseBranch(branch)
+            },
+            onCheckoutBranch = { branch ->
+                activeBranchPickerMode = null
+                onCheckoutBranch(branch)
+            },
+            onCreateBranch = { branch ->
+                activeBranchPickerMode = null
+                onCreateBranch(branch)
+            },
+            onRefresh = onRefresh,
+        )
     }
 }
 
@@ -2332,6 +2429,30 @@ private fun composerSecondaryBarBranchLabel(gitState: RemodexGitState): String {
         ?: "Branch"
 }
 
+private fun selectedGitCheckoutBranchLabel(gitState: RemodexGitState): String {
+    return gitState.branches.currentBranch
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: gitState.sync?.currentBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: gitState.branches.defaultBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: "Pick a branch"
+}
+
+private fun selectedGitBaseBranchLabel(
+    gitState: RemodexGitState,
+    selectedBaseBranch: String,
+): String {
+    return selectedBaseBranch.trim().takeIf(String::isNotEmpty)
+        ?: gitState.branches.defaultBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: "Pick a base branch"
+}
+
 private fun preferredWorktreeBaseBranch(
     gitState: RemodexGitState,
     selectedBaseBranch: String,
@@ -2416,7 +2537,10 @@ private fun DetailedGitSheet(
     onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(GitSheetTag),
+    ) {
         GitContextCard(
             gitState = gitState,
             selectedBaseBranch = selectedBaseBranch,
@@ -4486,45 +4610,505 @@ private fun ModelRuntimeControlsSection(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun <T> RuntimeControlsSection(
+private fun GitBranchPickerTrigger(
     title: String,
-    options: List<T>,
-    selected: T?,
-    label: (T) -> String,
-    includeClearChoice: Boolean = false,
-    clearChoiceLabel: String = "Auto",
-    itemKey: (T) -> Any = { option -> option as Any },
-    onClear: (() -> Unit)? = null,
-    onSelect: (T) -> Unit,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val chrome = remodexConversationChrome()
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge,
-            color = chrome.secondaryText,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+    Surface(
+        modifier = modifier,
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (includeClearChoice && onClear != null) {
-                FilterChip(
-                    selected = selected == null,
-                    onClick = onClear,
-                    label = { Text(clearChoiceLabel) },
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = chrome.secondaryText,
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.titleText,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            options.forEach { option ->
-                FilterChip(
-                    selected = itemKey(option) == selected?.let(itemKey),
-                    onClick = { onSelect(option) },
-                    label = { Text(label(option)) },
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = chrome.secondaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitBranchPickerDialog(
+    mode: GitBranchPickerMode,
+    gitState: RemodexGitState,
+    selectedBaseBranch: String,
+    onDismiss: () -> Unit,
+    onSelectBaseBranch: (String) -> Unit,
+    onCheckoutBranch: (String) -> Unit,
+    onCreateBranch: (String) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    var searchText by rememberSaveable(mode) { mutableStateOf("") }
+    var createBranchDialogExpanded by rememberSaveable(mode) { mutableStateOf(false) }
+    var branchDraft by rememberSaveable(mode) { mutableStateOf("") }
+
+    val allowsSelectingCurrentBranch = mode == GitBranchPickerMode.CHECKOUT
+    val supportsBranchCreation = allowsSelectingCurrentBranch
+    val defaultBranch = gitState.branches.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+    val currentBranch = gitState.branches.currentBranch
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: gitState.sync?.currentBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: ""
+    val selectedBranch = when (mode) {
+        GitBranchPickerMode.CHECKOUT -> currentBranch
+        GitBranchPickerMode.BASE_BRANCH -> {
+            selectedBaseBranch.trim().takeIf(String::isNotEmpty)
+                ?: defaultBranch
+                ?: ""
+        }
+    }
+    val visibleBranches = remember(gitState.branches.branches, defaultBranch) {
+        gitState.branches.branches.filter { branch ->
+            defaultBranch == null || branch != defaultBranch
+        }
+    }
+    val orderedBranches = remember(visibleBranches, selectedBranch, defaultBranch, searchText) {
+        gitBranchPickerOrderedBranches(
+            branches = visibleBranches,
+            selectedBranch = selectedBranch,
+            defaultBranch = defaultBranch,
+            searchQuery = searchText,
+        )
+    }
+    val suggestedCreateBranchName = remember(visibleBranches, defaultBranch, searchText, supportsBranchCreation) {
+        gitBranchPickerSuggestedCreateBranchName(
+            searchQuery = searchText,
+            branches = visibleBranches,
+            defaultBranch = defaultBranch,
+            allowsSelectingCurrentBranch = supportsBranchCreation,
+        )
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            tonalElevation = 0.dp,
+            shadowElevation = 12.dp,
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 460.dp)
+                    .testTag(GitBranchPickerDialogTag)
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    text = when (mode) {
+                        GitBranchPickerMode.CHECKOUT -> "Current Branch"
+                        GitBranchPickerMode.BASE_BRANCH -> "Base Branch"
+                    },
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = chrome.titleText,
                 )
+                OutlinedTextField(
+                    value = searchText,
+                    onValueChange = { searchText = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(GitBranchPickerSearchFieldTag),
+                    label = { Text("Search branches") },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = null,
+                        )
+                    },
+                )
+                Surface(
+                    color = chrome.panelSurface,
+                    shape = RemodexConversationShapes.card,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 180.dp, max = 360.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                    ) {
+                        item("section-header") {
+                            Text(
+                                text = "Branches",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = chrome.secondaryText,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                        if (defaultBranch != null) {
+                            item("default-branch") {
+                                GitBranchPickerOptionButton(
+                                    branch = defaultBranch,
+                                    isSelected = selectedBranch == defaultBranch,
+                                    isDefault = true,
+                                    isCurrent = defaultBranch == currentBranch,
+                                    checkedOutBadgeTitle = checkedOutBadgeTitle(
+                                        branch = defaultBranch,
+                                        gitState = gitState,
+                                        allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
+                                    ),
+                                    enabled = !gitState.isLoading &&
+                                        !remodexCurrentBranchSelectionIsDisabled(
+                                            branch = defaultBranch,
+                                            currentBranch = currentBranch,
+                                            allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
+                                        ),
+                                    onClick = {
+                                        when (mode) {
+                                            GitBranchPickerMode.CHECKOUT -> onCheckoutBranch(defaultBranch)
+                                            GitBranchPickerMode.BASE_BRANCH -> onSelectBaseBranch(defaultBranch)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                        items(
+                            items = orderedBranches,
+                            key = { branch -> "branch-$branch" },
+                        ) { branch ->
+                            GitBranchPickerOptionButton(
+                                branch = branch,
+                                isSelected = selectedBranch == branch,
+                                isDefault = false,
+                                isCurrent = branch == currentBranch,
+                                checkedOutBadgeTitle = checkedOutBadgeTitle(
+                                    branch = branch,
+                                    gitState = gitState,
+                                    allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
+                                ),
+                                enabled = !gitState.isLoading &&
+                                    !remodexCurrentBranchSelectionIsDisabled(
+                                        branch = branch,
+                                        currentBranch = currentBranch,
+                                        allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
+                                    ),
+                                onClick = {
+                                    when (mode) {
+                                        GitBranchPickerMode.CHECKOUT -> onCheckoutBranch(branch)
+                                        GitBranchPickerMode.BASE_BRANCH -> onSelectBaseBranch(branch)
+                                    }
+                                },
+                            )
+                        }
+                        if (orderedBranches.isEmpty()) {
+                            item("empty-state") {
+                                Text(
+                                    text = "No branches found. Try a different search or refresh the branch list.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = chrome.secondaryText,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                )
+                            }
+                        }
+                        if (supportsBranchCreation) {
+                            item("create-divider") {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                )
+                            }
+                            suggestedCreateBranchName?.let { branchName ->
+                                item("create-suggested") {
+                                    GitBranchPickerActionRow(
+                                        label = "Create and checkout '$branchName'",
+                                        leadingIcon = Icons.Outlined.Add,
+                                        enabled = !gitState.isLoading,
+                                        onClick = { onCreateBranch(branchName) },
+                                    )
+                                }
+                            }
+                            item("create-manual") {
+                                GitBranchPickerActionRow(
+                                    label = "New branch...",
+                                    leadingIcon = Icons.Outlined.Checklist,
+                                    enabled = !gitState.isLoading,
+                                    onClick = {
+                                        val normalizedSearchBranch = remodexNormalizedCreatedBranchName(searchText)
+                                        branchDraft = if (normalizedSearchBranch.isEmpty()) {
+                                            "remodex/"
+                                        } else {
+                                            normalizedSearchBranch
+                                        }
+                                        createBranchDialogExpanded = true
+                                    },
+                                )
+                            }
+                        }
+                        item("reload-divider") {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                            )
+                        }
+                        item("reload-action") {
+                            GitBranchPickerActionRow(
+                                label = if (gitState.isLoading) "Refreshing..." else "Reload branch list",
+                                leadingIcon = Icons.Outlined.Refresh,
+                                enabled = !gitState.isLoading,
+                                onClick = onRefresh,
+                            )
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if (createBranchDialogExpanded) {
+        GitCreateBranchDialog(
+            initialValue = branchDraft,
+            onDismiss = { createBranchDialogExpanded = false },
+            onCreateBranch = { branch ->
+                createBranchDialogExpanded = false
+                onCreateBranch(branch)
+            },
+        )
+    }
+}
+
+@Composable
+private fun GitBranchPickerOptionButton(
+    branch: String,
+    isSelected: Boolean,
+    isDefault: Boolean,
+    isCurrent: Boolean,
+    checkedOutBadgeTitle: String?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        GitBranchOptionRow(
+            branch = branch,
+            isSelected = isSelected,
+            isDefault = isDefault,
+            isCurrent = isCurrent,
+            checkedOutBadgeTitle = checkedOutBadgeTitle,
+            enabled = enabled,
+        )
+    }
+}
+
+@Composable
+private fun GitBranchOptionRow(
+    branch: String,
+    isSelected: Boolean,
+    isDefault: Boolean,
+    isCurrent: Boolean,
+    checkedOutBadgeTitle: String?,
+    enabled: Boolean,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = branch,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) chrome.titleText else chrome.secondaryText,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (isCurrent) {
+                    GitBranchBadge(title = "Current")
+                }
+                if (isDefault) {
+                    GitBranchBadge(title = "Default")
+                }
+                checkedOutBadgeTitle?.let { title ->
+                    GitBranchBadge(title = title)
+                }
+            }
+        }
+        if (isSelected) {
+            Icon(
+                imageVector = Icons.Outlined.Check,
+                contentDescription = null,
+                tint = if (enabled) chrome.titleText else chrome.secondaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitBranchBadge(title: String) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Text(
+            text = title,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = chrome.secondaryText,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+}
+
+@Composable
+private fun GitBranchPickerActionRow(
+    label: String,
+    leadingIcon: ImageVector,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = leadingIcon,
+                contentDescription = null,
+                tint = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.7f),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) chrome.titleText else chrome.secondaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GitCreateBranchDialog(
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onCreateBranch: (String) -> Unit,
+) {
+    var branchDraft by rememberSaveable(initialValue) { mutableStateOf(initialValue) }
+    val normalizedBranchName = remodexNormalizedCreatedBranchName(branchDraft)
+    val isValid = normalizedBranchName.isNotEmpty() && normalizedBranchName != "remodex/"
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 0.dp,
+            shadowElevation = 10.dp,
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 420.dp)
+                    .padding(horizontal = 20.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    text = "New branch",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                OutlinedTextField(
+                    value = branchDraft,
+                    onValueChange = { branchDraft = it },
+                    label = { Text("remodex/my-feature") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "Branch will be created locally and checked out. Uncommitted changes stay with this working copy.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Button(
+                        onClick = { onCreateBranch(normalizedBranchName) },
+                        enabled = isValid,
+                    ) {
+                        Text("Create")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun checkedOutBadgeTitle(
+    branch: String,
+    gitState: RemodexGitState,
+    allowsSelectingCurrentBranch: Boolean,
+): String? {
+    if (!gitState.branches.branchesCheckedOutElsewhere.contains(branch)) {
+        return null
+    }
+    return if (allowsSelectingCurrentBranch && gitState.branches.worktreePathByBranch[branch] != null) {
+        "Open worktree"
+    } else {
+        "Open elsewhere"
     }
 }
 
