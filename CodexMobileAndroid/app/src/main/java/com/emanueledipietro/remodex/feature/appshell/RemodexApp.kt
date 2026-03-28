@@ -84,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -144,6 +145,13 @@ private data class RemodexSystemBarStyle(
     val useDarkStatusBarIcons: Boolean,
     val useDarkNavigationBarIcons: Boolean = useDarkStatusBarIcons,
 )
+
+internal fun compactSidebarOffset(
+    sidebarWidth: Dp,
+    contentOffset: Dp,
+): Dp {
+    return contentOffset - sidebarWidth
+}
 
 internal fun resolveShellBackAction(
     isScannerPresented: Boolean,
@@ -642,40 +650,6 @@ private fun RemodexShell(
                         WindowInsets.systemBars.only(WindowInsetsSides.Horizontal),
                     ),
             ) {
-                Surface(
-                    modifier = Modifier
-                        .width(sidebarWidth)
-                        .fillMaxHeight()
-                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top)),
-                    color = MaterialTheme.colorScheme.surface,
-                ) {
-                    ThreadsScreen(
-                        uiState = uiState,
-                        onSelectThread = { threadId ->
-                            viewModel.selectThread(threadId)
-                            onShellRouteChange(ShellRoute.CONTENT)
-                            onSidebarOpenChange(false)
-                        },
-                        onRefreshThreads = viewModel::refreshThreads,
-                        onRetryConnection = viewModel::retryConnection,
-                        onCreateThread = { preferredProjectPath ->
-                            viewModel.createThread(preferredProjectPath)
-                            onShellRouteChange(ShellRoute.CONTENT)
-                            onSidebarOpenChange(false)
-                        },
-                        onRenameThread = viewModel::renameThread,
-                        onArchiveThread = viewModel::archiveThread,
-                        onUnarchiveThread = viewModel::unarchiveThread,
-                        onDeleteThread = viewModel::deleteThread,
-                        onArchiveProject = viewModel::archiveProject,
-                        onOpenSettings = {
-                            onShellRouteChange(ShellRoute.SETTINGS)
-                            onSidebarOpenChange(false)
-                        },
-                        onSearchActiveChange = onSidebarSearchActiveChange,
-                    )
-                }
-
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -711,6 +685,46 @@ private fun RemodexShell(
                                 .clickable { onSidebarOpenChange(false) },
                         )
                     }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .width(sidebarWidth)
+                        .fillMaxHeight()
+                        .offset(
+                            x = compactSidebarOffset(
+                                sidebarWidth = sidebarWidth,
+                                contentOffset = contentOffset,
+                            ),
+                        )
+                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top)),
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    ThreadsScreen(
+                        uiState = uiState,
+                        onSelectThread = { threadId ->
+                            viewModel.selectThread(threadId)
+                            onShellRouteChange(ShellRoute.CONTENT)
+                            onSidebarOpenChange(false)
+                        },
+                        onRefreshThreads = viewModel::refreshThreads,
+                        onRetryConnection = viewModel::retryConnection,
+                        onCreateThread = { preferredProjectPath ->
+                            viewModel.createThread(preferredProjectPath)
+                            onShellRouteChange(ShellRoute.CONTENT)
+                            onSidebarOpenChange(false)
+                        },
+                        onRenameThread = viewModel::renameThread,
+                        onArchiveThread = viewModel::archiveThread,
+                        onUnarchiveThread = viewModel::unarchiveThread,
+                        onDeleteThread = viewModel::deleteThread,
+                        onArchiveProject = viewModel::archiveProject,
+                        onOpenSettings = {
+                            onShellRouteChange(ShellRoute.SETTINGS)
+                            onSidebarOpenChange(false)
+                        },
+                        onSearchActiveChange = onSidebarSearchActiveChange,
+                    )
                 }
             }
         }
