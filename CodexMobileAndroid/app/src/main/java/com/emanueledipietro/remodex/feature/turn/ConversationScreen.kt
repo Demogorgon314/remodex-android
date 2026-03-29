@@ -802,7 +802,11 @@ fun ConversationScreen(
     }
     val planComposerTakeoverRequest = planComposerFlow.takeoverPromptItem?.structuredUserInputRequest
     val planComposerFollowUpItem = planComposerFlow.completedPlanItem
-    val conversationLayout = remember(thread.messages, planComposerFlow.takeoverPromptItem?.id) {
+    val conversationLayout = remember(
+        thread.messages,
+        planComposerFlow.takeoverPromptItem?.id,
+        thread.runtimeConfig.planningMode,
+    ) {
         buildConversationTimelineLayout(
             messages = thread.messages,
             hiddenPromptItemId = planComposerFlow.takeoverPromptItem?.id,
