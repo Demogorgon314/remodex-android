@@ -57,7 +57,7 @@ internal fun ConversationVoiceButton(
     modifier: Modifier = Modifier,
 ) {
     val chrome = remodexConversationChrome()
-    val isFilled = voiceUiState.buttonMode == ComposerVoiceButtonMode.RECORDING
+    val hasCircleBackground = voiceUiState.buttonMode != ComposerVoiceButtonMode.IDLE
     val isEnabled = when (voiceUiState.buttonMode) {
         ComposerVoiceButtonMode.IDLE -> voiceUiState.isConnected
         ComposerVoiceButtonMode.RECORDING -> true
@@ -66,7 +66,7 @@ internal fun ConversationVoiceButton(
     }
     val backgroundColor = when (voiceUiState.buttonMode) {
         ComposerVoiceButtonMode.RECORDING -> Color(0xFFD64045)
-        ComposerVoiceButtonMode.IDLE -> chrome.mutedSurface
+        ComposerVoiceButtonMode.IDLE -> Color.Transparent
         ComposerVoiceButtonMode.PREFLIGHTING,
         ComposerVoiceButtonMode.TRANSCRIBING -> chrome.mutedSurface
     }
@@ -81,10 +81,10 @@ internal fun ConversationVoiceButton(
         modifier = modifier.requiredSize(VoiceButtonSize),
         color = backgroundColor,
         shape = CircleShape,
-        border = if (isFilled) {
+        border = if (hasCircleBackground) {
             null
         } else {
-            BorderStroke(1.dp, chrome.subtleBorder)
+            null
         },
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
@@ -111,7 +111,7 @@ internal fun ConversationVoiceButton(
                     Icon(
                         imageVector = Icons.Outlined.Mic,
                         contentDescription = "Start voice transcription",
-                        modifier = Modifier.size(14.dp),
+                        modifier = Modifier.size(18.dp),
                         tint = iconTint,
                     )
                 }

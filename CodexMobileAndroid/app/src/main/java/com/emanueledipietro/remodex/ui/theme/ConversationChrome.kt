@@ -39,7 +39,7 @@ object RemodexConversationShapes {
     val card = RoundedCornerShape(20.dp)
     val nestedCard = RoundedCornerShape(18.dp)
     val bubble = RoundedCornerShape(24.dp)
-    val composer = RoundedCornerShape(28.dp)
+    val composer = RoundedCornerShape(18.dp)
     val pill = RoundedCornerShape(999.dp)
 }
 
