@@ -2615,6 +2615,198 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `item plan delta after turn plan update reuses the synthetic plan row`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-live",
+                    title = "Plan live",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-live",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnPlanUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-live"))
+                put("turnId", JsonPrimitive("turn-plan-live"))
+                put("explanation", JsonPrimitive("Work through the rollout safely."))
+                put(
+                    "plan",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Audit current flow"))
+                                put("status", JsonPrimitive("inProgress"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Implement Android fix"))
+                                put("status", JsonPrimitive("pending"))
+                            },
+                        )
+                    },
+                )
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "appendPlanDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-live"))
+                put("turnId", JsonPrimitive("turn-plan-live"))
+                put("itemId", JsonPrimitive("plan-item-1"))
+                put("delta", JsonPrimitive("# Final plan\n- Audit current flow\n- Implement Android fix"))
+            },
+        )
+
+        val planItems = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+            .filter { item -> item.kind == ConversationItemKind.PLAN }
+
+        assertEquals(1, planItems.size)
+        assertEquals("plan-turn-plan-live", planItems.single().id)
+        assertEquals("plan-item-1", planItems.single().itemId)
+        assertEquals("# Final plan\n- Audit current flow\n- Implement Android fix", planItems.single().text)
+        assertNotNull(planItems.single().planState)
+        assertEquals(
+            listOf("Audit current flow", "Implement Android fix"),
+            planItems.single().planState?.steps?.map { step -> step.step },
+        )
+    }
+
+    @Test
+    fun `completed plan lifecycle after turn plan update keeps one row and preserves plan state`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-complete",
+                    title = "Plan complete",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-complete",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnPlanUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-complete"))
+                put("turnId", JsonPrimitive("turn-plan-complete"))
+                put("explanation", JsonPrimitive("Ship the Android fix safely."))
+                put(
+                    "plan",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Align identifiers"))
+                                put("status", JsonPrimitive("completed"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Verify focused tests"))
+                                put("status", JsonPrimitive("completed"))
+                            },
+                        )
+                    },
+                )
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "handleStructuredItemLifecycle",
+            buildJsonObject {
+                put("id", JsonPrimitive("plan-item-complete"))
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("output_text"))
+                                put("text", JsonPrimitive("# Final plan\n- Align identifiers\n- Verify focused tests"))
+                            },
+                        )
+                    },
+                )
+                put("explanation", JsonPrimitive("Ship the Android fix safely."))
+                put(
+                    "plan",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Align identifiers"))
+                                put("status", JsonPrimitive("completed"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("step", JsonPrimitive("Verify focused tests"))
+                                put("status", JsonPrimitive("completed"))
+                            },
+                        )
+                    },
+                )
+            },
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-complete"))
+                put("turnId", JsonPrimitive("turn-plan-complete"))
+            },
+            "plan",
+            true,
+        )
+
+        val planItems = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+            .filter { item -> item.kind == ConversationItemKind.PLAN }
+
+        assertEquals(1, planItems.size)
+        assertEquals("plan-turn-plan-complete", planItems.single().id)
+        assertEquals("plan-item-complete", planItems.single().itemId)
+        assertFalse(planItems.single().isStreaming)
+        assertEquals("# Final plan\n- Align identifiers\n- Verify focused tests", planItems.single().text)
+        assertEquals(
+            listOf("Align identifiers", "Verify focused tests"),
+            planItems.single().planState?.steps?.map { step -> step.step },
+        )
+    }
+
+    @Test
     fun `structured user input request is inserted immediately and keeps blank header questions`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),

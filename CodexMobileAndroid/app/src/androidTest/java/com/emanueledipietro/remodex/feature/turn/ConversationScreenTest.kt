@@ -28,6 +28,9 @@ import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
+import com.emanueledipietro.remodex.model.RemodexPlanState
+import com.emanueledipietro.remodex.model.RemodexPlanStep
+import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
@@ -583,6 +586,110 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun activePlanAccessoryRefreshesWhenPlanProgressAdvances() {
+        val uiState = mutableStateOf(
+            conversationUiState(
+                autocompleteState = RemodexComposerAutocompleteState(),
+                messages = listOf(
+                    planItem(
+                        id = "plan-1",
+                        isStreaming = true,
+                        steps = listOf(
+                            RemodexPlanStep(
+                                id = "step-1",
+                                step = "Audit current flow",
+                                status = RemodexPlanStepStatus.IN_PROGRESS,
+                            ),
+                            RemodexPlanStep(
+                                id = "step-2",
+                                step = "Implement Android fix",
+                                status = RemodexPlanStepStatus.PENDING,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = uiState.value,
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Audit current flow").assertIsDisplayed()
+        composeRule.onNodeWithText("0/2").assertIsDisplayed()
+
+        composeRule.runOnIdle {
+            uiState.value = conversationUiState(
+                autocompleteState = RemodexComposerAutocompleteState(),
+                messages = listOf(
+                    planItem(
+                        id = "plan-1",
+                        isStreaming = true,
+                        steps = listOf(
+                            RemodexPlanStep(
+                                id = "step-1",
+                                step = "Audit current flow",
+                                status = RemodexPlanStepStatus.COMPLETED,
+                            ),
+                            RemodexPlanStep(
+                                id = "step-2",
+                                step = "Implement Android fix",
+                                status = RemodexPlanStepStatus.IN_PROGRESS,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Implement Android fix").assertIsDisplayed()
+        composeRule.onNodeWithText("1/2").assertIsDisplayed()
+    }
+
+    @Test
     fun emptyConversationShowsIosStyledWelcomeState() {
         composeRule.setContent {
             RemodexTheme {
@@ -1042,6 +1149,25 @@ class ConversationScreenTest {
                 voice = voice,
                 autocomplete = autocompleteState,
             ),
+        )
+    }
+
+    private fun planItem(
+        id: String,
+        steps: List<RemodexPlanStep>,
+        isStreaming: Boolean = false,
+    ): RemodexConversationItem {
+        return RemodexConversationItem(
+            id = id,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN,
+            text = "Plan update",
+            isStreaming = isStreaming,
+            planState = RemodexPlanState(
+                explanation = "Keep the rollout moving safely.",
+                steps = steps,
+            ),
+            orderIndex = 1,
         )
     }
 }

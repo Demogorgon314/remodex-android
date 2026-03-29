@@ -2177,13 +2177,25 @@ class BridgeThreadSyncService(
     }
 
     private fun appendPlanDelta(paramsObject: JsonObject) {
+        val delta = extractTextDelta(paramsObject)
+        if (shouldIgnoreStreamingTextDelta(delta)) {
+            return
+        }
         val turnId = extractTurnId(paramsObject)?.takeIf(String::isNotBlank) ?: return
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         threadIdByTurnId[turnId] = threadId
-        appendSystemTextDelta(
-            paramsObject = paramsObject,
-            kind = ConversationItemKind.PLAN,
-            fallbackPrefix = "plan",
+        val eventObject = envelopeEventObject(paramsObject)
+        upsertPlanMessage(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = extractItemId(
+                paramsObject = paramsObject,
+                eventObject = eventObject,
+                itemObject = extractIncomingItemObject(paramsObject, eventObject),
+            ),
+            text = delta,
+            planState = null,
+            isStreaming = true,
         )
     }
 
@@ -2880,6 +2892,17 @@ class BridgeThreadSyncService(
             )
             return true
         }
+        if (kind == ConversationItemKind.PLAN) {
+            upsertPlanMessage(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+                text = body.takeIf(String::isNotBlank),
+                planState = planState,
+                isStreaming = !isCompleted,
+            )
+            return true
+        }
         if (subagentAction == null && body.isBlank() && isCompleted) {
             if (debugEnabled) {
                 emitReviewDebugLog(
@@ -2949,7 +2972,13 @@ class BridgeThreadSyncService(
             itemId = itemId,
             speaker = ConversationSpeaker.SYSTEM,
             kind = ConversationItemKind.PLAN,
+        ) ?: reusablePlanStreamingItem(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = itemId,
         )
+        val effectiveMessageId = existingItem?.id ?: messageId
+        val effectiveItemId = itemId ?: existingItem?.itemId
         val resolvedPlanState = when {
             existingItem?.planState == null -> planState
             planState == null -> existingItem.planState
@@ -2958,33 +2987,34 @@ class BridgeThreadSyncService(
                 steps = if (planState.steps.isNotEmpty()) planState.steps else existingItem.planState.steps,
             )
         }
-        val resolvedText = text?.trim()?.takeIf(String::isNotEmpty)
-            ?: resolvedPlanState?.explanation?.trim()?.takeIf(String::isNotEmpty)
-            ?: resolvedPlanState?.steps?.firstOrNull()?.step?.trim()?.takeIf(String::isNotEmpty)
-            ?: existingItem?.text?.takeIf(String::isNotBlank)
-            ?: if (isStreaming) "Planning..." else "Plan updated."
+        val resolvedText = resolvedPlanText(
+            existingText = existingItem?.text,
+            incomingText = text,
+            resolvedPlanState = resolvedPlanState,
+            isStreaming = isStreaming,
+        ) ?: if (isStreaming) "Planning..." else "Plan updated."
         upsertStreamingItem(
             threadId = threadId,
             item = timelineItem(
-                id = messageId,
+                id = effectiveMessageId,
                 speaker = ConversationSpeaker.SYSTEM,
                 text = resolvedText,
                 kind = ConversationItemKind.PLAN,
                 turnId = turnId,
-                itemId = itemId,
+                itemId = effectiveItemId,
                 isStreaming = isStreaming,
                 planState = resolvedPlanState,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
-                    messageId = messageId,
+                    messageId = effectiveMessageId,
                     turnId = turnId,
-                    itemId = itemId,
+                    itemId = effectiveItemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = ConversationItemKind.PLAN,
                 ),
                 assistantChangeSet = existingItem?.assistantChangeSet,
             ),
-            isRunning = true,
+            isRunning = isStreaming || activeTurnIdByThread[threadId] != null,
         )
     }
 
@@ -3458,6 +3488,55 @@ class BridgeThreadSyncService(
                             normalizedCommandExecutionPreviewKey(candidate.text) == commandKey
                         )
             }
+    }
+
+    private fun reusablePlanStreamingItem(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        if (itemId.isNullOrBlank()) {
+            return null
+        }
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        return TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            .asReversed()
+            .firstOrNull { candidate ->
+                candidate.speaker == ConversationSpeaker.SYSTEM &&
+                    candidate.kind == ConversationItemKind.PLAN &&
+                    candidate.turnId == normalizedTurnId &&
+                    candidate.itemId.isNullOrBlank()
+            }
+    }
+
+    private fun resolvedPlanText(
+        existingText: String?,
+        incomingText: String?,
+        resolvedPlanState: RemodexPlanState?,
+        isStreaming: Boolean,
+    ): String? {
+        val trimmedIncoming = incomingText?.trim()?.takeIf(String::isNotEmpty)
+        val trimmedExisting = existingText?.takeIf(String::isNotBlank)
+        if (trimmedIncoming != null) {
+            return when {
+                trimmedExisting.isNullOrBlank() -> trimmedIncoming
+                isPlanPlaceholderText(trimmedExisting) -> trimmedIncoming
+                !isStreaming -> trimmedIncoming
+                else -> ThreadHistoryReconciler.mergeStreamingSnapshotText(
+                    existingText = trimmedExisting,
+                    incomingText = trimmedIncoming,
+                )
+            }
+        }
+        return resolvedPlanState?.explanation?.trim()?.takeIf(String::isNotEmpty)
+            ?: resolvedPlanState?.steps?.firstOrNull()?.step?.trim()?.takeIf(String::isNotEmpty)
+            ?: trimmedExisting
+    }
+
+    private fun isPlanPlaceholderText(text: String): Boolean {
+        val trimmed = text.trim()
+        return trimmed == "Planning..." || trimmed == "Plan updated."
     }
 
     private fun reusableAssistantCompletionItem(
