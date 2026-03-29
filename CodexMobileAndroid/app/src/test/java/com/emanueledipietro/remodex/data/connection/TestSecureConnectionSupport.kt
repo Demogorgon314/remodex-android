@@ -52,6 +52,7 @@ fun seedTrustedMacState(
 ) {
     SecureCrypto.rememberResolvedTrustedSession(
         store = store,
+        profileId = "test-profile-$macDeviceId",
         response = TrustedSessionResolveResponse(
             ok = true,
             macDeviceId = macDeviceId,

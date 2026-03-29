@@ -17,6 +17,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
+import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
@@ -121,6 +122,7 @@ data class AppUiState(
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
     val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
+    val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
     val isCreatingThread: Boolean = false,
@@ -496,6 +498,7 @@ class AppViewModel(
                 appearanceMode = snapshot.appearanceMode,
                 appFontStyle = snapshot.appFontStyle,
                 trustedMac = snapshot.trustedMac,
+                bridgeProfiles = snapshot.bridgeProfiles,
                 bridgeUpdatePrompt = snapshot.bridgeUpdatePrompt,
                 supportsThreadFork = snapshot.supportsThreadFork,
                 composer = composerState(
@@ -2111,6 +2114,25 @@ class AppViewModel(
     ) {
         viewModelScope.launch {
             repository.setMacNickname(deviceId, nickname)
+        }
+    }
+
+    fun activateBridgeProfile(profileId: String) {
+        viewModelScope.launch {
+            stopAutoReconnectForManualRetry()
+            suppressAutoReconnectUntilManualConnect = false
+            repository.activateBridgeProfile(profileId)
+        }
+    }
+
+    fun removeBridgeProfile(profileId: String) {
+        viewModelScope.launch {
+            if (uiState.value.recoveryState.activeProfileId == profileId) {
+                suppressAutoReconnectUntilManualConnect = false
+                isManualScannerActive = false
+                stopAutoReconnectLoop()
+            }
+            repository.removeBridgeProfile(profileId)
         }
     }
 

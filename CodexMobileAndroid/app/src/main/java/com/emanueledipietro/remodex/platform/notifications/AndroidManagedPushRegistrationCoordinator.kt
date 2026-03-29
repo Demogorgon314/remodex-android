@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -69,6 +70,11 @@ class AndroidManagedPushRegistrationCoordinator(
     private val scope: CoroutineScope,
     private val appEnvironment: String = "production",
 ) {
+    @Serializable
+    private data class PushRegistrationSignatures(
+        val profiles: Map<String, String> = emptyMap(),
+    )
+
     private val stateFlow = MutableStateFlow(buildState(lastErrorMessage = null))
 
     val state: StateFlow<RemodexNotificationRegistrationState> = stateFlow.asStateFlow()
@@ -100,6 +106,7 @@ class AndroidManagedPushRegistrationCoordinator(
             secureStore.writeString(SecureStoreKeys.PUSH_FCM_TOKEN, normalizedToken)
         }
         secureStore.deleteValue(SecureStoreKeys.PUSH_REGISTRATION_SIGNATURE)
+        secureStore.deleteValue(SecureStoreKeys.PUSH_REGISTRATION_SIGNATURES)
         refresh(force = true)
     }
 
@@ -159,13 +166,21 @@ class AndroidManagedPushRegistrationCoordinator(
         }
 
         val alertsEnabled = statusProvider.alertsEnabled()
+        val activeProfileId = secureStore.readString(SecureStoreKeys.ACTIVE_RELAY_PROFILE_ID)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return
         val signature = buildSignature(
             sessionId = secureStore.readString(SecureStoreKeys.RELAY_SESSION_ID).orEmpty(),
             token = resolvedToken,
             alertsEnabled = alertsEnabled,
             authorizationStatus = authorizationStatus,
         )
-        val previousSignature = secureStore.readString(SecureStoreKeys.PUSH_REGISTRATION_SIGNATURE)
+        val signatures = secureStore.readSerializable(
+            SecureStoreKeys.PUSH_REGISTRATION_SIGNATURES,
+            PushRegistrationSignatures.serializer(),
+        ) ?: PushRegistrationSignatures()
+        val previousSignature = signatures.profiles[activeProfileId]
         if (!force && signature == previousSignature) {
             stateFlow.value = buildState(
                 authorizationStatus = authorizationStatus,
@@ -189,6 +204,13 @@ class AndroidManagedPushRegistrationCoordinator(
                 },
             )
             secureStore.writeString(SecureStoreKeys.PUSH_REGISTRATION_SIGNATURE, signature)
+            secureStore.writeSerializable(
+                SecureStoreKeys.PUSH_REGISTRATION_SIGNATURES,
+                PushRegistrationSignatures.serializer(),
+                PushRegistrationSignatures(
+                    profiles = signatures.profiles + (activeProfileId to signature),
+                ),
+            )
             stateFlow.value = buildState(
                 authorizationStatus = authorizationStatus,
                 cachedToken = resolvedToken,

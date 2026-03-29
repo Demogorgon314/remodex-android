@@ -127,6 +127,10 @@ interface RemodexAppRepository {
         nickname: String?,
     )
 
+    suspend fun activateBridgeProfile(profileId: String): Boolean
+
+    suspend fun removeBridgeProfile(profileId: String): String?
+
     suspend fun refreshGptAccountState()
 
     suspend fun logoutGptAccount()

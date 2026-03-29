@@ -1,5 +1,7 @@
 package com.emanueledipietro.remodex.data.threads
 
+import android.content.Context
+import androidx.room.Room
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Embedded
@@ -13,12 +15,18 @@ import androidx.room.Relation
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.withTransaction
+import com.emanueledipietro.remodex.data.connection.SecureStore
+import com.emanueledipietro.remodex.data.connection.SecureStoreKeys
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -106,6 +114,8 @@ private val threadCacheJson = Json {
     ignoreUnknownKeys = true
 }
 
+private const val LegacyThreadCacheDatabaseName = "remodex_thread_cache.db"
+
 class RoomThreadCacheStore(
     private val database: RemodexThreadCacheDatabase,
 ) : ThreadCacheStore {
@@ -153,6 +163,63 @@ class RoomThreadCacheStore(
             database.threadCacheDao().upsertThreads(threadEntities)
             database.threadCacheDao().upsertTimelineItems(timelineEntities)
         }
+    }
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class ProfileAwareThreadCacheStore(
+    private val context: Context,
+    private val secureStore: SecureStore,
+) : ThreadCacheStore {
+    private val activeProfileId = MutableStateFlow<String?>(null)
+    private val storesByDatabaseName = linkedMapOf<String, RoomThreadCacheStore>()
+
+    override val threads: Flow<List<CachedThreadRecord>> =
+        activeProfileId.flatMapLatest { profileId ->
+            val normalizedProfileId = profileId?.trim()?.takeIf(String::isNotBlank)
+            if (normalizedProfileId == null) {
+                flowOf(emptyList())
+            } else {
+                storeForProfile(normalizedProfileId).threads
+            }
+        }
+
+    override fun setActiveProfileId(profileId: String?) {
+        activeProfileId.value = profileId?.trim()?.takeIf(String::isNotBlank)
+    }
+
+    override suspend fun replaceThreads(threads: List<CachedThreadRecord>) {
+        val profileId = activeProfileId.value?.trim()?.takeIf(String::isNotBlank) ?: return
+        storeForProfile(profileId).replaceThreads(threads)
+    }
+
+    private fun storeForProfile(profileId: String): RoomThreadCacheStore {
+        val databaseName = databaseNameForProfile(profileId)
+        return storesByDatabaseName.getOrPut(databaseName) {
+            val database = Room.databaseBuilder(
+                context.applicationContext,
+                RemodexThreadCacheDatabase::class.java,
+                databaseName,
+            ).fallbackToDestructiveMigration(dropAllTables = true).build()
+            RoomThreadCacheStore(database)
+        }
+    }
+
+    private fun databaseNameForProfile(profileId: String): String {
+        val legacyProfileId = secureStore.readString(SecureStoreKeys.LEGACY_THREAD_CACHE_PROFILE_ID)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+        if (profileId == legacyProfileId) {
+            return LegacyThreadCacheDatabaseName
+        }
+        val normalizedSuffix = profileId.map { char ->
+            if (char.isLetterOrDigit()) {
+                char
+            } else {
+                '_'
+            }
+        }.joinToString(separator = "")
+        return "remodex_thread_cache_$normalizedSuffix.db"
     }
 }
 

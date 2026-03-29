@@ -282,6 +282,7 @@ class BridgeThreadSyncService(
                     latestTurnTerminalStateByThread.clear()
                     stoppedTurnIdsByThread.clear()
                     resumedThreadIds.clear()
+                    backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
                 }
             }

@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.app
 
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
+import com.emanueledipietro.remodex.data.connection.BridgeProfilesSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
@@ -23,6 +24,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
+import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -115,6 +117,7 @@ class DefaultRemodexAppRepository(
     private var threadCacheWriteJob: Job? = null
     private var threadListPublishJob: Job? = null
     private var recoveredEncryptedAttempt: Int? = null
+    private var activeBridgeProfileId: String? = secureConnectionCoordinator.bridgeProfiles.value.activeProfileId
     private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
     private val initialBaseThreads = threadSyncService.threads.value
         .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
@@ -129,6 +132,7 @@ class DefaultRemodexAppRepository(
             connectionStatus = secureConnectionCoordinator.state.value.toConnectionStatus(),
             secureConnection = secureConnectionCoordinator.state.value,
             trustedMac = secureConnectionCoordinator.state.value.toTrustedMacPresentation(),
+            bridgeProfiles = secureConnectionCoordinator.bridgeProfiles.value.toBridgeProfilePresentations(),
             bridgeUpdatePrompt = threadSyncService.bridgeUpdatePrompt.value,
             supportsThreadFork = threadSyncService.supportsThreadFork.value,
             availableModels = threadSyncService.availableModels.value,
@@ -164,6 +168,28 @@ class DefaultRemodexAppRepository(
     override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusState
 
     init {
+        appPreferencesRepository.setActiveBridgeProfileId(activeBridgeProfileId)
+        threadCacheStore.setActiveProfileId(activeBridgeProfileId)
+
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            secureConnectionCoordinator.bridgeProfiles.collectLatest { bridgeProfiles ->
+                val nextActiveProfileId = bridgeProfiles.activeProfileId
+                val previousActiveProfileId = activeBridgeProfileId
+                val didChangeActiveProfile =
+                    previousActiveProfileId != null && nextActiveProfileId != previousActiveProfileId
+                activeBridgeProfileId = nextActiveProfileId
+                appPreferencesRepository.setActiveBridgeProfileId(nextActiveProfileId)
+                threadCacheStore.setActiveProfileId(nextActiveProfileId)
+                if (didChangeActiveProfile) {
+                    reconnectCatchupJobByThread.values.forEach(Job::cancel)
+                    reconnectCatchupJobByThread.clear()
+                    recoveredEncryptedAttempt = null
+                    refreshThreadsLocally(emptyList())
+                    resetBridgeScopedStatus()
+                }
+            }
+        }
+
         repositoryScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
             // Streaming assistant deltas should update the visible bubble continuously.
             // Using collectLatest here lets newer thread snapshots cancel in-flight work,
@@ -187,12 +213,14 @@ class DefaultRemodexAppRepository(
                 combine(
                     appPreferencesRepository.preferences,
                     secureConnectionCoordinator.state,
+                    secureConnectionCoordinator.bridgeProfiles,
                     managedPushRegistrationState,
                     threadSyncService.availableModels,
-                ) { preferences, secureConnection, notificationRegistration, availableModels ->
+                ) { preferences, secureConnection, bridgeProfiles, notificationRegistration, availableModels ->
                     SessionInputs(
                         preferences = preferences,
                         secureConnection = secureConnection,
+                        bridgeProfiles = bridgeProfiles,
                         notificationRegistration = notificationRegistration,
                         availableModels = availableModels,
                         bridgeUpdatePrompt = null,
@@ -205,6 +233,7 @@ class DefaultRemodexAppRepository(
                 SessionInputs(
                     preferences = baseInputs.preferences,
                     secureConnection = baseInputs.secureConnection,
+                    bridgeProfiles = baseInputs.bridgeProfiles,
                     notificationRegistration = baseInputs.notificationRegistration,
                     availableModels = baseInputs.availableModels,
                     bridgeUpdatePrompt = bridgeUpdatePrompt,
@@ -246,6 +275,12 @@ class DefaultRemodexAppRepository(
                         appearanceMode = preferences.appearanceMode,
                         appFontStyle = preferences.appFontStyle,
                         trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
+                        bridgeProfiles = inputs.bridgeProfiles.toBridgeProfilePresentations(
+                            nicknamesByDeviceId = preferences.macNicknamesByDeviceId,
+                            connectedProfileId = secureConnection.activeProfileId.takeIf {
+                                secureConnection.secureState == SecureConnectionState.ENCRYPTED
+                            },
+                        ),
                         bridgeUpdatePrompt = inputs.bridgeUpdatePrompt,
                         supportsThreadFork = inputs.supportsThreadFork,
                         threads = threads,
@@ -1177,12 +1212,17 @@ class DefaultRemodexAppRepository(
             ?: sessionState.value.selectedThread?.takeIf { selected -> selected.id == threadId }
         val resumeService = resumeService()
         if (sourceThread?.messages.isNullOrEmpty() && resumeService?.isThreadResumedLocally(threadId) == true) {
-            createThread(
+            val runtimeDefaults = effectiveRuntimeDefaultsForNewThread(threadId)
+            val createdThread = threadCommandService.createThread(
                 preferredProjectPath = projectPath,
-                inheritRuntimeFromThreadId = threadId,
+                runtimeDefaults = runtimeDefaults,
+            ) ?: return null
+            inheritRuntimeOverride(sourceThreadId = threadId, destinationThreadId = createdThread.id)
+            refreshBaseThreadsLocallyFromSnapshots(
+                snapshots = listOf(createdThread),
+                preferredSelectedThreadIdOverride = createdThread.id,
             )
-            return sessionState.value.selectedThreadId
-                ?.takeIf { selectedThreadId -> selectedThreadId != threadId }
+            return createdThread.id
         }
         val forkedThread = threadCommandService.forkThreadIntoProjectPath(
             threadId = threadId,
@@ -1358,16 +1398,34 @@ class DefaultRemodexAppRepository(
         secureConnectionCoordinator.retryConnection()
     }
 
+    override suspend fun activateBridgeProfile(profileId: String): Boolean {
+        val didActivate = secureConnectionCoordinator.activateBridgeProfile(profileId)
+        if (!didActivate) {
+            return false
+        }
+        secureConnectionCoordinator.retryConnection()
+        return true
+    }
+
+    override suspend fun removeBridgeProfile(profileId: String): String? {
+        val nextProfileId = secureConnectionCoordinator.removeBridgeProfile(profileId)
+        if (nextProfileId != null) {
+            secureConnectionCoordinator.retryConnection()
+        }
+        return nextProfileId
+    }
+
     override suspend fun disconnect() {
         secureConnectionCoordinator.disconnect()
-        gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
-        gptAccountErrorMessageState.value = null
-        bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
-        usageStatusState.value = RemodexUsageStatus()
+        resetBridgeScopedStatus()
     }
 
     override suspend fun forgetTrustedMac() {
         secureConnectionCoordinator.forgetTrustedMac()
+        resetBridgeScopedStatus()
+    }
+
+    private fun resetBridgeScopedStatus() {
         gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
         gptAccountErrorMessageState.value = null
         bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
@@ -1715,6 +1773,7 @@ class DefaultRemodexAppRepository(
             threads = baseThreads,
         )
         if (selectedThreadId != preferencesState.value.selectedThreadId) {
+            preferencesState.value = preferencesState.value.copy(selectedThreadId = selectedThreadId)
             repositoryScope.launch {
                 appPreferencesRepository.setSelectedThreadId(selectedThreadId)
             }
@@ -1763,6 +1822,12 @@ class DefaultRemodexAppRepository(
                 selectedThreadId = selectedThreadId,
                 selectedThreadSnapshot = selectedThread,
                 trustedMac = snapshot.secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
+                bridgeProfiles = secureConnectionCoordinator.bridgeProfiles.value.toBridgeProfilePresentations(
+                    nicknamesByDeviceId = preferences.macNicknamesByDeviceId,
+                    connectedProfileId = snapshot.secureConnection.activeProfileId.takeIf {
+                        snapshot.secureConnection.secureState == SecureConnectionState.ENCRYPTED
+                    },
+                ),
             )
         }
     }
@@ -1797,6 +1862,12 @@ class DefaultRemodexAppRepository(
                 appearanceMode = preferences.appearanceMode,
                 appFontStyle = preferences.appFontStyle,
                 trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
+                bridgeProfiles = secureConnectionCoordinator.bridgeProfiles.value.toBridgeProfilePresentations(
+                    nicknamesByDeviceId = preferences.macNicknamesByDeviceId,
+                    connectedProfileId = secureConnection.activeProfileId.takeIf {
+                        secureConnection.secureState == SecureConnectionState.ENCRYPTED
+                    },
+                ),
                 threads = threads,
                 selectedThreadId = selectedThreadId,
                 selectedThreadSnapshot = threads.firstOrNull { thread -> thread.id == selectedThreadId }
@@ -1934,6 +2005,7 @@ private fun ThreadSyncSnapshot.toCachedThreadRecord(
 private data class SessionInputs(
     val preferences: AppPreferences,
     val secureConnection: SecureConnectionSnapshot,
+    val bridgeProfiles: BridgeProfilesSnapshot,
     val notificationRegistration: RemodexNotificationRegistrationState,
     val availableModels: List<RemodexModelOption>,
     val bridgeUpdatePrompt: com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt?,
@@ -2068,6 +2140,47 @@ private fun SecureConnectionSnapshot.toTrustedMacPresentation(
         systemName = if (nickname != null) fallbackName else null,
         detail = detail.ifBlank { null },
     )
+}
+
+private fun BridgeProfilesSnapshot.toBridgeProfilePresentations(
+    nicknamesByDeviceId: Map<String, String> = emptyMap(),
+    connectedProfileId: String? = null,
+): List<RemodexBridgeProfilePresentation> {
+    return profiles.map { profile ->
+        val fingerprint = profile.macFingerprint.trim().ifEmpty { "Unknown" }
+        val fallbackName = profile.macDisplayName?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: "Mac $fingerprint"
+        val nickname = nicknamesByDeviceId[profile.macDeviceId]
+            ?.trim()
+            .takeUnless { it.isNullOrEmpty() }
+        val title = when {
+            profile.profileId == connectedProfileId -> "Connected Pair"
+            profile.needsQrBootstrap -> "Pairing Mac"
+            profile.isActive -> "Saved Pair"
+            profile.isTrusted -> "Saved Pair"
+            else -> "Previous Pair"
+        }
+        val detail = buildList {
+            add(
+                when {
+                    profile.profileId == connectedProfileId -> "End-to-end encrypted"
+                    profile.needsQrBootstrap -> "Secure handshake pending"
+                    profile.isTrusted -> "Trusted Mac"
+                    else -> "Saved locally"
+                },
+            )
+            add(fingerprint)
+        }.joinToString(separator = " · ")
+        RemodexBridgeProfilePresentation(
+            profileId = profile.profileId,
+            title = title,
+            name = nickname ?: fallbackName,
+            systemName = if (nickname != null) fallbackName else null,
+            detail = detail,
+            isActive = profile.isActive,
+            isConnected = profile.profileId == connectedProfileId,
+        )
+    }
 }
 
 private fun collectSubtreeThreadIds(

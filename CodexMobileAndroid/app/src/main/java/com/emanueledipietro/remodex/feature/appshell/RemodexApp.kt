@@ -1004,6 +1004,8 @@ private fun MainPane(
                         onOpenScanner = onOpenScanner,
                         onDisconnect = viewModel::disconnect,
                         onForgetTrustedMac = viewModel::forgetTrustedMac,
+                        onActivateBridgeProfile = viewModel::activateBridgeProfile,
+                        onRemoveBridgeProfile = viewModel::removeBridgeProfile,
                         onSetMacNickname = viewModel::setMacNickname,
                         onOpenArchivedChats = onOpenArchivedChats,
                         onOpenAboutRemodex = onOpenAboutRemodex,

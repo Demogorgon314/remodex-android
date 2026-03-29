@@ -29,5 +29,7 @@ data class CachedThreadRecord(
 interface ThreadCacheStore {
     val threads: Flow<List<CachedThreadRecord>>
 
+    fun setActiveProfileId(profileId: String?) = Unit
+
     suspend fun replaceThreads(threads: List<CachedThreadRecord>)
 }

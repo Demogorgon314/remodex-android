@@ -1393,6 +1393,8 @@ class DefaultRemodexAppRepositoryTest {
 
         override val preferences: Flow<AppPreferences> = backingState
 
+        override fun setActiveBridgeProfileId(profileId: String?) = Unit
+
         override suspend fun setOnboardingCompleted(completed: Boolean) {
             backingState.value = backingState.value.copy(onboardingCompleted = completed)
         }

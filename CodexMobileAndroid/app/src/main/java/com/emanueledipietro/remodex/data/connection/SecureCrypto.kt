@@ -21,6 +21,7 @@ object SecureCrypto {
     private val secureRandom = SecureRandom()
     private val base64Encoder = Base64.getEncoder()
     private val base64Decoder = Base64.getDecoder()
+    private const val LegacyImportedProfilePrefix = "legacy-profile"
 
     fun phoneIdentityStateFromStore(store: SecureStore): PhoneIdentityState {
         val existing = store.readSerializable(
@@ -52,7 +53,65 @@ object SecureCrypto {
         ) ?: TrustedMacRegistry()
     }
 
+    fun relayProfileRegistryFromStore(store: SecureStore): RelayProfileRegistry {
+        val existing = store.readSerializable(
+            SecureStoreKeys.RELAY_PROFILE_REGISTRY,
+            RelayProfileRegistry.serializer(),
+        )
+        if (existing != null) {
+            syncLegacyActivePairingFromRegistry(store, existing)
+            return existing
+        }
+
+        val legacyPairing = legacyRelayPairingRecordFromStore(store) ?: return RelayProfileRegistry()
+        val importedProfileId = store.readString(SecureStoreKeys.LEGACY_THREAD_CACHE_PROFILE_ID)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: "$LegacyImportedProfilePrefix-${UUID.randomUUID()}"
+        val migrated = RelayProfileRegistry(
+            activeProfileId = importedProfileId,
+            profiles = mapOf(
+                importedProfileId to RelayProfileRecord(
+                    profileId = importedProfileId,
+                    sessionId = legacyPairing.sessionId,
+                    relayUrl = legacyPairing.relayUrl,
+                    macDeviceId = legacyPairing.macDeviceId,
+                    macIdentityPublicKey = legacyPairing.macIdentityPublicKey,
+                    protocolVersion = legacyPairing.protocolVersion,
+                    lastAppliedBridgeOutboundSeq = legacyPairing.lastAppliedBridgeOutboundSeq,
+                    shouldForceQrBootstrap = legacyPairing.shouldForceQrBootstrap,
+                    createdAtEpochMs = System.currentTimeMillis(),
+                    lastUsedAtEpochMs = System.currentTimeMillis(),
+                ),
+            ),
+        )
+        writeRelayProfileRegistry(store, migrated)
+        store.writeString(SecureStoreKeys.LEGACY_THREAD_CACHE_PROFILE_ID, importedProfileId)
+        syncLegacyActivePairingFromRegistry(store, migrated)
+        return migrated
+    }
+
     fun relayPairingStateFromStore(store: SecureStore): RelayPairingState? {
+        syncLegacyActivePairingFromRegistry(store, relayProfileRegistryFromStore(store))
+        val activeProfileId = store.readString(SecureStoreKeys.ACTIVE_RELAY_PROFILE_ID)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        return legacyRelayPairingRecordFromStore(store)?.let { record ->
+            RelayPairingState(
+                profileId = activeProfileId,
+                sessionId = record.sessionId,
+                relayUrl = record.relayUrl,
+                macDeviceId = record.macDeviceId,
+                macIdentityPublicKey = record.macIdentityPublicKey,
+                protocolVersion = record.protocolVersion,
+                lastAppliedBridgeOutboundSeq = record.lastAppliedBridgeOutboundSeq,
+                shouldForceQrBootstrap = record.shouldForceQrBootstrap,
+            )
+        }
+    }
+
+    private fun legacyRelayPairingRecordFromStore(store: SecureStore): RelayProfileRecord? {
         val sessionId = store.readString(SecureStoreKeys.RELAY_SESSION_ID) ?: return null
         val relayUrl = store.readString(SecureStoreKeys.RELAY_URL) ?: return null
         val macDeviceId = store.readString(SecureStoreKeys.RELAY_MAC_DEVICE_ID) ?: return null
@@ -64,7 +123,8 @@ object SecureCrypto {
         val shouldForceQrBootstrap =
             store.readString(SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP)?.toBooleanStrictOrNull() ?: false
 
-        return RelayPairingState(
+        return RelayProfileRecord(
+            profileId = "",
             sessionId = sessionId,
             relayUrl = relayUrl,
             macDeviceId = macDeviceId,
@@ -78,31 +138,63 @@ object SecureCrypto {
     fun rememberRelayPairing(
         store: SecureStore,
         payload: PairingQrPayload,
+        profileId: String,
     ) {
-        store.writeString(SecureStoreKeys.RELAY_SESSION_ID, payload.sessionId)
-        store.writeString(SecureStoreKeys.RELAY_URL, payload.relay)
-        store.writeString(SecureStoreKeys.RELAY_MAC_DEVICE_ID, payload.macDeviceId)
-        store.writeString(SecureStoreKeys.RELAY_MAC_IDENTITY_PUBLIC_KEY, payload.macIdentityPublicKey)
-        store.writeString(SecureStoreKeys.RELAY_PROTOCOL_VERSION, remodexSecureProtocolVersion.toString())
-        store.writeString(SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ, "0")
-        store.writeString(SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP, "true")
+        val currentRegistry = relayProfileRegistryFromStore(store)
+        val existing = currentRegistry.profiles[profileId]
+        val updatedRegistry = RelayProfileRegistry(
+            activeProfileId = profileId,
+            profiles = currentRegistry.profiles + (
+                profileId to RelayProfileRecord(
+                    profileId = profileId,
+                    sessionId = payload.sessionId,
+                    relayUrl = payload.relay,
+                    macDeviceId = payload.macDeviceId,
+                    macIdentityPublicKey = payload.macIdentityPublicKey,
+                    protocolVersion = remodexSecureProtocolVersion,
+                    lastAppliedBridgeOutboundSeq = 0,
+                    shouldForceQrBootstrap = true,
+                    createdAtEpochMs = existing?.createdAtEpochMs ?: System.currentTimeMillis(),
+                    lastUsedAtEpochMs = System.currentTimeMillis(),
+                )
+            ),
+        )
+        writeRelayProfileRegistry(store, updatedRegistry)
+        syncLegacyActivePairingFromRegistry(store, updatedRegistry)
     }
 
     fun rememberResolvedTrustedSession(
         store: SecureStore,
+        profileId: String,
         response: TrustedSessionResolveResponse,
         relayUrl: String,
         resetReplayCursor: Boolean,
     ) {
-        if (resetReplayCursor) {
-            store.writeString(SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ, "0")
-        }
-        store.writeString(SecureStoreKeys.RELAY_SESSION_ID, response.sessionId)
-        store.writeString(SecureStoreKeys.RELAY_URL, relayUrl)
-        store.writeString(SecureStoreKeys.RELAY_MAC_DEVICE_ID, response.macDeviceId)
-        store.writeString(SecureStoreKeys.RELAY_MAC_IDENTITY_PUBLIC_KEY, response.macIdentityPublicKey)
-        store.writeString(SecureStoreKeys.RELAY_PROTOCOL_VERSION, remodexSecureProtocolVersion.toString())
-        store.writeString(SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP, "false")
+        val currentRegistry = relayProfileRegistryFromStore(store)
+        val existing = currentRegistry.profiles[profileId]
+        val updatedRegistry = RelayProfileRegistry(
+            activeProfileId = profileId,
+            profiles = currentRegistry.profiles + (
+                profileId to RelayProfileRecord(
+                    profileId = profileId,
+                    sessionId = response.sessionId,
+                    relayUrl = relayUrl,
+                    macDeviceId = response.macDeviceId,
+                    macIdentityPublicKey = response.macIdentityPublicKey,
+                    protocolVersion = remodexSecureProtocolVersion,
+                    lastAppliedBridgeOutboundSeq = if (resetReplayCursor) {
+                        0
+                    } else {
+                        existing?.lastAppliedBridgeOutboundSeq ?: 0
+                    },
+                    shouldForceQrBootstrap = false,
+                    createdAtEpochMs = existing?.createdAtEpochMs ?: System.currentTimeMillis(),
+                    lastUsedAtEpochMs = System.currentTimeMillis(),
+                )
+            ),
+        )
+        writeRelayProfileRegistry(store, updatedRegistry)
+        syncLegacyActivePairingFromRegistry(store, updatedRegistry)
     }
 
     fun writeTrustedMacRegistry(
@@ -116,6 +208,139 @@ object SecureCrypto {
             registry,
         )
         store.writeString(SecureStoreKeys.LAST_TRUSTED_MAC_DEVICE_ID, lastTrustedMacDeviceId)
+    }
+
+    fun writeRelayProfileRegistry(
+        store: SecureStore,
+        registry: RelayProfileRegistry,
+    ) {
+        store.writeSerializable(
+            SecureStoreKeys.RELAY_PROFILE_REGISTRY,
+            RelayProfileRegistry.serializer(),
+            registry,
+        )
+        store.writeString(SecureStoreKeys.ACTIVE_RELAY_PROFILE_ID, registry.activeProfileId)
+    }
+
+    fun activateRelayProfile(
+        store: SecureStore,
+        registry: RelayProfileRegistry,
+        profileId: String?,
+    ): RelayProfileRegistry {
+        val nextRegistry = registry.copy(
+            activeProfileId = profileId?.takeIf { registry.profiles.containsKey(it) },
+        )
+        writeRelayProfileRegistry(store, nextRegistry)
+        syncLegacyActivePairingFromRegistry(store, nextRegistry)
+        return nextRegistry
+    }
+
+    fun removeRelayProfile(
+        store: SecureStore,
+        registry: RelayProfileRegistry,
+        profileId: String,
+        fallbackProfileId: String?,
+    ): RelayProfileRegistry {
+        val nextProfiles = registry.profiles - profileId
+        val nextActiveProfileId = when {
+            nextProfiles.isEmpty() -> null
+            registry.activeProfileId == profileId -> fallbackProfileId?.takeIf(nextProfiles::containsKey)
+                ?: nextProfiles.values.maxByOrNull { it.lastUsedAtEpochMs ?: it.createdAtEpochMs }?.profileId
+            else -> registry.activeProfileId
+        }
+        val nextRegistry = RelayProfileRegistry(
+            activeProfileId = nextActiveProfileId,
+            profiles = nextProfiles,
+        )
+        writeRelayProfileRegistry(store, nextRegistry)
+        syncLegacyActivePairingFromRegistry(store, nextRegistry)
+        return nextRegistry
+    }
+
+    fun updateRelayProfile(
+        store: SecureStore,
+        registry: RelayProfileRegistry,
+        profileId: String,
+        transform: (RelayProfileRecord) -> RelayProfileRecord,
+    ): RelayProfileRegistry {
+        val existing = registry.profiles[profileId] ?: return registry
+        val updatedRegistry = registry.copy(
+            profiles = registry.profiles + (profileId to transform(existing)),
+        )
+        writeRelayProfileRegistry(store, updatedRegistry)
+        syncLegacyActivePairingFromRegistry(store, updatedRegistry)
+        return updatedRegistry
+    }
+
+    fun relayPairingState(record: RelayProfileRecord): RelayPairingState {
+        return RelayPairingState(
+            profileId = record.profileId,
+            sessionId = record.sessionId,
+            relayUrl = record.relayUrl,
+            macDeviceId = record.macDeviceId,
+            macIdentityPublicKey = record.macIdentityPublicKey,
+            protocolVersion = record.protocolVersion,
+            lastAppliedBridgeOutboundSeq = record.lastAppliedBridgeOutboundSeq,
+            shouldForceQrBootstrap = record.shouldForceQrBootstrap,
+        )
+    }
+
+    fun bridgeProfilesSnapshot(
+        registry: RelayProfileRegistry,
+        trustedMacRegistry: TrustedMacRegistry,
+    ): BridgeProfilesSnapshot {
+        val orderedProfiles = registry.profiles.values
+            .map { profile ->
+                val trustedMac = trustedMacRegistry.records[profile.macDeviceId]
+                BridgeProfileSnapshot(
+                    profileId = profile.profileId,
+                    relayUrl = profile.relayUrl,
+                    macDeviceId = profile.macDeviceId,
+                    macDisplayName = trustedMac?.displayName,
+                    macFingerprint = fingerprint(profile.macIdentityPublicKey),
+                    isActive = profile.profileId == registry.activeProfileId,
+                    isTrusted = trustedMac != null,
+                    needsQrBootstrap = profile.shouldForceQrBootstrap,
+                    lastUsedAtEpochMs = profile.lastUsedAtEpochMs,
+                )
+            }
+        return BridgeProfilesSnapshot(
+            activeProfileId = registry.activeProfileId,
+            profiles = orderedProfiles,
+        )
+    }
+
+    private fun syncLegacyActivePairingFromRegistry(
+        store: SecureStore,
+        registry: RelayProfileRegistry,
+    ) {
+        val activeProfile = registry.activeProfileId?.let(registry.profiles::get)
+        store.writeString(SecureStoreKeys.ACTIVE_RELAY_PROFILE_ID, registry.activeProfileId)
+        if (activeProfile == null) {
+            listOf(
+                SecureStoreKeys.RELAY_SESSION_ID,
+                SecureStoreKeys.RELAY_URL,
+                SecureStoreKeys.RELAY_MAC_DEVICE_ID,
+                SecureStoreKeys.RELAY_MAC_IDENTITY_PUBLIC_KEY,
+                SecureStoreKeys.RELAY_PROTOCOL_VERSION,
+                SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ,
+                SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP,
+            ).forEach(store::deleteValue)
+            return
+        }
+        store.writeString(SecureStoreKeys.RELAY_SESSION_ID, activeProfile.sessionId)
+        store.writeString(SecureStoreKeys.RELAY_URL, activeProfile.relayUrl)
+        store.writeString(SecureStoreKeys.RELAY_MAC_DEVICE_ID, activeProfile.macDeviceId)
+        store.writeString(SecureStoreKeys.RELAY_MAC_IDENTITY_PUBLIC_KEY, activeProfile.macIdentityPublicKey)
+        store.writeString(SecureStoreKeys.RELAY_PROTOCOL_VERSION, activeProfile.protocolVersion.toString())
+        store.writeString(
+            SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ,
+            activeProfile.lastAppliedBridgeOutboundSeq.toString(),
+        )
+        store.writeString(
+            SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP,
+            activeProfile.shouldForceQrBootstrap.toString(),
+        )
     }
 
     fun secureTranscriptBytes(

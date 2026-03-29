@@ -2116,6 +2116,10 @@ class AppViewModelTest {
 
         override suspend fun setMacNickname(deviceId: String, nickname: String?) = Unit
 
+        override suspend fun activateBridgeProfile(profileId: String): Boolean = true
+
+        override suspend fun removeBridgeProfile(profileId: String): String? = null
+
         override suspend fun refreshGptAccountState() = Unit
 
         override suspend fun logoutGptAccount() = Unit

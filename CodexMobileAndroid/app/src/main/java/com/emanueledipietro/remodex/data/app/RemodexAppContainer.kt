@@ -9,8 +9,7 @@ import com.emanueledipietro.remodex.data.connection.OkHttpTrustedSessionResolver
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.preferences.DataStoreAppPreferencesRepository
 import com.emanueledipietro.remodex.data.threads.BridgeThreadSyncService
-import com.emanueledipietro.remodex.data.threads.RemodexThreadCacheDatabase
-import com.emanueledipietro.remodex.data.threads.RoomThreadCacheStore
+import com.emanueledipietro.remodex.data.threads.ProfileAwareThreadCacheStore
 import com.emanueledipietro.remodex.data.voice.DefaultRemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.data.voice.OkHttpVoiceTranscriptionClient
 import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotificationManager
@@ -30,12 +29,6 @@ class RemodexAppContainer(
     // Keep that work off the UI thread so turn completion does not ANR MainActivity.
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val appPreferencesRepository = DataStoreAppPreferencesRepository(context.applicationContext)
-    private val threadCacheDatabase = Room.databaseBuilder(
-        context.applicationContext,
-        RemodexThreadCacheDatabase::class.java,
-        "remodex_thread_cache.db",
-    ).fallbackToDestructiveMigration().build()
-    private val threadCacheStore = RoomThreadCacheStore(threadCacheDatabase)
     private val okHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
@@ -47,6 +40,10 @@ class RemodexAppContainer(
         trustedSessionResolver = OkHttpTrustedSessionResolver(okHttpClient),
         relayWebSocketFactory = OkHttpRelayWebSocketFactory(okHttpClient),
         scope = appScope,
+    )
+    private val threadCacheStore = ProfileAwareThreadCacheStore(
+        context = context.applicationContext,
+        secureStore = secureStore,
     )
     private val threadSyncService = BridgeThreadSyncService(
         secureConnectionCoordinator = secureConnectionCoordinator,

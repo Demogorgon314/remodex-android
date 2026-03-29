@@ -5,7 +5,9 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -96,6 +98,54 @@ class SecureConnectionCoordinatorTest {
             "This Android device is no longer trusted by the Mac. Scan a new QR code to reconnect.",
             coordinator.state.value.phaseMessage,
         )
+    }
+
+    @Test
+    fun `saved bridge profiles can be activated and removed independently`() = runTest {
+        val store = InMemorySecureStore()
+        val firstMacIdentity = createTestMacIdentity()
+        val secondMacIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-one",
+                macIdentityPublicKey = firstMacIdentity.publicKeyBase64,
+                sessionId = "session-one",
+            ),
+        )
+        val firstProfileId = coordinator.bridgeProfiles.value.activeProfileId
+        requireNotNull(firstProfileId)
+
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-two",
+                macIdentityPublicKey = secondMacIdentity.publicKeyBase64,
+                sessionId = "session-two",
+            ),
+        )
+        val secondProfileId = coordinator.bridgeProfiles.value.activeProfileId
+        requireNotNull(secondProfileId)
+
+        assertEquals(2, coordinator.bridgeProfiles.value.profiles.size)
+        assertEquals("mac-two", coordinator.state.value.macDeviceId)
+        val originalOrder = coordinator.bridgeProfiles.value.profiles.map { it.profileId }
+        assertTrue(coordinator.activateBridgeProfile(firstProfileId))
+        assertEquals(firstProfileId, coordinator.bridgeProfiles.value.activeProfileId)
+        assertEquals("mac-one", coordinator.state.value.macDeviceId)
+        assertEquals(originalOrder, coordinator.bridgeProfiles.value.profiles.map { it.profileId })
+
+        val nextActiveProfileId = coordinator.removeBridgeProfile(firstProfileId)
+        assertEquals(secondProfileId, nextActiveProfileId)
+        assertEquals(1, coordinator.bridgeProfiles.value.profiles.size)
+        assertEquals(secondProfileId, coordinator.bridgeProfiles.value.activeProfileId)
+        assertEquals("mac-two", coordinator.state.value.macDeviceId)
+        assertFalse(coordinator.bridgeProfiles.value.profiles.any { it.profileId == firstProfileId })
     }
 
     private suspend fun TestScope.awaitSecureState(

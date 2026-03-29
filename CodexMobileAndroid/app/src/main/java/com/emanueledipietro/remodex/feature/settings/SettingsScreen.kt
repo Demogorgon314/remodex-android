@@ -65,6 +65,7 @@ import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
+import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
@@ -104,6 +105,8 @@ fun SettingsScreen(
     onOpenScanner: () -> Unit,
     onDisconnect: () -> Unit,
     onForgetTrustedMac: () -> Unit,
+    onActivateBridgeProfile: (String) -> Unit,
+    onRemoveBridgeProfile: (String) -> Unit,
     onSetMacNickname: (String, String?) -> Unit,
     onOpenArchivedChats: () -> Unit,
     onOpenAboutRemodex: () -> Unit,
@@ -113,6 +116,7 @@ fun SettingsScreen(
     var isShowingGptInfo by rememberSaveable { mutableStateOf(false) }
     var isShowingGptLogoutConfirm by rememberSaveable { mutableStateOf(false) }
     var isShowingMacNameDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingBridgeSwitchProfileId by rememberSaveable { mutableStateOf<String?>(null) }
     val archivedThreads = remember(uiState.threads) {
         uiState.threads.filter { thread -> thread.syncState.name == "ARCHIVED_LOCAL" }
     }
@@ -143,6 +147,10 @@ fun SettingsScreen(
             ?: RemodexServiceTier.entries
     }
     val trustedMac = uiState.trustedMac
+    val bridgeProfiles = uiState.bridgeProfiles
+    val hasRunningTurn = remember(uiState.threads) {
+        uiState.threads.any { thread -> thread.isRunning }
+    }
 
     LaunchedEffect(uiState.isConnected, uiState.selectedThread?.id) {
         onRefreshSettingsStatus()
@@ -180,6 +188,41 @@ fun SettingsScreen(
             },
         )
     }
+
+    pendingBridgeSwitchProfileId
+        ?.let { pendingProfileId ->
+            bridgeProfiles.firstOrNull { profile -> profile.profileId == pendingProfileId }
+        }
+        ?.let { pendingProfile ->
+            AlertDialog(
+                onDismissRequest = { pendingBridgeSwitchProfileId = null },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingBridgeSwitchProfileId = null
+                            onActivateBridgeProfile(pendingProfile.profileId)
+                        },
+                    ) {
+                        Text("Switch")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingBridgeSwitchProfileId = null }) {
+                        Text("Cancel")
+                    }
+                },
+                title = { Text("Switch Bridge?") },
+                text = {
+                    Text(
+                        if (hasRunningTurn) {
+                            "Switching to ${pendingProfile.name} will disconnect the current bridge. Any running turn will stop syncing live on this phone until you switch back."
+                        } else {
+                            "Switching to ${pendingProfile.name} will disconnect the current bridge and reconnect this phone to that saved bridge."
+                        },
+                    )
+                },
+            )
+        }
 
     Column(
         modifier = modifier
@@ -443,6 +486,10 @@ fun SettingsScreen(
             when {
                 uiState.isConnected -> {
                     SettingsButton(
+                        title = "Add Bridge",
+                        onClick = onOpenScanner,
+                    )
+                    SettingsButton(
                         title = "Disconnect",
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = onDisconnect,
@@ -451,7 +498,7 @@ fun SettingsScreen(
 
                 trustedMac != null -> {
                     SettingsButton(
-                        title = "Scan New QR Code",
+                        title = "Add Bridge",
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
@@ -467,6 +514,29 @@ fun SettingsScreen(
                         onClick = onOpenScanner,
                     )
                 }
+            }
+
+            if (bridgeProfiles.isNotEmpty()) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
+                SettingsSavedBridgeProfiles(
+                    profiles = bridgeProfiles,
+                    onActivate = { profile ->
+                        if (profile.isActive) {
+                            return@SettingsSavedBridgeProfiles
+                        }
+                        pendingBridgeSwitchProfileId = profile.profileId
+                    },
+                    onRemove = { profile ->
+                        if (profile.isActive) {
+                            onForgetTrustedMac()
+                        } else {
+                            onRemoveBridgeProfile(profile.profileId)
+                        }
+                    },
+                )
             }
         }
     }
@@ -1214,6 +1284,101 @@ private fun SettingsTrustedMacCard(
                     value = detail,
                     valueColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSavedBridgeProfiles(
+    profiles: List<RemodexBridgeProfilePresentation>,
+    onActivate: (RemodexBridgeProfilePresentation) -> Unit,
+    onRemove: (RemodexBridgeProfilePresentation) -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "Saved Bridges",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        profiles.forEach { profile ->
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+                ),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Computer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = profile.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            profile.systemName?.let { systemName ->
+                                Text(
+                                    text = systemName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        if (profile.isConnected) {
+                            SettingsStatusPill(label = "Connected")
+                        } else if (profile.isActive) {
+                            SettingsStatusPill(label = "Active")
+                        }
+                    }
+
+                    Text(
+                        text = profile.detail.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (!profile.isActive) {
+                            SettingsButton(
+                                title = "Switch",
+                                onClick = { onActivate(profile) },
+                            )
+                        }
+                        SettingsButton(
+                            title = if (profile.isActive) "Delete Current" else "Delete",
+                            role = SettingsButtonRole.DESTRUCTIVE,
+                            onClick = { onRemove(profile) },
+                        )
+                    }
+                }
             }
         }
     }

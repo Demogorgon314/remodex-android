@@ -61,7 +61,28 @@ data class TrustedMacRegistry(
     val records: Map<String, TrustedMacRecord> = emptyMap(),
 )
 
+@Serializable
+data class RelayProfileRecord(
+    val profileId: String,
+    val sessionId: String,
+    val relayUrl: String,
+    val macDeviceId: String,
+    val macIdentityPublicKey: String,
+    val protocolVersion: Int = remodexSecureProtocolVersion,
+    val lastAppliedBridgeOutboundSeq: Int = 0,
+    val shouldForceQrBootstrap: Boolean = false,
+    val createdAtEpochMs: Long = 0L,
+    val lastUsedAtEpochMs: Long? = null,
+)
+
+@Serializable
+data class RelayProfileRegistry(
+    val activeProfileId: String? = null,
+    val profiles: Map<String, RelayProfileRecord> = emptyMap(),
+)
+
 data class RelayPairingState(
+    val profileId: String,
     val sessionId: String,
     val relayUrl: String,
     val macDeviceId: String,
@@ -207,10 +228,28 @@ class TrustedSessionResolveException(
 data class SecureConnectionSnapshot(
     val phaseMessage: String = "Run remodex up on your Mac, then scan a pairing QR to trust this Android device.",
     val secureState: SecureConnectionState = SecureConnectionState.NOT_PAIRED,
+    val activeProfileId: String? = null,
     val relayUrl: String? = null,
     val macDeviceId: String? = null,
     val macDisplayName: String? = null,
     val macFingerprint: String? = null,
     val attempt: Int = 0,
     val bridgeUpdateCommand: String? = null,
+)
+
+data class BridgeProfileSnapshot(
+    val profileId: String,
+    val relayUrl: String,
+    val macDeviceId: String,
+    val macDisplayName: String? = null,
+    val macFingerprint: String,
+    val isActive: Boolean,
+    val isTrusted: Boolean,
+    val needsQrBootstrap: Boolean,
+    val lastUsedAtEpochMs: Long? = null,
+)
+
+data class BridgeProfilesSnapshot(
+    val activeProfileId: String? = null,
+    val profiles: List<BridgeProfileSnapshot> = emptyList(),
 )

@@ -7,6 +7,9 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 
 object SecureStoreKeys {
+    const val RELAY_PROFILE_REGISTRY = "codex.relay.profileRegistry"
+    const val ACTIVE_RELAY_PROFILE_ID = "codex.relay.activeProfileId"
+    const val LEGACY_THREAD_CACHE_PROFILE_ID = "codex.relay.legacyThreadCacheProfileId"
     const val RELAY_SESSION_ID = "codex.relay.sessionId"
     const val RELAY_URL = "codex.relay.url"
     const val RELAY_MAC_DEVICE_ID = "codex.relay.macDeviceId"
@@ -19,6 +22,7 @@ object SecureStoreKeys {
     const val SHOULD_FORCE_QR_BOOTSTRAP = "codex.relay.shouldForceQrBootstrap"
     const val PUSH_FCM_TOKEN = "codex.push.fcmToken"
     const val PUSH_REGISTRATION_SIGNATURE = "codex.push.registrationSignature"
+    const val PUSH_REGISTRATION_SIGNATURES = "codex.push.registrationSignatures"
 }
 
 interface SecureStore {

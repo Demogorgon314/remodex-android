@@ -37,6 +37,7 @@ class SecureConnectionCoordinator(
     }
     private val phoneIdentityState = SecureCrypto.phoneIdentityStateFromStore(store)
     private var trustedMacRegistry = SecureCrypto.trustedMacRegistryFromStore(store)
+    private var relayProfileRegistry = SecureCrypto.relayProfileRegistryFromStore(store)
     private var pairingState = SecureCrypto.relayPairingStateFromStore(store)
     private var secureSession: SecureSession? = null
     private var pendingHandshake: SecurePendingHandshake? = null
@@ -49,9 +50,11 @@ class SecureConnectionCoordinator(
     private val outboundMutex = Mutex()
 
     private val connectionState = MutableStateFlow(initialSnapshot())
+    private val bridgeProfilesState = MutableStateFlow(currentBridgeProfilesSnapshot())
     private val notificationsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
     private val requestsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
     val state: StateFlow<SecureConnectionSnapshot> = connectionState.asStateFlow()
+    val bridgeProfiles: StateFlow<BridgeProfilesSnapshot> = bridgeProfilesState.asStateFlow()
     val notifications: SharedFlow<RpcMessage> = notificationsFlow.asSharedFlow()
     val requests: SharedFlow<RpcMessage> = requestsFlow.asSharedFlow()
 
@@ -125,8 +128,12 @@ class SecureConnectionCoordinator(
     }
 
     fun rememberRelayPairing(payload: PairingQrPayload) {
-        SecureCrypto.rememberRelayPairing(store, payload)
-        pairingState = SecureCrypto.relayPairingStateFromStore(store)
+        val profileId = relayProfileRegistry.profiles.values
+            .firstOrNull { it.macDeviceId == payload.macDeviceId }
+            ?.profileId
+            ?: java.util.UUID.randomUUID().toString()
+        SecureCrypto.rememberRelayPairing(store, payload, profileId)
+        refreshProfileState()
         val trustedMac = trustedMacRegistry.records[payload.macDeviceId]
         updateState(
             phaseMessage = if (trustedMac == null) {
@@ -135,11 +142,13 @@ class SecureConnectionCoordinator(
                 "QR pairing refreshed for your trusted Mac. Retry reconnect to re-open the secure session."
             },
             secureState = if (trustedMac == null) SecureConnectionState.HANDSHAKING else SecureConnectionState.TRUSTED_MAC,
+            activeProfileId = pairingState?.profileId,
             relayUrl = payload.relay,
             macDeviceId = payload.macDeviceId,
             macFingerprint = SecureCrypto.fingerprint(payload.macIdentityPublicKey),
             bridgeUpdateCommand = null,
         )
+        publishBridgeProfiles()
     }
 
     fun retryConnection() {
@@ -172,15 +181,26 @@ class SecureConnectionCoordinator(
         connectionState.value = initialSnapshot().copy(attempt = currentAttempt)
     }
 
-    fun forgetTrustedMac() {
+    fun activateBridgeProfile(profileId: String): Boolean {
+        if (!relayProfileRegistry.profiles.containsKey(profileId)) {
+            return false
+        }
         disconnect()
-        val preferredDeviceId = pairingState?.macDeviceId
-            ?: store.readString(SecureStoreKeys.LAST_TRUSTED_MAC_DEVICE_ID)
+        relayProfileRegistry = SecureCrypto.activateRelayProfile(store, relayProfileRegistry, profileId)
+        refreshProfileState()
+        connectionState.value = initialSnapshot().copy(attempt = currentAttempt)
+        publishBridgeProfiles()
+        return true
+    }
+
+    fun removeBridgeProfile(profileId: String): String? {
+        val removedProfile = relayProfileRegistry.profiles[profileId] ?: return relayProfileRegistry.activeProfileId
+        if (relayProfileRegistry.activeProfileId == profileId) {
+            disconnect()
+        }
         trustedMacRegistry = TrustedMacRegistry(
             records = trustedMacRegistry.records.toMutableMap().apply {
-                if (!preferredDeviceId.isNullOrBlank()) {
-                    remove(preferredDeviceId)
-                }
+                remove(removedProfile.macDeviceId)
             },
         )
         SecureCrypto.writeTrustedMacRegistry(
@@ -188,17 +208,23 @@ class SecureConnectionCoordinator(
             registry = trustedMacRegistry,
             lastTrustedMacDeviceId = trustedMacRegistry.records.keys.firstOrNull(),
         )
-        listOf(
-            SecureStoreKeys.RELAY_SESSION_ID,
-            SecureStoreKeys.RELAY_URL,
-            SecureStoreKeys.RELAY_MAC_DEVICE_ID,
-            SecureStoreKeys.RELAY_MAC_IDENTITY_PUBLIC_KEY,
-            SecureStoreKeys.RELAY_PROTOCOL_VERSION,
-            SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ,
-            SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP,
-        ).forEach(store::deleteValue)
-        pairingState = null
+        relayProfileRegistry = SecureCrypto.removeRelayProfile(
+            store = store,
+            registry = relayProfileRegistry,
+            profileId = profileId,
+            fallbackProfileId = relayProfileRegistry.profiles.values
+                .filterNot { it.profileId == profileId }
+                .maxByOrNull { it.lastUsedAtEpochMs ?: it.createdAtEpochMs }
+                ?.profileId,
+        )
+        refreshProfileState()
         connectionState.value = initialSnapshot().copy(attempt = currentAttempt)
+        publishBridgeProfiles()
+        return relayProfileRegistry.activeProfileId
+    }
+
+    fun forgetTrustedMac() {
+        pairingState?.profileId?.let(::removeBridgeProfile)
     }
 
     private suspend fun performRetryConnection() {
@@ -287,11 +313,13 @@ class SecureConnectionCoordinator(
 
         SecureCrypto.rememberResolvedTrustedSession(
             store = store,
+            profileId = currentPairingState.profileId,
             response = response,
             relayUrl = trustedRelayUrl,
             resetReplayCursor = currentPairingState.sessionId != response.sessionId,
         )
-        pairingState = SecureCrypto.relayPairingStateFromStore(store)
+        refreshProfileState()
+        publishBridgeProfiles()
         updateTrustedMacAfterResolve(response, trustedRelayUrl)
         return pairingState ?: currentPairingState
     }
@@ -429,8 +457,17 @@ class SecureConnectionCoordinator(
             nextOutboundCounter = 0,
         )
         pendingHandshake = null
-        store.writeString(SecureStoreKeys.SHOULD_FORCE_QR_BOOTSTRAP, "false")
-        pairingState = SecureCrypto.relayPairingStateFromStore(store)
+        relayProfileRegistry = pairingState?.profileId?.let { profileId ->
+            SecureCrypto.updateRelayProfile(store, relayProfileRegistry, profileId) { existing ->
+                existing.copy(
+                    shouldForceQrBootstrap = false,
+                    macIdentityPublicKey = serverHello.macIdentityPublicKey,
+                    lastUsedAtEpochMs = System.currentTimeMillis(),
+                )
+            }
+        } ?: relayProfileRegistry
+        refreshProfileState()
+        publishBridgeProfiles()
 
         if (handshakeMode == SecureHandshakeMode.QR_BOOTSTRAP) {
             trustMac(
@@ -629,11 +666,16 @@ class SecureConnectionCoordinator(
         payload.bridgeOutboundSeq?.let { bridgeOutboundSeq ->
             if (bridgeOutboundSeq > activeSecureSession.lastInboundBridgeOutboundSeq) {
                 activeSecureSession.lastInboundBridgeOutboundSeq = bridgeOutboundSeq
-                store.writeString(
-                    SecureStoreKeys.RELAY_LAST_APPLIED_BRIDGE_OUTBOUND_SEQ,
-                    bridgeOutboundSeq.toString(),
-                )
-                pairingState = pairingState?.copy(lastAppliedBridgeOutboundSeq = bridgeOutboundSeq)
+                relayProfileRegistry = pairingState?.profileId?.let { profileId ->
+                    SecureCrypto.updateRelayProfile(store, relayProfileRegistry, profileId) { existing ->
+                        existing.copy(
+                            lastAppliedBridgeOutboundSeq = bridgeOutboundSeq,
+                            lastUsedAtEpochMs = System.currentTimeMillis(),
+                        )
+                    }
+                } ?: relayProfileRegistry
+                refreshProfileState()
+                publishBridgeProfiles()
             }
         }
 
@@ -747,6 +789,7 @@ class SecureConnectionCoordinator(
             records = trustedMacRegistry.records + (deviceId to updatedRecord),
         )
         SecureCrypto.writeTrustedMacRegistry(store, trustedMacRegistry, deviceId)
+        publishBridgeProfiles()
     }
 
     private fun updateTrustedMacAfterResolve(
@@ -768,6 +811,7 @@ class SecureConnectionCoordinator(
             records = trustedMacRegistry.records + (response.macDeviceId to updatedRecord),
         )
         SecureCrypto.writeTrustedMacRegistry(store, trustedMacRegistry, response.macDeviceId)
+        publishBridgeProfiles()
     }
 
     private fun handleResolveError(
@@ -858,6 +902,7 @@ class SecureConnectionCoordinator(
                 else -> "Run remodex up on your Mac, then scan a pairing QR to trust this Android device."
             },
             secureState = secureState,
+            activeProfileId = currentPairingState?.profileId ?: relayProfileRegistry.activeProfileId,
             relayUrl = currentPairingState?.relayUrl,
             macDeviceId = macDeviceId,
             macDisplayName = trustedDisplayName(macDeviceId),
@@ -883,6 +928,7 @@ class SecureConnectionCoordinator(
     private fun updateState(
         phaseMessage: String,
         secureState: SecureConnectionState,
+        activeProfileId: String? = pairingState?.profileId,
         relayUrl: String? = pairingState?.relayUrl,
         macDeviceId: String? = pairingState?.macDeviceId,
         macDisplayName: String? = trustedDisplayName(macDeviceId),
@@ -892,6 +938,7 @@ class SecureConnectionCoordinator(
         connectionState.value = SecureConnectionSnapshot(
             phaseMessage = phaseMessage,
             secureState = secureState,
+            activeProfileId = activeProfileId,
             relayUrl = relayUrl,
             macDeviceId = macDeviceId,
             macDisplayName = macDisplayName,
@@ -906,6 +953,19 @@ class SecureConnectionCoordinator(
             return null
         }
         return trustedMacRegistry.records[macDeviceId]?.displayName
+    }
+
+    private fun refreshProfileState() {
+        relayProfileRegistry = SecureCrypto.relayProfileRegistryFromStore(store)
+        pairingState = SecureCrypto.relayPairingStateFromStore(store)
+    }
+
+    private fun currentBridgeProfilesSnapshot(): BridgeProfilesSnapshot {
+        return SecureCrypto.bridgeProfilesSnapshot(relayProfileRegistry, trustedMacRegistry)
+    }
+
+    private fun publishBridgeProfiles() {
+        bridgeProfilesState.value = currentBridgeProfilesSnapshot()
     }
 
     private fun relaySessionUrl(

@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.Flow
 interface AppPreferencesRepository {
     val preferences: Flow<AppPreferences>
 
+    fun setActiveBridgeProfileId(profileId: String?)
+
     suspend fun setOnboardingCompleted(completed: Boolean)
 
     suspend fun setSelectedThreadId(threadId: String?)
