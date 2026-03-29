@@ -214,7 +214,11 @@ fun SettingsScreen(
                 title = { Text("Switch Bridge?") },
                 text = {
                     Text(
-                        "Switching to ${pendingProfile.name} will disconnect the current bridge. Any running turn will stop syncing live on this phone until you switch back.",
+                        if (hasRunningTurn) {
+                            "Switching to ${pendingProfile.name} will disconnect the current bridge. Any running turn will stop syncing live on this phone until you switch back."
+                        } else {
+                            "Switching to ${pendingProfile.name} will disconnect the current bridge and reconnect this phone to that saved bridge."
+                        },
                     )
                 },
             )
@@ -523,11 +527,7 @@ fun SettingsScreen(
                         if (profile.isActive) {
                             return@SettingsSavedBridgeProfiles
                         }
-                        if (hasRunningTurn) {
-                            pendingBridgeSwitchProfileId = profile.profileId
-                        } else {
-                            onActivateBridgeProfile(profile.profileId)
-                        }
+                        pendingBridgeSwitchProfileId = profile.profileId
                     },
                     onRemove = { profile ->
                         if (profile.isActive) {

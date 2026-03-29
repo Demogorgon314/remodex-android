@@ -290,11 +290,6 @@ object SecureCrypto {
         trustedMacRegistry: TrustedMacRegistry,
     ): BridgeProfilesSnapshot {
         val orderedProfiles = registry.profiles.values
-            .sortedWith(
-                compareByDescending<RelayProfileRecord> { it.profileId == registry.activeProfileId }
-                    .thenByDescending { it.lastUsedAtEpochMs ?: it.createdAtEpochMs }
-                    .thenBy { it.profileId },
-            )
             .map { profile ->
                 val trustedMac = trustedMacRegistry.records[profile.macDeviceId]
                 BridgeProfileSnapshot(

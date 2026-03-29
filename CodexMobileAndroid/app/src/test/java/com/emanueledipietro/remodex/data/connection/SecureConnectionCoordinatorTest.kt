@@ -134,9 +134,11 @@ class SecureConnectionCoordinatorTest {
 
         assertEquals(2, coordinator.bridgeProfiles.value.profiles.size)
         assertEquals("mac-two", coordinator.state.value.macDeviceId)
+        val originalOrder = coordinator.bridgeProfiles.value.profiles.map { it.profileId }
         assertTrue(coordinator.activateBridgeProfile(firstProfileId))
         assertEquals(firstProfileId, coordinator.bridgeProfiles.value.activeProfileId)
         assertEquals("mac-one", coordinator.state.value.macDeviceId)
+        assertEquals(originalOrder, coordinator.bridgeProfiles.value.profiles.map { it.profileId })
 
         val nextActiveProfileId = coordinator.removeBridgeProfile(firstProfileId)
         assertEquals(secondProfileId, nextActiveProfileId)
