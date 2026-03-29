@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
@@ -824,6 +825,151 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `plan mode send starts a local plan composer session`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Plan thread",
+                        runtimeConfig = RemodexRuntimeConfig(planningMode = RemodexPlanningMode.PLAN),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "anchor",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Before plan",
+                            ),
+                        ),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Make a plan")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals("anchor", viewModel.uiState.value.planComposerSession?.anchorMessageId)
+        assertEquals(
+            listOf(Triple("thread-1", "Make a plan", emptyList<RemodexComposerAttachment>())),
+            repository.sentPrompts,
+        )
+    }
+
+    @Test
+    fun `plan mode session clears when plan send fails`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Plan thread",
+                        runtimeConfig = RemodexRuntimeConfig(planningMode = RemodexPlanningMode.PLAN),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+            sendPromptError = IllegalStateException("Bridge down")
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Make a plan")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.planComposerSession)
+        assertEquals("Bridge down", viewModel.uiState.value.composer.composerMessage)
+    }
+
+    @Test
+    fun `plan follow up sends fixed prompt and clears local session`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Plan thread",
+                        runtimeConfig = RemodexRuntimeConfig(planningMode = RemodexPlanningMode.PLAN),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Make a plan")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        viewModel.sendPlanFollowUp(
+            prompt = "Implement plan",
+            shouldExitPlanMode = true,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            Triple("thread-1", "Implement plan", emptyList<RemodexComposerAttachment>()),
+            repository.sentPrompts.last(),
+        )
+        assertEquals(
+            listOf("thread-1" to RemodexPlanningMode.AUTO),
+            repository.setPlanningModeRequests,
+        )
+        assertEquals(
+            listOf(null, RemodexPlanningMode.AUTO),
+            repository.sentPromptPlanningModeOverrides,
+        )
+        assertNull(viewModel.uiState.value.planComposerSession)
+    }
+
+    @Test
+    fun `plan revision follow up stays in plan mode`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Plan thread",
+                        runtimeConfig = RemodexRuntimeConfig(planningMode = RemodexPlanningMode.PLAN),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("Make a plan")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        viewModel.sendPlanFollowUp(
+            prompt = "Please make it more detailed",
+            shouldExitPlanMode = false,
+        )
+        advanceUntilIdle()
+
+        assertTrue(repository.setPlanningModeRequests.isEmpty())
+        assertEquals(
+            Triple("thread-1", "Please make it more detailed", emptyList<RemodexComposerAttachment>()),
+            repository.sentPrompts.last(),
+        )
+        assertEquals(
+            listOf(null, null),
+            repository.sentPromptPlanningModeOverrides,
+        )
+    }
+
+    @Test
     fun `load repository diff exposes loading state and returns patch to caller`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -1418,6 +1564,8 @@ class AppViewModelTest {
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
+        val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
+        val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
         val codeReviewRequests = mutableListOf<Triple<String, RemodexComposerReviewTarget, String?>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
@@ -1536,12 +1684,14 @@ class AppViewModelTest {
             threadId: String,
             prompt: String,
             attachments: List<RemodexComposerAttachment>,
+            planningModeOverride: RemodexPlanningMode?,
         ) {
             if (sendPromptDelayMs > 0) {
                 delay(sendPromptDelayMs)
             }
             sendPromptError?.let { throw it }
             sentPrompts += Triple(threadId, prompt, attachments)
+            sentPromptPlanningModeOverrides += planningModeOverride
         }
 
         override suspend fun respondToStructuredUserInput(
@@ -1556,7 +1706,29 @@ class AppViewModelTest {
         override suspend fun setPlanningMode(
             threadId: String,
             planningMode: RemodexPlanningMode,
-        ) = Unit
+        ) {
+            setPlanningModeRequests += threadId to planningMode
+            snapshot.value = snapshot.value.copy(
+                threads = snapshot.value.threads.map { thread ->
+                    if (thread.id == threadId) {
+                        thread.copy(
+                            runtimeConfig = thread.runtimeConfig.copy(planningMode = planningMode),
+                        )
+                    } else {
+                        thread
+                    }
+                },
+                selectedThreadSnapshot = snapshot.value.selectedThreadSnapshot?.let { thread ->
+                    if (thread.id == threadId) {
+                        thread.copy(
+                            runtimeConfig = thread.runtimeConfig.copy(planningMode = planningMode),
+                        )
+                    } else {
+                        thread
+                    }
+                },
+            )
+        }
 
         override suspend fun setSelectedModelId(modelId: String?) = Unit
 
@@ -1763,6 +1935,7 @@ class AppViewModelTest {
         projectPath: String = "/tmp/remodex",
         isRunning: Boolean = false,
         latestTurnTerminalState: RemodexTurnTerminalState? = null,
+        runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
         messages: List<RemodexConversationItem> = emptyList(),
     ): com.emanueledipietro.remodex.model.RemodexThreadSummary {
         return com.emanueledipietro.remodex.model.RemodexThreadSummary(
@@ -1775,6 +1948,7 @@ class AppViewModelTest {
             latestTurnTerminalState = latestTurnTerminalState,
             queuedDrafts = 0,
             runtimeLabel = "Auto, medium reasoning",
+            runtimeConfig = runtimeConfig,
             messages = messages,
         )
     }

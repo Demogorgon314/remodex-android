@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
@@ -83,6 +84,8 @@ import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -129,6 +132,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
@@ -181,6 +185,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
+import com.emanueledipietro.remodex.feature.appshell.PlanComposerSessionUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
@@ -276,6 +281,11 @@ internal data class ConversationTimelineLayout(
     val pinnedPlanItem: RemodexConversationItem?,
 )
 
+internal data class PlanComposerFlowSnapshot(
+    val takeoverPromptItem: RemodexConversationItem? = null,
+    val completedPlanItem: RemodexConversationItem? = null,
+)
+
 internal enum class PlanAccessoryStatus(val label: String) {
     PENDING("Pending"),
     IN_PROGRESS("In progress"),
@@ -303,14 +313,15 @@ internal data class PlanAccessorySnapshot(
 
 internal fun buildConversationTimelineLayout(
     messages: List<RemodexConversationItem>,
+    hiddenPromptItemId: String? = null,
 ): ConversationTimelineLayout {
     val timelineItems = ArrayList<RemodexConversationItem>(messages.size)
     var pinnedPlanItem: RemodexConversationItem? = null
 
     messages.forEach { item ->
         when {
+            item.id == hiddenPromptItemId -> Unit
             item.shouldDisplayPinnedPlanAccessory() -> pinnedPlanItem = item
-            item.kind == ConversationItemKind.PLAN -> Unit
             else -> timelineItems += item
         }
     }
@@ -331,6 +342,57 @@ private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(): Boolean 
 
     val steps = planState?.steps.orEmpty()
     return steps.isNotEmpty() && steps.any { step -> step.status != RemodexPlanStepStatus.COMPLETED }
+}
+
+private fun RemodexConversationItem.isCompletedPlanForComposerFlow(): Boolean {
+    if (kind != ConversationItemKind.PLAN || isStreaming) {
+        return false
+    }
+    val steps = planState?.steps.orEmpty()
+    return steps.isEmpty() || steps.all { step -> step.status == RemodexPlanStepStatus.COMPLETED }
+}
+
+internal fun resolvePlanComposerFlow(
+    messages: List<RemodexConversationItem>,
+    session: PlanComposerSessionUiState?,
+    latestTurnTerminalState: RemodexTurnTerminalState?,
+    activePlanningMode: RemodexPlanningMode,
+    hasQueuedFollowUps: Boolean,
+    dismissedPromptRequestKeys: Set<String> = emptySet(),
+): PlanComposerFlowSnapshot {
+    if (session == null) {
+        return PlanComposerFlowSnapshot()
+    }
+
+    val anchorIndex = session.anchorMessageId
+        ?.let { anchorMessageId ->
+            messages.indexOfLast { item -> item.id == anchorMessageId }
+                .takeIf { index -> index >= 0 }
+                ?.plus(1)
+        }
+        ?: 0
+    val flowItems = messages.drop(anchorIndex.coerceAtLeast(0))
+    val takeoverPromptItem = flowItems.lastOrNull { item ->
+        item.kind == ConversationItemKind.USER_INPUT_PROMPT &&
+            item.structuredUserInputRequest?.requestIdKey !in dismissedPromptRequestKeys
+    }
+    if (takeoverPromptItem != null) {
+        return PlanComposerFlowSnapshot(takeoverPromptItem = takeoverPromptItem)
+    }
+    if (latestTurnTerminalState != RemodexTurnTerminalState.COMPLETED) {
+        return PlanComposerFlowSnapshot()
+    }
+    if (activePlanningMode != RemodexPlanningMode.PLAN) {
+        return PlanComposerFlowSnapshot()
+    }
+    if (hasQueuedFollowUps) {
+        return PlanComposerFlowSnapshot()
+    }
+
+    val latestPlanItem = flowItems.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
+    return PlanComposerFlowSnapshot(
+        completedPlanItem = latestPlanItem?.takeIf(RemodexConversationItem::isCompletedPlanForComposerFlow),
+    )
 }
 
 internal fun planAccessorySnapshot(planItem: RemodexConversationItem): PlanAccessorySnapshot {
@@ -576,6 +638,8 @@ fun ConversationScreen(
     onComposerInputChanged: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit = { _, _ -> },
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit = { _, _ -> },
+    onDismissPlanComposerSession: () -> Unit = {},
     onStopTurn: () -> Unit,
     onSendQueuedDraft: (String) -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -630,16 +694,44 @@ fun ConversationScreen(
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
-    var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var selectedPlanSheetItemId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
-    val conversationLayout = remember(thread.messages) {
-        buildConversationTimelineLayout(thread.messages)
+    var dismissedPlanPromptRequestKeys by remember(thread.id) { mutableStateOf(emptySet<String>()) }
+    val planComposerFlow = remember(
+        thread.messages,
+        thread.latestTurnTerminalState,
+        thread.runtimeConfig.planningMode,
+        thread.queuedDraftItems,
+        uiState.planComposerSession,
+        dismissedPlanPromptRequestKeys,
+    ) {
+        resolvePlanComposerFlow(
+            messages = thread.messages,
+            session = uiState.planComposerSession,
+            latestTurnTerminalState = thread.latestTurnTerminalState,
+            activePlanningMode = thread.runtimeConfig.planningMode,
+            hasQueuedFollowUps = thread.queuedDraftItems.isNotEmpty(),
+            dismissedPromptRequestKeys = dismissedPlanPromptRequestKeys,
+        )
+    }
+    val planComposerTakeoverRequest = planComposerFlow.takeoverPromptItem?.structuredUserInputRequest
+    val planComposerFollowUpItem = planComposerFlow.completedPlanItem
+    val conversationLayout = remember(thread.messages, planComposerFlow.takeoverPromptItem?.id) {
+        buildConversationTimelineLayout(
+            messages = thread.messages,
+            hiddenPromptItemId = planComposerFlow.takeoverPromptItem?.id,
+        )
     }
     val pinnedPlanItem = conversationLayout.pinnedPlanItem
     val timelineItems = conversationLayout.timelineItems
+    val selectedPlanSheetItem = remember(thread.messages, selectedPlanSheetItemId) {
+        selectedPlanSheetItemId?.let { planItemId ->
+            thread.messages.firstOrNull { item -> item.id == planItemId && item.kind == ConversationItemKind.PLAN }
+        }
+    }
     val blockAccessories = remember(
         timelineItems,
         thread.isRunning,
@@ -793,6 +885,20 @@ fun ConversationScreen(
         }
     }
 
+    LaunchedEffect(thread.id, uiState.planComposerSession?.anchorMessageId) {
+        dismissedPlanPromptRequestKeys = emptySet()
+    }
+
+    LaunchedEffect(thread.id, planComposerTakeoverRequest?.requestIdKey, planComposerFollowUpItem?.id) {
+        if (planComposerTakeoverRequest == null && planComposerFollowUpItem == null) {
+            return@LaunchedEffect
+        }
+        focusManager.clearFocus(force = true)
+        composerFocused = false
+        composerSawImeWhileFocused = false
+        onCloseComposerAutocomplete()
+    }
+
     LaunchedEffect(thread.id, uiState.composerSendDismissSignal) {
         if (uiState.composerSendDismissSignal == 0L) {
             return@LaunchedEffect
@@ -944,6 +1050,9 @@ fun ConversationScreen(
                                             accessoryState = blockAccessories[message.id],
                                             onSubmitStructuredUserInput = onSubmitStructuredUserInput,
                                             commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
+                                            onOpenPlanDetails = { planItemId ->
+                                                selectedPlanSheetItemId = planItemId
+                                            },
                                             onOpenFileChangeDetails = { presentation ->
                                                 fileChangeSheetPresentation = presentation
                                             },
@@ -1015,107 +1124,129 @@ fun ConversationScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    pinnedPlanItem?.let { planItem ->
-                        PlanAccessoryCard(
-                            planItem = planItem,
-                            onClick = { planSheetExpanded = true },
-                        )
-                    }
-
-                    if (uiState.composer.queuedDrafts.isNotEmpty()) {
-                        QueuedDraftsCard(
-                            queuedDrafts = uiState.composer.queuedDrafts,
-                            canSendQueuedDrafts = !showsThreadRunningUi,
-                            onSendQueuedDraft = onSendQueuedDraft,
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(0.dp),
-                        ) {
-                            AnimatedVisibility(
-                                visible = autocompleteVisible,
-                                enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
-                                    slideInVertically(
-                                        animationSpec = tween(durationMillis = 180),
-                                        initialOffsetY = { fullHeight -> fullHeight / 6 },
-                                    ) +
-                                    scaleIn(
-                                        animationSpec = tween(durationMillis = 160),
-                                        initialScale = 0.98f,
-                                    ),
-                                exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
-                                    slideOutVertically(
-                                        animationSpec = tween(durationMillis = 120),
-                                        targetOffsetY = { fullHeight -> fullHeight / 8 },
-                                    ) +
-                                    scaleOut(
-                                        animationSpec = tween(durationMillis = 110),
-                                        targetScale = 0.985f,
-                                    ),
-                            ) {
-                                AutocompletePanel(
-                                    uiState = uiState,
-                                    onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                    onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                    onSelectSlashCommand = handleSelectSlashCommand,
-                                    onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                    onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                    onForkThread = handleForkThread,
-                                    modifier = Modifier
-                                        .padding(bottom = 6.dp),
-                                )
-                            }
-
-                            ComposerCard(
-                                uiState = uiState,
-                                onComposerInputChanged = onComposerInputChanged,
-                                onSendPrompt = onSendPrompt,
-                                onStopTurn = onStopTurn,
-                                onSelectModel = onSelectModel,
-                                onSelectPlanningMode = onSelectPlanningMode,
-                                onSelectReasoningEffort = onSelectReasoningEffort,
-                                onSelectAccessMode = onSelectAccessMode,
-                                onSelectServiceTier = onSelectServiceTier,
-                                onOpenAttachmentPicker = onOpenAttachmentPicker,
-                                onOpenCameraCapture = onOpenCameraCapture,
-                                onRemoveAttachment = onRemoveAttachment,
-                                onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                onRemoveMentionedFile = onRemoveMentionedFile,
-                                onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                onRemoveMentionedSkill = onRemoveMentionedSkill,
-                                onSelectSlashCommand = handleSelectSlashCommand,
-                                onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                onClearReviewSelection = onClearReviewSelection,
-                                onClearSubagentsSelection = onClearSubagentsSelection,
-                                onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                onForkThread = handleForkThread,
-                                onComposerFocusChanged = { isFocused ->
-                                    composerFocused = isFocused
+                    when {
+                        planComposerTakeoverRequest != null -> {
+                            PlanStructuredUserInputComposerCard(
+                                request = planComposerTakeoverRequest,
+                                onSubmit = onSubmitStructuredUserInput,
+                                onDismiss = {
+                                    dismissedPlanPromptRequestKeys = dismissedPlanPromptRequestKeys + planComposerTakeoverRequest.requestIdKey
                                 },
                             )
                         }
-                    }
 
-                    if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
-                        ComposerSecondaryBar(
-                            thread = thread,
-                            gitState = uiState.composer.gitState,
-                            usageStatus = uiState.usageStatus,
-                            isRefreshingUsage = uiState.isRefreshingUsage,
-                            accessMode = uiState.composer.runtimeConfig.accessMode,
-                            onSelectAccessMode = onSelectAccessMode,
-                            onRefreshUsageStatus = onRefreshUsageStatus,
-                            onOpenGitSheet = { gitSheetExpanded = true },
-                            onOpenWorktreeHandoff = {
-                                worktreeSheetMode = WorktreeSheetMode.HANDOFF
-                                worktreeHandoffSheetExpanded = true
-                            },
-                        )
+                        planComposerFollowUpItem != null -> {
+                            PlanFollowUpComposerCard(
+                                planItem = planComposerFollowUpItem,
+                                onDismiss = onDismissPlanComposerSession,
+                                onSubmit = onSubmitPlanFollowUp,
+                            )
+                        }
+
+                        else -> {
+                            pinnedPlanItem?.let { planItem ->
+                                PlanAccessoryCard(
+                                    planItem = planItem,
+                                    onClick = { selectedPlanSheetItemId = planItem.id },
+                                )
+                            }
+
+                            if (uiState.composer.queuedDrafts.isNotEmpty()) {
+                                QueuedDraftsCard(
+                                    queuedDrafts = uiState.composer.queuedDrafts,
+                                    canSendQueuedDrafts = !showsThreadRunningUi,
+                                    onSendQueuedDraft = onSendQueuedDraft,
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(0.dp),
+                                ) {
+                                    AnimatedVisibility(
+                                        visible = autocompleteVisible,
+                                        enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
+                                            slideInVertically(
+                                                animationSpec = tween(durationMillis = 180),
+                                                initialOffsetY = { fullHeight -> fullHeight / 6 },
+                                            ) +
+                                            scaleIn(
+                                                animationSpec = tween(durationMillis = 160),
+                                                initialScale = 0.98f,
+                                            ),
+                                        exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                                            slideOutVertically(
+                                                animationSpec = tween(durationMillis = 120),
+                                                targetOffsetY = { fullHeight -> fullHeight / 8 },
+                                            ) +
+                                            scaleOut(
+                                                animationSpec = tween(durationMillis = 110),
+                                                targetScale = 0.985f,
+                                            ),
+                                    ) {
+                                        AutocompletePanel(
+                                            uiState = uiState,
+                                            onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                            onSelectSlashCommand = handleSelectSlashCommand,
+                                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                            onForkThread = handleForkThread,
+                                            modifier = Modifier
+                                                .padding(bottom = 6.dp),
+                                        )
+                                    }
+
+                                    ComposerCard(
+                                        uiState = uiState,
+                                        onComposerInputChanged = onComposerInputChanged,
+                                        onSendPrompt = onSendPrompt,
+                                        onStopTurn = onStopTurn,
+                                        onSelectModel = onSelectModel,
+                                        onSelectPlanningMode = onSelectPlanningMode,
+                                        onSelectReasoningEffort = onSelectReasoningEffort,
+                                        onSelectAccessMode = onSelectAccessMode,
+                                        onSelectServiceTier = onSelectServiceTier,
+                                        onOpenAttachmentPicker = onOpenAttachmentPicker,
+                                        onOpenCameraCapture = onOpenCameraCapture,
+                                        onRemoveAttachment = onRemoveAttachment,
+                                        onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                        onRemoveMentionedFile = onRemoveMentionedFile,
+                                        onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                        onRemoveMentionedSkill = onRemoveMentionedSkill,
+                                        onSelectSlashCommand = handleSelectSlashCommand,
+                                        onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                        onClearReviewSelection = onClearReviewSelection,
+                                        onClearSubagentsSelection = onClearSubagentsSelection,
+                                        onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                        onForkThread = handleForkThread,
+                                        onComposerFocusChanged = { isFocused ->
+                                            composerFocused = isFocused
+                                        },
+                                    )
+                                }
+                            }
+
+                            if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
+                                ComposerSecondaryBar(
+                                    thread = thread,
+                                    gitState = uiState.composer.gitState,
+                                    usageStatus = uiState.usageStatus,
+                                    isRefreshingUsage = uiState.isRefreshingUsage,
+                                    accessMode = uiState.composer.runtimeConfig.accessMode,
+                                    onSelectAccessMode = onSelectAccessMode,
+                                    onRefreshUsageStatus = onRefreshUsageStatus,
+                                    onOpenGitSheet = { gitSheetExpanded = true },
+                                    onOpenWorktreeHandoff = {
+                                        worktreeSheetMode = WorktreeSheetMode.HANDOFF
+                                        worktreeHandoffSheetExpanded = true
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1158,10 +1289,10 @@ fun ConversationScreen(
             )
         }
 
-        if (planSheetExpanded && pinnedPlanItem != null) {
+        if (selectedPlanSheetItem != null) {
             PlanDetailsSheet(
-                planItem = pinnedPlanItem,
-                onDismiss = { planSheetExpanded = false },
+                planItem = selectedPlanSheetItem,
+                onDismiss = { selectedPlanSheetItemId = null },
             )
         }
 
@@ -1537,6 +1668,158 @@ private fun PlanAccessoryCard(
 }
 
 @Composable
+private fun PlanConversationRow(
+    item: RemodexConversationItem,
+    onOpenDetails: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val context = LocalContext.current
+    val snapshot = remember(item) { planAccessorySnapshot(item) }
+    val bodyText = remember(item) { planPrimaryBodyText(item) ?: snapshot.summary }
+    val explanationText = remember(item) { planExplanationText(item) }
+    val fullPlanText = remember(bodyText, explanationText) {
+        listOfNotNull(
+            bodyText.takeIf(String::isNotBlank),
+            explanationText?.takeIf(String::isNotBlank),
+        ).joinToString(separator = "\n\n")
+    }
+    val shouldCollapse = remember(bodyText, explanationText, item.planState?.steps?.size) {
+        bodyText.length > 420 ||
+            (explanationText?.length ?: 0) > 160 ||
+            item.planState?.steps.orEmpty().size > 4
+    }
+    var didCopy by remember(item.id) { mutableStateOf(false) }
+
+    LaunchedEffect(didCopy) {
+        if (didCopy) {
+            delay(1_500)
+            didCopy = false
+        }
+    }
+
+    ConversationMessageActionContainer(
+        text = fullPlanText,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = true,
+        allowsSelectText = fullPlanText.isNotBlank(),
+        onClick = onOpenDetails,
+    ) { showContextMenuAt ->
+        Surface(
+            color = chrome.panelSurface,
+            shape = RemodexConversationShapes.card,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Plan",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = {
+                            copyPlainTextToClipboard(
+                                context = context,
+                                label = "Plan",
+                                text = fullPlanText,
+                            )
+                            didCopy = true
+                        },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (didCopy) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                            contentDescription = if (didCopy) "Copied" else "Copy plan",
+                            tint = chrome.secondaryText,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = onOpenDetails,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = "Expand plan",
+                            tint = chrome.secondaryText,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (shouldCollapse) {
+                                    Modifier
+                                        .heightIn(max = 240.dp)
+                                        .clipToBounds()
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        ConversationMarkdownText(
+                            text = bodyText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                            onLongPress = showContextMenuAt,
+                        )
+                        explanationText?.let { explanation ->
+                            Text(
+                                text = explanation,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = chrome.secondaryText,
+                            )
+                        }
+                    }
+
+                    if (shouldCollapse) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(64.dp)
+                                .background(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(
+                                            chrome.panelSurface.copy(alpha = 0f),
+                                            chrome.panelSurface.copy(alpha = 0.92f),
+                                        ),
+                                    ),
+                                ),
+                        )
+                        TextButton(
+                            onClick = onOpenDetails,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 4.dp),
+                        ) {
+                            Text("Expand plan")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlanAccessoryStepRail(
     stepStatuses: List<RemodexPlanStepStatus>,
     activeColor: Color,
@@ -1767,7 +2050,11 @@ private fun PlanDetailsSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Active plan",
+                    text = if (snapshot.status == PlanAccessoryStatus.COMPLETED && !snapshot.isStreaming) {
+                        "Plan"
+                    } else {
+                        "Active plan"
+                    },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = chrome.titleText,
@@ -5503,6 +5790,7 @@ private fun ConversationBubble(
             accessoryState = accessoryState,
             onSubmitStructuredUserInput = { _, _ -> },
             commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
+            onOpenPlanDetails = {},
             onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
             parentThreadId = parentThreadId,
@@ -5680,6 +5968,7 @@ private fun SystemConversationRow(
     accessoryState: ConversationBlockAccessoryState?,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
     commandExecutionDetails: RemodexCommandExecutionDetails?,
+    onOpenPlanDetails: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     parentThreadId: String,
@@ -5725,13 +6014,16 @@ private fun SystemConversationRow(
                 request = item.structuredUserInputRequest,
                 onSubmit = onSubmitStructuredUserInput,
             )
-            ConversationItemKind.PLAN -> Unit
+            ConversationItemKind.PLAN -> PlanConversationRow(
+                item = item,
+                onOpenDetails = { onOpenPlanDetails(item.id) },
+            )
             ConversationItemKind.CHAT -> DefaultSystemRow(
                 item = item,
                 accessoryState = accessoryState,
             )
         }
-        accessoryState?.copyText?.let { copyText ->
+        accessoryState?.copyText?.takeUnless { item.kind == ConversationItemKind.PLAN }?.let { copyText ->
             ConversationCopyBlockButton(text = copyText)
         }
     }
@@ -8090,6 +8382,470 @@ private data class SubagentStatusPresentation(
         }
 }
 
+private enum class PlanFollowUpChoice {
+    IMPLEMENT,
+    REVISE,
+}
+
+private fun resolvedStructuredUserInputAnswer(
+    questionId: String,
+    selectedOptionsByQuestionId: Map<String, String>,
+    typedAnswersByQuestionId: Map<String, String>,
+): String? {
+    val typed = typedAnswersByQuestionId[questionId]?.trim().orEmpty()
+    if (typed.isNotEmpty()) {
+        return typed
+    }
+    val selected = selectedOptionsByQuestionId[questionId]?.trim().orEmpty()
+    if (selected.isNotEmpty()) {
+        return selected
+    }
+    return null
+}
+
+@Composable
+private fun PlanComposerOptionCard(
+    index: Int,
+    title: String,
+    description: String?,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        color = if (selected) chrome.accentSurface else chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(
+            1.dp,
+            if (selected) chrome.accent.copy(alpha = 0.28f) else chrome.subtleBorder,
+        ),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "$index. $title",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (selected) chrome.titleText else chrome.bodyText,
+                fontWeight = FontWeight.SemiBold,
+            )
+            description?.trim()?.takeIf(String::isNotEmpty)?.let { detail ->
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StructuredAnswerField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    isOther: Boolean,
+    isSecret: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = if (isOther) 110.dp else 0.dp),
+        enabled = enabled,
+        singleLine = !isOther,
+        minLines = if (isOther) 3 else 1,
+        placeholder = {
+            Text(
+                if (isOther) {
+                    "Other answer"
+                } else {
+                    "Your answer"
+                },
+            )
+        },
+        keyboardOptions = KeyboardOptions(
+            capitalization = if (isSecret) {
+                KeyboardCapitalization.None
+            } else {
+                KeyboardCapitalization.Sentences
+            },
+            keyboardType = if (isSecret) {
+                KeyboardType.Password
+            } else {
+                KeyboardType.Text
+            },
+        ),
+        visualTransformation = if (isSecret) {
+            PasswordVisualTransformation()
+        } else {
+            androidx.compose.ui.text.input.VisualTransformation.None
+        },
+    )
+}
+
+@Composable
+private fun PlanStructuredUserInputComposerCard(
+    request: RemodexStructuredUserInputRequest,
+    onSubmit: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val coroutineScope = rememberCoroutineScope()
+    var currentQuestionIndex by rememberSaveable(request.requestIdKey) { mutableStateOf(0) }
+    var selectedOptionsByQuestionId by remember(request.requestIdKey) {
+        mutableStateOf<Map<String, String>>(emptyMap())
+    }
+    var typedAnswersByQuestionId by remember(request.requestIdKey) {
+        mutableStateOf<Map<String, String>>(emptyMap())
+    }
+    var isSubmitting by rememberSaveable(request.requestIdKey) { mutableStateOf(false) }
+    var hasSubmittedResponse by rememberSaveable(request.requestIdKey) { mutableStateOf(false) }
+    var submissionError by rememberSaveable(request.requestIdKey) { mutableStateOf<String?>(null) }
+    val questions = request.questions
+    if (questions.isEmpty()) {
+        return
+    }
+    val currentQuestion = questions[currentQuestionIndex]
+    val currentAnswer = resolvedStructuredUserInputAnswer(
+        questionId = currentQuestion.id,
+        selectedOptionsByQuestionId = selectedOptionsByQuestionId,
+        typedAnswersByQuestionId = typedAnswersByQuestionId,
+    )
+    val canGoBackward = currentQuestionIndex > 0
+    val canAdvance = currentAnswer != null
+    val canSubmit = !isSubmitting &&
+        !hasSubmittedResponse &&
+        questions.all { question ->
+            resolvedStructuredUserInputAnswer(
+                questionId = question.id,
+                selectedOptionsByQuestionId = selectedOptionsByQuestionId,
+                typedAnswersByQuestionId = typedAnswersByQuestionId,
+            ) != null
+        }
+    val title = currentQuestion.question.trim().ifEmpty {
+        currentQuestion.header.trim().ifEmpty { "Plan input" }
+    }
+    val subtitle = currentQuestion.header.trim().takeIf { header ->
+        header.isNotEmpty() && header != title
+    }
+
+    Surface(
+        color = chrome.panelSurfaceStrong,
+        shape = RemodexConversationShapes.composer,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = chrome.titleText,
+                    )
+                    subtitle?.let { header ->
+                        Text(
+                            text = header,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = chrome.secondaryText,
+                        )
+                    }
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = { currentQuestionIndex -= 1 },
+                        enabled = canGoBackward && !isSubmitting,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ChevronLeft,
+                            contentDescription = "Previous question",
+                        )
+                    }
+                    Text(
+                        text = "${currentQuestionIndex + 1} of ${questions.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    IconButton(
+                        onClick = { currentQuestionIndex += 1 },
+                        enabled = currentQuestionIndex < questions.lastIndex && canAdvance && !isSubmitting,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ChevronRight,
+                            contentDescription = "Next question",
+                        )
+                    }
+                }
+            }
+
+            submissionError?.takeIf(String::isNotBlank)?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                currentQuestion.options.forEachIndexed { index, option ->
+                    val isSelected = selectedOptionsByQuestionId[currentQuestion.id] == option.label
+                    PlanComposerOptionCard(
+                        index = index + 1,
+                        title = option.label,
+                        description = option.description,
+                        selected = isSelected,
+                        enabled = !isSubmitting,
+                        onClick = {
+                            submissionError = null
+                            selectedOptionsByQuestionId = selectedOptionsByQuestionId
+                                .toMutableMap()
+                                .apply { this[currentQuestion.id] = option.label }
+                        },
+                    )
+                }
+
+                if (currentQuestion.options.isEmpty() || currentQuestion.isOther || currentQuestion.isSecret) {
+                    StructuredAnswerField(
+                        value = typedAnswersByQuestionId[currentQuestion.id].orEmpty(),
+                        onValueChange = { updatedValue ->
+                            submissionError = null
+                            typedAnswersByQuestionId = typedAnswersByQuestionId
+                                .toMutableMap()
+                                .apply { this[currentQuestion.id] = updatedValue }
+                        },
+                        enabled = !isSubmitting,
+                        isOther = currentQuestion.isOther || currentQuestion.options.isEmpty(),
+                        isSecret = currentQuestion.isSecret,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !isSubmitting,
+                ) {
+                    Text("Dismiss")
+                }
+                Button(
+                    enabled = if (currentQuestionIndex == questions.lastIndex) canSubmit else canAdvance,
+                    onClick = {
+                        if (currentQuestionIndex < questions.lastIndex) {
+                            currentQuestionIndex += 1
+                            return@Button
+                        }
+                        val answersByQuestionId = questions.associate { question ->
+                            question.id to listOfNotNull(
+                                resolvedStructuredUserInputAnswer(
+                                    questionId = question.id,
+                                    selectedOptionsByQuestionId = selectedOptionsByQuestionId,
+                                    typedAnswersByQuestionId = typedAnswersByQuestionId,
+                                ),
+                            )
+                        }
+                        submissionError = null
+                        isSubmitting = true
+                        hasSubmittedResponse = true
+                        coroutineScope.launch {
+                            runCatching {
+                                onSubmit(request.requestId, answersByQuestionId)
+                            }.onFailure { error ->
+                                submissionError = error.message ?: "Could not submit this response."
+                                hasSubmittedResponse = false
+                            }
+                            isSubmitting = false
+                        }
+                    },
+                ) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Text(if (currentQuestionIndex == questions.lastIndex) "Submit" else "Continue")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanFollowUpComposerCard(
+    planItem: RemodexConversationItem,
+    onDismiss: () -> Unit,
+    onSubmit: suspend (String, Boolean) -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val coroutineScope = rememberCoroutineScope()
+    val planSummary = remember(planItem) { planAccessorySnapshot(planItem).summary }
+    var selectedChoice by rememberSaveable(planItem.id) { mutableStateOf<PlanFollowUpChoice?>(null) }
+    var revisionNotes by rememberSaveable(planItem.id) { mutableStateOf("") }
+    var isSubmitting by rememberSaveable(planItem.id) { mutableStateOf(false) }
+    var submissionError by rememberSaveable(planItem.id) { mutableStateOf<String?>(null) }
+    val canSubmit = when (selectedChoice) {
+        PlanFollowUpChoice.IMPLEMENT -> !isSubmitting
+        PlanFollowUpChoice.REVISE -> !isSubmitting && revisionNotes.trim().isNotEmpty()
+        null -> false
+    }
+
+    Surface(
+        color = chrome.panelSurfaceStrong,
+        shape = RemodexConversationShapes.composer,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Implement this plan?",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                Text(
+                    text = planSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            submissionError?.takeIf(String::isNotBlank)?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                PlanComposerOptionCard(
+                    index = 1,
+                    title = "Yes, implement this plan",
+                    description = null,
+                    selected = selectedChoice == PlanFollowUpChoice.IMPLEMENT,
+                    enabled = !isSubmitting,
+                    onClick = {
+                        submissionError = null
+                        selectedChoice = PlanFollowUpChoice.IMPLEMENT
+                    },
+                )
+                PlanComposerOptionCard(
+                    index = 2,
+                    title = "No, and tell Codex what to do differently",
+                    description = null,
+                    selected = selectedChoice == PlanFollowUpChoice.REVISE,
+                    enabled = !isSubmitting,
+                    onClick = {
+                        submissionError = null
+                        selectedChoice = PlanFollowUpChoice.REVISE
+                    },
+                )
+                if (selectedChoice == PlanFollowUpChoice.REVISE) {
+                    StructuredAnswerField(
+                        value = revisionNotes,
+                        onValueChange = { updatedValue ->
+                            submissionError = null
+                            revisionNotes = updatedValue
+                        },
+                        enabled = !isSubmitting,
+                        isOther = true,
+                        isSecret = false,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !isSubmitting,
+                ) {
+                    Text("Dismiss")
+                }
+                Button(
+                    enabled = canSubmit,
+                    onClick = {
+                        val prompt = when (selectedChoice) {
+                            PlanFollowUpChoice.IMPLEMENT -> "Implement plan"
+                            PlanFollowUpChoice.REVISE -> revisionNotes.trim()
+                            null -> return@Button
+                        }
+                        val shouldExitPlanMode = selectedChoice == PlanFollowUpChoice.IMPLEMENT
+                        submissionError = null
+                        isSubmitting = true
+                        coroutineScope.launch {
+                            runCatching {
+                                onSubmit(prompt, shouldExitPlanMode)
+                            }.onFailure { error ->
+                                submissionError = error.message ?: "Could not send this follow-up."
+                            }
+                            isSubmitting = false
+                        }
+                    },
+                ) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Text("Submit")
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun StructuredUserInputRow(
     request: RemodexStructuredUserInputRequest?,
@@ -8110,21 +8866,15 @@ private fun StructuredUserInputRow(
     var hasSubmittedResponse by rememberSaveable(request.requestIdKey) { mutableStateOf(false) }
     var submissionError by rememberSaveable(request.requestIdKey) { mutableStateOf<String?>(null) }
 
-    fun resolvedAnswer(questionId: String): String? {
-        val typed = typedAnswersByQuestionId[questionId]?.trim().orEmpty()
-        if (typed.isNotEmpty()) {
-            return typed
-        }
-        val selected = selectedOptionsByQuestionId[questionId]?.trim().orEmpty()
-        if (selected.isNotEmpty()) {
-            return selected
-        }
-        return null
-    }
-
     val canSubmit = !isSubmitting &&
         !hasSubmittedResponse &&
-        request.questions.all { question -> resolvedAnswer(question.id) != null }
+        request.questions.all { question ->
+            resolvedStructuredUserInputAnswer(
+                questionId = question.id,
+                selectedOptionsByQuestionId = selectedOptionsByQuestionId,
+                typedAnswersByQuestionId = typedAnswersByQuestionId,
+            ) != null
+        }
     Surface(
         color = chrome.accentSurface,
         shape = RemodexConversationShapes.card,
@@ -8217,7 +8967,7 @@ private fun StructuredUserInputRow(
                         }
                     }
                     if (question.options.isEmpty() || question.isOther || question.isSecret) {
-                        OutlinedTextField(
+                        StructuredAnswerField(
                             value = typedAnswersByQuestionId[question.id].orEmpty(),
                             onValueChange = { updatedValue ->
                                 submissionError = null
@@ -8225,36 +8975,9 @@ private fun StructuredUserInputRow(
                                     .toMutableMap()
                                     .apply { this[question.id] = updatedValue }
                             },
-                            modifier = Modifier.fillMaxWidth(),
                             enabled = !isSubmitting,
-                            singleLine = !question.isOther,
-                            minLines = if (question.isOther) 3 else 1,
-                            placeholder = {
-                                Text(
-                                    if (question.isOther) {
-                                        "Other answer"
-                                    } else {
-                                        "Your answer"
-                                    },
-                                )
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = if (question.isSecret) {
-                                    KeyboardCapitalization.None
-                                } else {
-                                    KeyboardCapitalization.Sentences
-                                },
-                                keyboardType = if (question.isSecret) {
-                                    KeyboardType.Password
-                                } else {
-                                    KeyboardType.Text
-                                },
-                            ),
-                            visualTransformation = if (question.isSecret) {
-                                PasswordVisualTransformation()
-                            } else {
-                                androidx.compose.ui.text.input.VisualTransformation.None
-                            },
+                            isOther = question.isOther,
+                            isSecret = question.isSecret,
                         )
                     }
                 }
@@ -8271,7 +8994,13 @@ private fun StructuredUserInputRow(
                     enabled = canSubmit,
                     onClick = {
                         val answersByQuestionId = request.questions.associate { question ->
-                            question.id to listOfNotNull(resolvedAnswer(question.id))
+                            question.id to listOfNotNull(
+                                resolvedStructuredUserInputAnswer(
+                                    questionId = question.id,
+                                    selectedOptionsByQuestionId = selectedOptionsByQuestionId,
+                                    typedAnswersByQuestionId = typedAnswersByQuestionId,
+                                ),
+                            )
                         }
                         submissionError = null
                         isSubmitting = true

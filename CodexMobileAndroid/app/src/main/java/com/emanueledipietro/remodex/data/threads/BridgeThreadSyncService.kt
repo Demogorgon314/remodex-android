@@ -1710,7 +1710,10 @@ class BridgeThreadSyncService(
     }
 
     private fun shouldIncludeCollaborationMode(planningMode: RemodexPlanningMode): Boolean {
-        return supportsTurnCollaborationMode && planningMode == RemodexPlanningMode.PLAN
+        return supportsTurnCollaborationMode && (
+            planningMode == RemodexPlanningMode.PLAN ||
+                planningMode == RemodexPlanningMode.AUTO
+            )
     }
 
     private fun consumeUnsupportedServiceTier(
@@ -5039,6 +5042,10 @@ class BridgeThreadSyncService(
     }
 
     private fun decodePlanItemText(itemObject: JsonObject): String {
+        val fullBody = decodeItemText(itemObject).trim()
+        if (fullBody.isNotEmpty()) {
+            return fullBody
+        }
         val planState = decodeHistoryPlanState(itemObject)
         val explanation = planState?.explanation?.trim().orEmpty()
         if (explanation.isNotEmpty()) {
@@ -5752,7 +5759,12 @@ class BridgeThreadSyncService(
     private fun buildCollaborationModePayload(
         runtimeConfig: RemodexRuntimeConfig,
     ): JsonObject? {
-        if (runtimeConfig.planningMode != RemodexPlanningMode.PLAN) {
+        val mode = when (runtimeConfig.planningMode) {
+            RemodexPlanningMode.PLAN -> "plan"
+            RemodexPlanningMode.AUTO -> "default"
+        }
+
+        if (!supportsTurnCollaborationMode) {
             return null
         }
 
@@ -5766,7 +5778,7 @@ class BridgeThreadSyncService(
         }
 
         return buildJsonObject {
-            put("mode", JsonPrimitive("plan"))
+            put("mode", JsonPrimitive(mode))
             if (settings.isNotEmpty()) {
                 put("settings", settings)
             }

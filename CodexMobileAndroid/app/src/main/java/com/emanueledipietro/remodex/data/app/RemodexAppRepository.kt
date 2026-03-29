@@ -63,6 +63,7 @@ interface RemodexAppRepository {
         threadId: String,
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
+        planningModeOverride: RemodexPlanningMode? = null,
     )
 
     suspend fun respondToStructuredUserInput(

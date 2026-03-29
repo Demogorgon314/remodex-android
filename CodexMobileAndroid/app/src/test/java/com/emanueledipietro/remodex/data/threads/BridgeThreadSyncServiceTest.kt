@@ -2241,6 +2241,88 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `send prompt encodes default collaboration mode when follow up exits plan mode`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-default-mode",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var capturedCollaborationMode: JsonObject? = null
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-default-mode"))
+                                put("title", JsonPrimitive("Default thread"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    capturedCollaborationMode = message.params
+                        ?.jsonObjectOrNull
+                        ?.get("collaborationMode")
+                        ?.jsonObjectOrNull
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-default-mode"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.sendPrompt(
+                threadId = "thread-default-mode",
+                prompt = "Implement plan",
+                runtimeConfig = RemodexRuntimeConfig(
+                    planningMode = RemodexPlanningMode.AUTO,
+                    selectedModelId = "gpt-5.4",
+                    reasoningEffort = "low",
+                ),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals("default", capturedCollaborationMode?.firstString("mode"))
+            val settings = capturedCollaborationMode
+                ?.get("settings")
+                ?.jsonObjectOrNull
+            assertEquals("gpt-5.4", settings?.firstString("model"))
+            assertEquals("low", settings?.firstString("reasoning_effort"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `send prompt retries without collaboration mode when runtime rejects field`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -2345,6 +2427,41 @@ class BridgeThreadSyncServiceTest {
             answersObject?.get("scope")?.jsonObjectOrNull?.firstArray("answers")
                 ?.mapNotNull { value -> value.jsonPrimitive.contentOrNull },
         )
+    }
+
+    @Test
+    fun `plan item text keeps the full body instead of collapsing to summary`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        val decoded = invokePrivateMethod(
+            service,
+            "decodePlanItemText",
+            buildJsonObject {
+                put("summary", JsonPrimitive("Short summary"))
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("output_text"))
+                                put("text", JsonPrimitive("# Full Plan\n\n- Step 1\n- Step 2"))
+                            },
+                        )
+                    },
+                )
+            },
+        ) as String
+
+        assertEquals("# Full Plan\n\n- Step 1\n- Step 2", decoded)
     }
 
     @Test

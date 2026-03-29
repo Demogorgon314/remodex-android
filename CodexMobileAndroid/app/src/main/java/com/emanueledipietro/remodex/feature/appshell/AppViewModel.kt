@@ -81,6 +81,10 @@ data class ComposerUiState(
     val selectedGitBaseBranch: String = "",
 )
 
+data class PlanComposerSessionUiState(
+    val anchorMessageId: String? = null,
+)
+
 data class AppUiState(
     val onboardingCompleted: Boolean = false,
     val connectionStatus: RemodexConnectionStatus = RemodexConnectionStatus(),
@@ -103,6 +107,7 @@ data class AppUiState(
     val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
     val composer: ComposerUiState = ComposerUiState(),
+    val planComposerSession: PlanComposerSessionUiState? = null,
     val conversationBanner: String? = null,
     val transientBanner: String? = null,
     val gitSyncAlert: RemodexGitSyncAlertUiState? = null,
@@ -247,6 +252,7 @@ class AppViewModel(
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
+    private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -363,14 +369,23 @@ class AppViewModel(
             )
         }
 
+    private val baseUiTransientState =
+        combine(
+            gitUiTransientState,
+            composerSendUiSignals,
+            planComposerSessions,
+        ) { gitUiState, sendSignalsByThread, planSessionsByThread ->
+            Triple(gitUiState, sendSignalsByThread, planSessionsByThread)
+        }
+
     private val baseUiState =
         combine(
             sessionRenderState,
             composerRenderStateA,
             composerRenderStateB,
-            gitUiTransientState,
-            composerSendUiSignals,
-        ) { sessionRenderState, renderStateA, renderStateB, gitUiState, sendSignalsByThread ->
+            baseUiTransientState,
+        ) { sessionRenderState, renderStateA, renderStateB, transientState ->
+            val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
@@ -424,6 +439,7 @@ class AppViewModel(
                     selectedGitBaseBranch = selectedGitBaseBranch,
                     thread = selectedThread,
                 ),
+                planComposerSession = selectedThread?.id?.let(planSessionsByThread::get),
                 conversationBanner = conversationBanner(
                     selectedThread = selectedThread,
                     secureConnection = snapshot.secureConnection,
@@ -727,6 +743,7 @@ class AppViewModel(
         val threadId = selectedThread.id
         viewModelScope.launch {
             val composer = uiState.value.composer
+            val startsPlanComposerSession = composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN
             val pendingComposerState = PendingComposerSendState(
                 draftText = composer.draftText,
                 attachments = composer.attachments,
@@ -779,6 +796,12 @@ class AppViewModel(
                 mentionedFiles = composer.mentionedFiles,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
+            if (startsPlanComposerSession) {
+                startPlanComposerSession(
+                    threadId = threadId,
+                    anchorMessageId = selectedThread.messages.lastOrNull()?.id,
+                )
+            }
             bumpComposerSendDismissSignal(threadId)
             bumpComposerSendAnchorSignal(threadId)
             clearComposer(threadId)
@@ -787,6 +810,9 @@ class AppViewModel(
             } catch (error: Throwable) {
                 if (error is CancellationException) {
                     throw error
+                }
+                if (startsPlanComposerSession) {
+                    clearPlanComposerSession(threadId)
                 }
                 restoreComposer(threadId, pendingComposerState)
                 setComposerMessage(
@@ -816,6 +842,38 @@ class AppViewModel(
         answersByQuestionId: Map<String, List<String>>,
     ) {
         repository.respondToStructuredUserInput(requestId, answersByQuestionId)
+    }
+
+    suspend fun sendPlanFollowUp(
+        prompt: String,
+        shouldExitPlanMode: Boolean,
+    ) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val trimmedPrompt = prompt.trim()
+        if (trimmedPrompt.isEmpty()) {
+            return
+        }
+        if (shouldExitPlanMode) {
+            repository.setPlanningMode(threadId, RemodexPlanningMode.AUTO)
+        }
+        bumpComposerSendDismissSignal(threadId)
+        bumpComposerSendAnchorSignal(threadId)
+        repository.sendPrompt(
+            threadId = threadId,
+            prompt = trimmedPrompt,
+            attachments = emptyList(),
+            planningModeOverride = if (shouldExitPlanMode) {
+                RemodexPlanningMode.AUTO
+            } else {
+                null
+            },
+        )
+        clearPlanComposerSession(threadId)
+    }
+
+    fun dismissPlanComposerSession() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        clearPlanComposerSession(threadId)
     }
 
     fun addAttachments(attachments: List<RemodexComposerAttachment>) {
@@ -2293,6 +2351,23 @@ class AppViewModel(
                     anchorSignal = current.anchorSignal + 1,
                 )
             }
+        }
+    }
+
+    private fun startPlanComposerSession(
+        threadId: String,
+        anchorMessageId: String?,
+    ) {
+        planComposerSessions.update { sessionsByThread ->
+            sessionsByThread.toMutableMap().apply {
+                this[threadId] = PlanComposerSessionUiState(anchorMessageId = anchorMessageId)
+            }
+        }
+    }
+
+    private fun clearPlanComposerSession(threadId: String) {
+        planComposerSessions.update { sessionsByThread ->
+            sessionsByThread.toMutableMap().apply { remove(threadId) }
         }
     }
 

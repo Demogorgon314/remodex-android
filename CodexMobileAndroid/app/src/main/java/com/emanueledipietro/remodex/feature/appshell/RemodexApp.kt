@@ -831,6 +831,8 @@ private fun MainPane(
                             onComposerInputChanged = viewModel::updateComposerInput,
                             onSendPrompt = viewModel::sendPrompt,
                             onSubmitStructuredUserInput = viewModel::respondToStructuredUserInput,
+                            onSubmitPlanFollowUp = viewModel::sendPlanFollowUp,
+                            onDismissPlanComposerSession = viewModel::dismissPlanComposerSession,
                             onStopTurn = viewModel::stopTurn,
                             onSendQueuedDraft = viewModel::sendQueuedDraft,
                             onSelectModel = viewModel::selectModel,

@@ -1,19 +1,25 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import com.emanueledipietro.remodex.feature.appshell.PlanComposerSessionUiState
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
+import kotlinx.serialization.json.JsonPrimitive
 
 class ConversationScreenPlanAccessoryTest {
     @Test
-    fun `timeline layout pins only the latest active plan and hides all plan rows from timeline`() {
+    fun `timeline layout pins only the latest active plan and keeps completed plans in timeline`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -38,11 +44,14 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertEquals("plan-active", layout.pinnedPlanItem?.id)
-        assertEquals(listOf("assistant-chat"), layout.timelineItems.map(RemodexConversationItem::id))
+        assertEquals(
+            listOf("plan-complete", "assistant-chat"),
+            layout.timelineItems.map(RemodexConversationItem::id),
+        )
     }
 
     @Test
-    fun `timeline layout does not pin completed plans`() {
+    fun `timeline layout keeps completed plans visible when nothing is pinned`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -53,7 +62,113 @@ class ConversationScreenPlanAccessoryTest {
         val layout = buildConversationTimelineLayout(listOf(completedPlan))
 
         assertNull(layout.pinnedPlanItem)
-        assertEquals(emptyList<RemodexConversationItem>(), layout.timelineItems)
+        assertEquals(listOf("plan-complete"), layout.timelineItems.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `timeline layout hides composer takeover prompt while keeping completed plan visible`() {
+        val prompt = promptItem(id = "prompt")
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val layout = buildConversationTimelineLayout(
+            messages = listOf(prompt, completedPlan),
+            hiddenPromptItemId = "prompt",
+        )
+
+        assertEquals(listOf("plan-complete"), layout.timelineItems.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `plan composer flow surfaces remote prompt before completed plan`() {
+        val anchor = assistantMessage(id = "anchor")
+        val prompt = promptItem(id = "prompt")
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val snapshot = resolvePlanComposerFlow(
+            messages = listOf(anchor, prompt, completedPlan),
+            session = PlanComposerSessionUiState(anchorMessageId = "anchor"),
+            latestTurnTerminalState = null,
+            activePlanningMode = RemodexPlanningMode.PLAN,
+            hasQueuedFollowUps = false,
+        )
+
+        assertEquals("prompt", snapshot.takeoverPromptItem?.id)
+        assertNull(snapshot.completedPlanItem)
+    }
+
+    @Test
+    fun `plan composer flow surfaces completed plan only after turn completion`() {
+        val anchor = assistantMessage(id = "anchor")
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val snapshot = resolvePlanComposerFlow(
+            messages = listOf(anchor, completedPlan),
+            session = PlanComposerSessionUiState(anchorMessageId = "anchor"),
+            latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+            activePlanningMode = RemodexPlanningMode.PLAN,
+            hasQueuedFollowUps = false,
+        )
+
+        assertNull(snapshot.takeoverPromptItem)
+        assertEquals("plan-complete", snapshot.completedPlanItem?.id)
+    }
+
+    @Test
+    fun `plan composer flow does not surface completed plan before turn completion`() {
+        val anchor = assistantMessage(id = "anchor")
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val snapshot = resolvePlanComposerFlow(
+            messages = listOf(anchor, completedPlan),
+            session = PlanComposerSessionUiState(anchorMessageId = "anchor"),
+            latestTurnTerminalState = null,
+            activePlanningMode = RemodexPlanningMode.PLAN,
+            hasQueuedFollowUps = false,
+        )
+
+        assertNull(snapshot.takeoverPromptItem)
+        assertNull(snapshot.completedPlanItem)
+    }
+
+    @Test
+    fun `plan composer flow does not surface completed plan when queued follow ups exist`() {
+        val anchor = assistantMessage(id = "anchor")
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val snapshot = resolvePlanComposerFlow(
+            messages = listOf(anchor, completedPlan),
+            session = PlanComposerSessionUiState(anchorMessageId = "anchor"),
+            latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+            activePlanningMode = RemodexPlanningMode.PLAN,
+            hasQueuedFollowUps = true,
+        )
+
+        assertNull(snapshot.completedPlanItem)
     }
 
     @Test
@@ -109,6 +224,33 @@ class ConversationScreenPlanAccessoryTest {
                 explanation = explanation,
                 steps = steps,
             ),
+        )
+    }
+
+    private fun promptItem(id: String): RemodexConversationItem {
+        return RemodexConversationItem(
+            id = id,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.USER_INPUT_PROMPT,
+            text = "Needs input",
+            structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                requestId = JsonPrimitive("request-1"),
+                questions = listOf(
+                    RemodexStructuredUserInputQuestion(
+                        id = "q1",
+                        header = "",
+                        question = "What should we do?",
+                    ),
+                ),
+            ),
+        )
+    }
+
+    private fun assistantMessage(id: String): RemodexConversationItem {
+        return RemodexConversationItem(
+            id = id,
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = "Anchor",
         )
     }
 }

@@ -960,10 +960,84 @@ class DefaultRemodexAppRepositoryTest {
             RemodexPlanningMode.PLAN,
             selectedThread?.queuedDraftItems?.firstOrNull()?.planningMode,
         )
-        assertEquals(RemodexPlanningMode.AUTO, selectedThread?.runtimeConfig?.planningMode)
+        assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             1,
             preferencesRepository.preferencesState.value.queuedDraftsByThread["thread-android-client"]?.size,
+        )
+    }
+
+    @Test
+    fun `queued follow up preserves an explicit auto planning override`() = runTest {
+        val syncService = PlanningModeCaptureSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        repository.selectThread("thread-android-client")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-android-client",
+            prompt = "Implement plan",
+            attachments = emptyList(),
+            planningModeOverride = RemodexPlanningMode.AUTO,
+        )
+        advanceUntilIdle()
+
+        val queuedDraftId = repository.session.value.selectedThread
+            ?.queuedDraftItems
+            ?.firstOrNull()
+            ?.also { draft ->
+                assertEquals(RemodexPlanningMode.AUTO, draft.planningMode)
+            }
+            ?.id
+        assertTrue(queuedDraftId != null)
+
+        repository.stopTurn("thread-android-client")
+        advanceUntilIdle()
+
+        repository.sendQueuedDraft("thread-android-client", queuedDraftId!!)
+        advanceUntilIdle()
+
+        assertEquals(RemodexPlanningMode.AUTO, syncService.lastSendPlanningMode)
+    }
+
+    @Test
+    fun `send prompt honors an explicit planning mode override`() = runTest {
+        val syncService = PlanningModeCaptureSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        repository.setPlanningMode("thread-notifications", RemodexPlanningMode.PLAN)
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Implement plan",
+            attachments = emptyList(),
+            planningModeOverride = RemodexPlanningMode.AUTO,
+        )
+        advanceUntilIdle()
+
+        assertEquals(RemodexPlanningMode.AUTO, syncService.lastSendPlanningMode)
+        assertTrue(
+            repository.session.value.selectedThread?.messages.orEmpty().any { item ->
+                item.text.contains("Implement plan")
+            },
         )
     }
 
@@ -1069,7 +1143,7 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals("gpt-5.3-codex", selectedThread?.runtimeConfig?.selectedModelId)
         assertEquals("medium", selectedThread?.runtimeConfig?.reasoningEffort)
         assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
-        assertEquals(RemodexPlanningMode.AUTO, selectedThread?.runtimeConfig?.planningMode)
+        assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             RemodexThreadSyncState.ARCHIVED_LOCAL,
             session.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
@@ -1157,7 +1231,7 @@ class DefaultRemodexAppRepositoryTest {
         val resumedThread = repository.session.value.selectedThread
         assertTrue(resumedThread?.isRunning == true)
         assertEquals(0, resumedThread?.queuedDrafts)
-        assertEquals(RemodexPlanningMode.AUTO, resumedThread?.runtimeConfig?.planningMode)
+        assertEquals(RemodexPlanningMode.PLAN, resumedThread?.runtimeConfig?.planningMode)
     }
 
     @Test
@@ -1564,6 +1638,23 @@ class DefaultRemodexAppRepositoryTest {
             attachments: List<RemodexComposerAttachment>,
         ) {
             sendGate.await()
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class PlanningModeCaptureSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate {
+        var lastSendPlanningMode: RemodexPlanningMode? = null
+            private set
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            lastSendPlanningMode = runtimeConfig.planningMode
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
         }
     }
