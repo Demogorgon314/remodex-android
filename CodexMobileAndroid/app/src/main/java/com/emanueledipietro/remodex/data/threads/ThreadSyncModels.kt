@@ -86,6 +86,8 @@ interface ThreadCommandService {
         answersByQuestionId: Map<String, List<String>>,
     )
 
+    suspend fun continueOnMac(threadId: String)
+
     suspend fun startCodeReview(
         threadId: String,
         target: RemodexComposerReviewTarget,

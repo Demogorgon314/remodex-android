@@ -732,6 +732,34 @@ class BridgeThreadSyncService(
         )
     }
 
+    override suspend fun continueOnMac(threadId: String) {
+        if (!isConnected()) {
+            throw IllegalStateException("Not connected to your Mac.")
+        }
+
+        val trimmedThreadId = threadId.trim()
+        if (trimmedThreadId.isEmpty()) {
+            throw IllegalStateException("This chat does not have a valid thread id yet.")
+        }
+
+        try {
+            val response = secureConnectionCoordinator.sendRequest(
+                method = "desktop/continueOnMac",
+                params = buildJsonObject {
+                    put("threadId", JsonPrimitive(trimmedThreadId))
+                },
+            )
+            val succeeded = response.result
+                ?.jsonObjectOrNull
+                ?.firstBoolean("success") == true
+            if (!succeeded) {
+                throw IllegalStateException("The Mac app did not return a valid response.")
+            }
+        } catch (error: Throwable) {
+            throw mappedDesktopHandoffError(error)
+        }
+    }
+
     override suspend fun startCodeReview(
         threadId: String,
         target: RemodexComposerReviewTarget,
@@ -1561,6 +1589,13 @@ class BridgeThreadSyncService(
         return IllegalStateException(message, rpcError)
     }
 
+    private fun mappedDesktopHandoffError(error: Throwable): Throwable {
+        val rpcError = error as? RpcError ?: return error
+        val errorCode = rpcError.data?.jsonObjectOrNull?.firstString("errorCode")
+        val message = desktopHandoffUserFacingMessage(errorCode, rpcError.message)
+        return IllegalStateException(message, rpcError)
+    }
+
     private fun gitUserFacingMessage(errorCode: String?, fallback: String): String {
         return when (errorCode) {
             "nothing_to_commit" -> "Nothing to commit."
@@ -1586,6 +1621,15 @@ class BridgeThreadSyncService(
             "unmanaged_worktree" -> fallback.ifBlank { "Only managed worktrees can be cleaned up automatically." }
             "worktree_cleanup_failed" -> fallback.ifBlank { "We could not clean up the temporary worktree automatically." }
             else -> fallback
+        }
+    }
+
+    private fun desktopHandoffUserFacingMessage(errorCode: String?, fallback: String): String {
+        return when (errorCode) {
+            "missing_thread_id" -> "This chat does not have a valid thread id yet."
+            "unsupported_platform" -> "Mac handoff works only when the bridge is running on macOS."
+            "handoff_failed" -> fallback.ifBlank { "Could not relaunch Codex.app on your Mac." }
+            else -> fallback.ifBlank { "Could not continue this chat on your Mac." }
         }
     }
 

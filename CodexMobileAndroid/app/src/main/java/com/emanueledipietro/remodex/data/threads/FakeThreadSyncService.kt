@@ -297,6 +297,10 @@ class FakeThreadSyncService(
         // Fake mode accepts the response without changing timeline state.
     }
 
+    override suspend fun continueOnMac(threadId: String) {
+        // Fake mode does not have a desktop app to relaunch.
+    }
+
     override suspend fun startCodeReview(
         threadId: String,
         target: RemodexComposerReviewTarget,

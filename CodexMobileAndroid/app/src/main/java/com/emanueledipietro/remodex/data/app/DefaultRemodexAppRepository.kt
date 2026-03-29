@@ -729,6 +729,10 @@ class DefaultRemodexAppRepository(
         threadCommandService.respondToStructuredUserInput(requestId, answersByQuestionId)
     }
 
+    override suspend fun continueOnMac(threadId: String) {
+        threadCommandService.continueOnMac(threadId)
+    }
+
     override suspend fun stopTurn(threadId: String) {
         threadCommandService.stopTurn(threadId)
         refreshBaseThreadsFromSync()

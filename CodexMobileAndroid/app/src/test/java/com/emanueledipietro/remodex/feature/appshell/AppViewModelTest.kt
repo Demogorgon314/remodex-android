@@ -1393,6 +1393,91 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `request continue on mac opens confirm dialog`() = runTest {
+        val selectedThread = threadSummary(id = "thread-1", title = "Git thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED),
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.requestContinueOnMac()
+        runCurrent()
+
+        assertTrue(viewModel.uiState.value.showDesktopHandoffConfirm)
+        assertFalse(viewModel.uiState.value.isHandingOffToMac)
+        assertNull(viewModel.uiState.value.desktopHandoffErrorMessage)
+    }
+
+    @Test
+    fun `confirm continue on mac delegates to repository and clears loading state`() = runTest {
+        val selectedThread = threadSummary(id = "thread-1", title = "Git thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED),
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+            continueOnMacDelayMs = 1_000L
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.requestContinueOnMac()
+        viewModel.confirmContinueOnMac()
+        runCurrent()
+
+        assertEquals(listOf("thread-1"), repository.continueOnMacRequests)
+        assertTrue(viewModel.uiState.value.isHandingOffToMac)
+        assertFalse(viewModel.uiState.value.showDesktopHandoffConfirm)
+
+        advanceTimeBy(1_000L)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isHandingOffToMac)
+        assertFalse(viewModel.uiState.value.showDesktopHandoffConfirm)
+        assertNull(viewModel.uiState.value.desktopHandoffErrorMessage)
+    }
+
+    @Test
+    fun `continue on mac failure surfaces error dialog`() = runTest {
+        val selectedThread = threadSummary(id = "thread-1", title = "Git thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED),
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+            continueOnMacError = IllegalStateException("Could not relaunch Codex.app on your Mac.")
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.requestContinueOnMac()
+        viewModel.confirmContinueOnMac()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showDesktopHandoffConfirm)
+        assertFalse(viewModel.uiState.value.isHandingOffToMac)
+        assertEquals(
+            "Could not relaunch Codex.app on your Mac.",
+            viewModel.uiState.value.desktopHandoffErrorMessage,
+        )
+
+        viewModel.dismissDesktopHandoffDialogs()
+        runCurrent()
+
+        assertNull(viewModel.uiState.value.desktopHandoffErrorMessage)
+    }
+
+    @Test
     fun `handoff to worktree creates a move worktree and rebinds the current thread`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -1595,6 +1680,7 @@ class AppViewModelTest {
         val createGitWorktreeResultRequests = mutableListOf<Triple<String, String, String?>>()
         val commitGitChangesRequests = mutableListOf<Pair<String, String?>>()
         val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
+        val continueOnMacRequests = mutableListOf<String>()
         val discardRuntimeChangesRequests = mutableListOf<String>()
         val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
         val forkThreadIntoProjectPathRequests = mutableListOf<Pair<String, String>>()
@@ -1606,7 +1692,9 @@ class AppViewModelTest {
         var refreshDelayMs = 1_000L
         var hydrateDelayMs = 0L
         var sendPromptDelayMs = 0L
+        var continueOnMacDelayMs = 0L
         var sendPromptError: Throwable? = null
+        var continueOnMacError: Throwable? = null
         var gitDiffRequests = 0
         var gitDiffDelayMs = 0L
         var gitDiffResult = RemodexGitRepoDiff()
@@ -1729,6 +1817,14 @@ class AppViewModelTest {
             requestId: JsonElement,
             answersByQuestionId: Map<String, List<String>>,
         ) = Unit
+
+        override suspend fun continueOnMac(threadId: String) {
+            continueOnMacRequests += threadId
+            if (continueOnMacDelayMs > 0) {
+                delay(continueOnMacDelayMs)
+            }
+            continueOnMacError?.let { throw it }
+        }
 
         override suspend fun stopTurn(threadId: String) = Unit
 

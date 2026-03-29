@@ -692,6 +692,156 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `continue on mac sends desktop handoff request with thread id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-desktop-handoff",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "desktop/continueOnMac" to {
+                    buildJsonObject {
+                        put("success", JsonPrimitive(true))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.continueOnMac("thread-mac-handoff")
+            advanceUntilIdle()
+
+            val request = relayFactory.receivedRequests.firstOrNull { it.method == "desktop/continueOnMac" }
+            assertNotNull(request)
+            assertEquals(
+                "thread-mac-handoff",
+                request?.params?.jsonObjectOrNull?.firstString("threadId"),
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `continue on mac rejects invalid response payload`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-desktop-invalid-response",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "desktop/continueOnMac" to { buildJsonObject { } },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            try {
+                service.continueOnMac("thread-mac-handoff")
+                fail("Expected invalid response error")
+            } catch (error: IllegalStateException) {
+                assertEquals("The Mac app did not return a valid response.", error.message)
+            }
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `continue on mac maps bridge error codes to user-facing copy`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-desktop-handoff-error",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "desktop/continueOnMac" to {
+                    throw RpcError(
+                        code = -32000,
+                        message = "Mac handoff is only available when the bridge is running on macOS.",
+                        data = buildJsonObject {
+                            put("errorCode", JsonPrimitive("unsupported_platform"))
+                        },
+                    )
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            try {
+                service.continueOnMac("thread-mac-handoff")
+                fail("Expected mapped desktop handoff error")
+            } catch (error: IllegalStateException) {
+                assertEquals(
+                    "Mac handoff works only when the bridge is running on macOS.",
+                    error.message,
+                )
+            }
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `fork thread into prepared project path upserts immediately and retries hydration until materialized`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

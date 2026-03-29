@@ -71,6 +71,8 @@ interface RemodexAppRepository {
         answersByQuestionId: Map<String, List<String>>,
     )
 
+    suspend fun continueOnMac(threadId: String)
+
     suspend fun stopTurn(threadId: String)
 
     suspend fun sendQueuedDraft(

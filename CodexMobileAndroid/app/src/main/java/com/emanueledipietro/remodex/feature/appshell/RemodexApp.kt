@@ -856,6 +856,7 @@ private fun MainPane(
                             onSelectGitBaseBranch = viewModel::selectGitBaseBranch,
                             onRefreshGitState = viewModel::refreshGitState,
                             onRefreshUsageStatus = viewModel::refreshUsageStatus,
+                            onRequestContinueOnMac = viewModel::requestContinueOnMac,
                             onCheckoutGitBranch = viewModel::checkoutGitBranch,
                             onCreateGitBranch = viewModel::createGitBranch,
                             onCreateGitWorktree = viewModel::createGitWorktree,
@@ -949,6 +950,41 @@ private fun MainPane(
                 },
                 title = { Text(alert.title) },
                 text = { Text(alert.message) },
+            )
+        }
+
+        if (uiState.showDesktopHandoffConfirm) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissDesktopHandoffDialogs,
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissDesktopHandoffDialogs) {
+                        Text("Cancel")
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = viewModel::confirmContinueOnMac) {
+                        Text("Force Close & Continue")
+                    }
+                },
+                title = { Text("Hand off to Mac app") },
+                text = {
+                    Text(
+                        "Remodex will force close and reopen Codex.app on your Mac. Any desktop runs in progress will be stopped, and unsaved draft text there may be lost before this chat is opened.",
+                    )
+                },
+            )
+        }
+
+        uiState.desktopHandoffErrorMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissDesktopHandoffDialogs,
+                confirmButton = {
+                    TextButton(onClick = viewModel::dismissDesktopHandoffDialogs) {
+                        Text("OK")
+                    }
+                },
+                title = { Text("Couldn't hand off to Mac app") },
+                text = { Text(message) },
             )
         }
     }

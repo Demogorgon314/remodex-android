@@ -667,6 +667,7 @@ fun ConversationScreen(
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
     onRefreshUsageStatus: () -> Unit = {},
+    onRequestContinueOnMac: () -> Unit = {},
     onCheckoutGitBranch: (String) -> Unit,
     onCreateGitBranch: (String) -> Unit,
     onCreateGitWorktree: (String) -> Unit,
@@ -1240,9 +1241,12 @@ fun ConversationScreen(
                                     gitState = uiState.composer.gitState,
                                     usageStatus = uiState.usageStatus,
                                     isRefreshingUsage = uiState.isRefreshingUsage,
+                                    isConnectedToMac = uiState.isConnected,
+                                    isHandingOffToMac = uiState.isHandingOffToMac,
                                     accessMode = uiState.composer.runtimeConfig.accessMode,
                                     onSelectAccessMode = onSelectAccessMode,
                                     onRefreshUsageStatus = onRefreshUsageStatus,
+                                    onRequestContinueOnMac = onRequestContinueOnMac,
                                     onOpenGitSheet = { gitSheetExpanded = true },
                                     onOpenWorktreeHandoff = {
                                         worktreeSheetMode = WorktreeSheetMode.HANDOFF
@@ -2445,9 +2449,12 @@ private fun ComposerSecondaryBar(
     gitState: RemodexGitState,
     usageStatus: RemodexUsageStatus,
     isRefreshingUsage: Boolean,
+    isConnectedToMac: Boolean,
+    isHandingOffToMac: Boolean,
     accessMode: RemodexAccessMode,
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onRefreshUsageStatus: () -> Unit,
+    onRequestContinueOnMac: () -> Unit,
     onOpenGitSheet: () -> Unit,
     onOpenWorktreeHandoff: () -> Unit,
 ) {
@@ -2462,6 +2469,7 @@ private fun ComposerSecondaryBar(
     val showsGitBranchSelector = gitState.hasContext
     val branchSelectorEnabled = showsGitBranchSelector && !showsThreadRunningUi
     val canHandOffToWorktree = showsGitBranchSelector && !showsThreadRunningUi && !isWorktreeProject
+    val canContinueOnMac = isConnectedToMac && !isHandingOffToMac
     val isEmptyThread = thread.messages.isEmpty()
     var runtimeExpanded by remember(thread.id) { mutableStateOf(false) }
     var accessExpanded by remember(thread.id) { mutableStateOf(false) }
@@ -2531,6 +2539,30 @@ private fun ComposerSecondaryBar(
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Outlined.Cloud,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = chrome.secondaryText,
+                                )
+                            },
+                        )
+                        ComposerDropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (isHandingOffToMac) {
+                                        "Continuing to Mac..."
+                                    } else {
+                                        "Continue on Mac"
+                                    },
+                                )
+                            },
+                            onClick = {
+                                runtimeExpanded = false
+                                onRequestContinueOnMac()
+                            },
+                            enabled = canContinueOnMac,
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Computer,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
                                     tint = chrome.secondaryText,

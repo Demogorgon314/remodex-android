@@ -110,6 +110,9 @@ data class AppUiState(
     val planComposerSession: PlanComposerSessionUiState? = null,
     val conversationBanner: String? = null,
     val transientBanner: String? = null,
+    val isHandingOffToMac: Boolean = false,
+    val showDesktopHandoffConfirm: Boolean = false,
+    val desktopHandoffErrorMessage: String? = null,
     val gitSyncAlert: RemodexGitSyncAlertUiState? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
     val completionHapticSignal: Long = 0L,
@@ -126,6 +129,12 @@ data class AppUiState(
 data class ThreadCompletionBannerUiState(
     val threadId: String,
     val title: String,
+)
+
+data class DesktopHandoffUiState(
+    val isHandingOffToMac: Boolean = false,
+    val showConfirmDialog: Boolean = false,
+    val errorMessage: String? = null,
 )
 
 data class RemodexGitSyncAlertUiState(
@@ -231,6 +240,13 @@ private data class ComposerSendUiSignals(
     val anchorSignal: Long = 0L,
 )
 
+private data class ThreadChromeState(
+    val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
+    val completionHapticSignal: Long = 0L,
+    val transientBanner: String? = null,
+    val desktopHandoff: DesktopHandoffUiState = DesktopHandoffUiState(),
+)
+
 class AppViewModel(
     private val repository: RemodexAppRepository,
 ) : ViewModel() {
@@ -248,6 +264,7 @@ class AppViewModel(
     private val revertedAssistantMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
     private val gitSyncAlerts = MutableStateFlow<Map<String, RemodexGitSyncAlertUiState>>(emptyMap())
+    private val desktopHandoffState = MutableStateFlow(DesktopHandoffUiState())
     private val transientBannerState = MutableStateFlow<String?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val completionHapticSignalState = MutableStateFlow(0L)
@@ -267,6 +284,7 @@ class AppViewModel(
     private var isAppForeground = false
     private var isManualScannerActive = false
     private var pendingGitBranchOperation: PendingGitBranchOperation? = null
+    private var pendingDesktopHandoffThreadId: String? = null
     private var suppressAutoReconnectUntilManualConnect = false
     internal var autoReconnectAttemptLimitOverride: Int? = null
     internal var autoReconnectBackoffMillisOverride: List<Long>? = null
@@ -463,8 +481,19 @@ class AppViewModel(
             threadCompletionBannerState,
             completionHapticSignalState,
             transientBannerState,
-        ) { threadCompletionBanner: ThreadCompletionBannerUiState?, completionHapticSignal: Long, transientBanner: String? ->
-            Triple(threadCompletionBanner, completionHapticSignal, transientBanner)
+            desktopHandoffState,
+        ) {
+            threadCompletionBanner: ThreadCompletionBannerUiState?,
+            completionHapticSignal: Long,
+            transientBanner: String?,
+            desktopHandoff: DesktopHandoffUiState,
+            ->
+            ThreadChromeState(
+                threadCompletionBanner = threadCompletionBanner,
+                completionHapticSignal = completionHapticSignal,
+                transientBanner = transientBanner,
+                desktopHandoff = desktopHandoff,
+            )
         }
 
     private val chromeDecoratedUiState =
@@ -477,7 +506,7 @@ class AppViewModel(
         ) {
             baseState: AppUiState,
             activeHydrations: Map<String, Int>,
-            threadChrome: Triple<ThreadCompletionBannerUiState?, Long, String?>,
+            threadChrome: ThreadChromeState,
             isRefreshingThreads: Boolean,
             isRefreshingUsage: Boolean,
             ->
@@ -486,9 +515,12 @@ class AppViewModel(
                 isSelectedThreadHydrating = selectedThreadId?.let { threadId ->
                     activeHydrations[threadId]?.let { count -> count > 0 } == true
                 } ?: false,
-                transientBanner = threadChrome.third,
-                threadCompletionBanner = threadChrome.first,
-                completionHapticSignal = threadChrome.second,
+                transientBanner = threadChrome.transientBanner,
+                isHandingOffToMac = threadChrome.desktopHandoff.isHandingOffToMac,
+                showDesktopHandoffConfirm = threadChrome.desktopHandoff.showConfirmDialog,
+                desktopHandoffErrorMessage = threadChrome.desktopHandoff.errorMessage,
+                threadCompletionBanner = threadChrome.threadCompletionBanner,
+                completionHapticSignal = threadChrome.completionHapticSignal,
                 isRefreshingThreads = isRefreshingThreads,
                 isRefreshingUsage = isRefreshingUsage,
             )
@@ -845,6 +877,51 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
             repository.stopTurn(threadId)
+        }
+    }
+
+    fun requestContinueOnMac() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        if (!uiState.value.isConnected || desktopHandoffState.value.isHandingOffToMac) {
+            return
+        }
+        pendingDesktopHandoffThreadId = threadId
+        desktopHandoffState.value = DesktopHandoffUiState(showConfirmDialog = true)
+    }
+
+    fun dismissDesktopHandoffDialogs() {
+        pendingDesktopHandoffThreadId = null
+        desktopHandoffState.update { current ->
+            current.copy(
+                showConfirmDialog = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun confirmContinueOnMac() {
+        val threadId = pendingDesktopHandoffThreadId ?: uiState.value.selectedThread?.id ?: return
+        if (desktopHandoffState.value.isHandingOffToMac) {
+            return
+        }
+        viewModelScope.launch {
+            desktopHandoffState.value = DesktopHandoffUiState(
+                isHandingOffToMac = true,
+            )
+            runCatching {
+                repository.continueOnMac(threadId)
+            }.onSuccess {
+                pendingDesktopHandoffThreadId = null
+                desktopHandoffState.value = DesktopHandoffUiState()
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                pendingDesktopHandoffThreadId = null
+                desktopHandoffState.value = DesktopHandoffUiState(
+                    errorMessage = error.message ?: "Could not continue this chat on your Mac.",
+                )
+            }
         }
     }
 

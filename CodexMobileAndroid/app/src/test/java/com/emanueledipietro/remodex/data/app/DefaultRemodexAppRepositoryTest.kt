@@ -1009,6 +1009,25 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `continue on mac delegates to thread command service`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val commandService = RecordingContinueOnMacCommandService(syncService)
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = commandService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+
+        repository.continueOnMac("thread-notifications")
+
+        assertEquals(listOf("thread-notifications"), commandService.threadIds)
+    }
+
+    @Test
     fun `send prompt honors an explicit planning mode override`() = runTest {
         val syncService = PlanningModeCaptureSyncService()
         val repository = DefaultRemodexAppRepository(
@@ -2020,6 +2039,16 @@ class DefaultRemodexAppRepositoryTest {
         ): ThreadSyncSnapshot? {
             forkThreadIntoProjectPathCalls += 1
             return delegate.forkThreadIntoProjectPath(threadId, projectPath)
+        }
+    }
+
+    private class RecordingContinueOnMacCommandService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadCommandService by delegate {
+        val threadIds = mutableListOf<String>()
+
+        override suspend fun continueOnMac(threadId: String) {
+            threadIds += threadId
         }
     }
 }
