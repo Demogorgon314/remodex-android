@@ -527,6 +527,9 @@ object TurnTimelineReducer {
         }
 
         val ordered = turnItems.sortedBy(RemodexConversationItem::orderIndex)
+        if (hasLateCommandForDifferentAssistantItem(ordered)) {
+            return true
+        }
         var hasActivityBeforeAssistant = false
         var seenAssistant = false
         ordered.forEach { item ->
@@ -534,6 +537,29 @@ object TurnTimelineReducer {
                 item.speaker == ConversationSpeaker.ASSISTANT -> seenAssistant = true
                 isInterleavableSystemActivity(item) && !seenAssistant -> hasActivityBeforeAssistant = true
                 isInterleavableSystemActivity(item) && hasActivityBeforeAssistant -> return true
+            }
+        }
+        return false
+    }
+
+    private fun hasLateCommandForDifferentAssistantItem(
+        ordered: List<RemodexConversationItem>,
+    ): Boolean {
+        var latestAssistantItemId: String? = null
+        ordered.forEach { item ->
+            when {
+                item.speaker == ConversationSpeaker.ASSISTANT -> {
+                    latestAssistantItemId = normalizedIdentifier(item.itemId)
+                }
+
+                latestAssistantItemId != null &&
+                    item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind == ConversationItemKind.COMMAND_EXECUTION -> {
+                    val activityItemId = normalizedIdentifier(item.itemId) ?: return@forEach
+                    if (activityItemId != latestAssistantItemId) {
+                        return true
+                    }
+                }
             }
         }
         return false

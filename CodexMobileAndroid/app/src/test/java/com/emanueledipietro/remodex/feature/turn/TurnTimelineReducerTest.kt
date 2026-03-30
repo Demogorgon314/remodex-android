@@ -609,6 +609,39 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project preserves command after assistant when a new activity item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "running rg -n activeTurnIdByThread",
+                    turnId = "turn-1",
+                    itemId = "command-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "command-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `reduce projected keeps assistant anchored before later command when subsequent deltas arrive`() {
         val projected = TurnTimelineReducer.reduceProjected(
             listOf(
