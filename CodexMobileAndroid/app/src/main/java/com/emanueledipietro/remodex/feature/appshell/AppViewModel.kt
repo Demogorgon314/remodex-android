@@ -2558,11 +2558,6 @@ class AppViewModel(
                         isActive = true,
                         attempt = attempt,
                     )
-                    logAutoReconnect(
-                        event = "waitForReconnectAttemptOutcome",
-                        snapshot = snapshot,
-                        extra = "attempt=$attempt state=${snapshot.secureConnection.secureState}",
-                    )
                     if (!sleepForReconnectBackoff(reconnectSleepChunkMillis())) {
                         return true
                     }
