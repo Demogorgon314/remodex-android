@@ -117,6 +117,7 @@ import com.emanueledipietro.remodex.model.remodexApprovalRequestMessage
 import com.emanueledipietro.remodex.platform.media.ComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.canLaunchComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.createComposerCameraCapture
+import com.emanueledipietro.remodex.platform.media.resolveComposerAttachmentResolution
 import com.emanueledipietro.remodex.platform.media.resolveComposerAttachments
 import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotificationManager
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
@@ -219,7 +220,13 @@ fun RemodexApp(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = MaxComposerImages),
     ) { uris ->
         if (uris.isNotEmpty()) {
-            viewModel.addAttachments(resolveComposerAttachments(context, uris))
+            handleIncomingComposerAttachmentUris(
+                context = context,
+                viewModel = viewModel,
+                uris = uris,
+                emptyFailureMessage = "Could not load the selected image.",
+                partialFailureMessage = "Some selected images could not be loaded.",
+            )
         }
     }
     val cameraCaptureLauncher = rememberLauncherForActivityResult(
@@ -958,6 +965,7 @@ private fun MainPane(
                             onForgetPair = viewModel::forgetTrustedMac,
                         )
                     } else {
+                        val receiveAttachmentContext = LocalContext.current
                         ConversationScreen(
                             uiState = uiState,
                             onRetryConnection = viewModel::retryConnection,
@@ -975,6 +983,15 @@ private fun MainPane(
                             onSelectServiceTier = viewModel::selectServiceTier,
                             onOpenAttachmentPicker = onOpenAttachmentPicker,
                             onOpenCameraCapture = onOpenCameraCapture,
+                            onReceiveComposerAttachmentUris = { uris ->
+                                handleIncomingComposerAttachmentUris(
+                                    context = receiveAttachmentContext,
+                                    viewModel = viewModel,
+                                    uris = uris,
+                                    emptyFailureMessage = "Could not load the pasted image.",
+                                    partialFailureMessage = "Some pasted images could not be loaded.",
+                                )
+                            },
                             onTapVoiceButton = onRequestVoiceInput,
                             onCancelVoiceRecording = onCancelVoiceRecording,
                             onRemoveAttachment = viewModel::removeAttachment,
@@ -1251,6 +1268,31 @@ private fun copyTextToClipboard(
 ) {
     val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+}
+
+private fun handleIncomingComposerAttachmentUris(
+    context: Context,
+    viewModel: AppViewModel,
+    uris: List<Uri>,
+    emptyFailureMessage: String,
+    partialFailureMessage: String,
+) {
+    if (uris.isEmpty()) {
+        return
+    }
+
+    val resolution = resolveComposerAttachmentResolution(context, uris)
+    if (resolution.attachments.isNotEmpty()) {
+        viewModel.addAttachments(resolution.attachments)
+        if (resolution.failedCount > 0) {
+            viewModel.presentComposerMessage(partialFailureMessage)
+        }
+        return
+    }
+
+    if (resolution.failedCount > 0) {
+        viewModel.presentComposerMessage(emptyFailureMessage)
+    }
 }
 
 @Composable

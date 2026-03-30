@@ -12,6 +12,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.Base64
+import java.util.Locale
 import kotlin.math.roundToInt
 
 data class ComposerCameraCapture(
@@ -19,20 +20,29 @@ data class ComposerCameraCapture(
     val uri: Uri,
 )
 
+data class ComposerAttachmentResolution(
+    val attachments: List<RemodexComposerAttachment>,
+    val failedCount: Int,
+)
+
 fun resolveComposerAttachments(
     context: Context,
     uris: List<Uri>,
 ): List<RemodexComposerAttachment> {
-    return uris.mapNotNull { uri ->
-        val uriString = uri.toString()
-        val payloadDataUrl = context.resolvePayloadDataUrl(uri) ?: return@mapNotNull null
-        RemodexComposerAttachment(
-            id = uriString,
-            uriString = uriString,
-            displayName = context.resolveDisplayName(uri),
-            payloadDataUrl = payloadDataUrl,
-        )
+    return resolveComposerAttachmentResolution(context, uris).attachments
+}
+
+fun resolveComposerAttachmentResolution(
+    context: Context,
+    uris: List<Uri>,
+): ComposerAttachmentResolution {
+    val attachments = uris.mapNotNull { uri ->
+        context.resolveComposerAttachment(uri)
     }
+    return ComposerAttachmentResolution(
+        attachments = attachments,
+        failedCount = (uris.size - attachments.size).coerceAtLeast(0),
+    )
 }
 
 fun canLaunchComposerCameraCapture(context: Context): Boolean {
@@ -77,6 +87,34 @@ private fun Context.resolveDisplayName(uri: Uri): String {
             null
         }
     } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Selected image"
+}
+
+fun Context.isSupportedComposerImageUri(uri: Uri): Boolean {
+    val uriValue = uri.toString()
+    if (uriValue.startsWith("data:image", ignoreCase = true)) {
+        return true
+    }
+
+    val mimeType = contentResolver.getType(uri)?.trim()
+    if (!mimeType.isNullOrEmpty() && mimeType.startsWith("image/", ignoreCase = true)) {
+        return true
+    }
+
+    val extension = resolveDisplayName(uri)
+        .substringAfterLast('.', "")
+        .lowercase(Locale.ROOT)
+    return extension in SupportedComposerImageExtensions
+}
+
+private fun Context.resolveComposerAttachment(uri: Uri): RemodexComposerAttachment? {
+    val uriString = uri.toString()
+    val payloadDataUrl = resolvePayloadDataUrl(uri) ?: return null
+    return RemodexComposerAttachment(
+        id = uriString,
+        uriString = uriString,
+        displayName = resolveDisplayName(uri),
+        payloadDataUrl = payloadDataUrl,
+    )
 }
 
 private fun Context.resolvePayloadDataUrl(uri: Uri): String? {
@@ -127,3 +165,14 @@ private const val PayloadCompressionQuality = 80
 private const val ComposerCameraCaptureDirectoryName = "composer-captures"
 private const val ComposerCameraCaptureFilePrefix = "composer-capture-"
 private const val ComposerCameraCaptureFileSuffix = ".jpg"
+private val SupportedComposerImageExtensions = setOf(
+    "avif",
+    "bmp",
+    "gif",
+    "heic",
+    "heif",
+    "jpeg",
+    "jpg",
+    "png",
+    "webp",
+)

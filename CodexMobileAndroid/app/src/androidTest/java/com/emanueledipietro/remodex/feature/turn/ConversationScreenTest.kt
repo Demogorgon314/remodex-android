@@ -1,5 +1,9 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import android.content.ClipData
+import android.graphics.Bitmap
+import android.net.Uri
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +20,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
+import androidx.core.content.FileProvider
+import androidx.core.view.ContentInfoCompat
+import androidx.core.view.ViewCompat
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceButtonMode
 import com.emanueledipietro.remodex.feature.appshell.ComposerUiState
@@ -37,6 +44,7 @@ import com.emanueledipietro.remodex.ui.theme.RemodexTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 class ConversationScreenTest {
     @get:Rule
@@ -1223,6 +1231,16 @@ class ConversationScreenTest {
         composeRule.onAllNodesWithText("Select Text").assertCountEquals(0)
     }
 
+    @Test
+    fun clipboardImageReceiveForwardsUrisToComposerCallback() {
+        assertComposerReceiveContentForSource(ContentInfoCompat.SOURCE_CLIPBOARD)
+    }
+
+    @Test
+    fun inputMethodImageReceiveForwardsUrisToComposerCallback() {
+        assertComposerReceiveContentForSource(ContentInfoCompat.SOURCE_INPUT_METHOD)
+    }
+
     private fun conversationUiState(
         autocompleteState: RemodexComposerAutocompleteState,
         isRunning: Boolean = false,
@@ -1271,6 +1289,94 @@ class ConversationScreenTest {
                 steps = steps,
             ),
             orderIndex = 1,
+        )
+    }
+
+    private fun assertComposerReceiveContentForSource(source: Int) {
+        val receivedUriCalls = mutableListOf<List<Uri>>()
+        val imageUri = createComposerImageUri()
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onReceiveComposerAttachmentUris = { uris ->
+                        receivedUriCalls += uris
+                    },
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerInputFieldTag).performClick()
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val activity = composeRule.activity
+            val composeRoot = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+            ViewCompat.performReceiveContent(
+                composeRoot,
+                ContentInfoCompat.Builder(
+                    ClipData.newUri(activity.contentResolver, "Composer image", imageUri),
+                    source,
+                ).build(),
+            )
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(listOf(listOf(imageUri)), receivedUriCalls)
+    }
+
+    private fun createComposerImageUri(): Uri {
+        val activity = composeRule.activity
+        val captureDirectory = File(activity.cacheDir, "composer-captures").apply {
+            mkdirs()
+        }
+        val imageFile = File(captureDirectory, "conversation-screen-test-${System.nanoTime()}.jpg")
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        imageFile.outputStream().use { outputStream ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+        }
+        return FileProvider.getUriForFile(
+            activity,
+            "${activity.packageName}.fileprovider",
+            imageFile,
         )
     }
 }

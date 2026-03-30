@@ -1,55 +1,61 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationScreenComposerInputStateTest {
     @Test
     fun `sync composer input preserves selection when external text is unchanged`() {
-        val currentValue = TextFieldValue(
-            text = "@Dockerfile ",
-            selection = TextRange(3),
+        val currentState = TextFieldState(
+            initialText = "@Dockerfile ",
+            initialSelection = TextRange(3),
         )
 
-        val syncedValue = syncComposerInputValue(
-            currentValue = currentValue,
+        val didSync = syncComposerInputState(
+            currentState = currentState,
             externalText = "@Dockerfile ",
         )
 
-        assertEquals(currentValue, syncedValue)
+        assertFalse(didSync)
+        assertEquals("@Dockerfile ", currentState.text.toString())
+        assertEquals(TextRange(3), currentState.selection)
     }
 
     @Test
     fun `sync composer input moves caret to end after file mention replacement`() {
-        val currentValue = TextFieldValue(
-            text = "@Do",
-            selection = TextRange(3),
+        val currentState = TextFieldState(
+            initialText = "@Do",
+            initialSelection = TextRange(3),
         )
 
-        val syncedValue = syncComposerInputValue(
-            currentValue = currentValue,
+        val didSync = syncComposerInputState(
+            currentState = currentState,
             externalText = "@Dockerfile ",
         )
 
-        assertEquals("@Dockerfile ", syncedValue.text)
-        assertEquals(TextRange("@Dockerfile ".length), syncedValue.selection)
+        assertTrue(didSync)
+        assertEquals("@Dockerfile ", currentState.text.toString())
+        assertEquals(TextRange("@Dockerfile ".length), currentState.selection)
     }
 
     @Test
     fun `sync composer input resets caret to zero when composer is cleared`() {
-        val currentValue = TextFieldValue(
-            text = "\$mat-cli ",
-            selection = TextRange(4),
+        val currentState = TextFieldState(
+            initialText = "\$mat-cli ",
+            initialSelection = TextRange(4),
         )
 
-        val syncedValue = syncComposerInputValue(
-            currentValue = currentValue,
+        val didSync = syncComposerInputState(
+            currentState = currentState,
             externalText = "",
         )
 
-        assertEquals("", syncedValue.text)
-        assertEquals(TextRange(0), syncedValue.selection)
+        assertTrue(didSync)
+        assertEquals("", currentState.text.toString())
+        assertEquals(TextRange(0), currentState.selection)
     }
 }

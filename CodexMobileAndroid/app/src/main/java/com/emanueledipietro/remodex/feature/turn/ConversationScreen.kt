@@ -5,6 +5,7 @@ package com.emanueledipietro.remodex.feature.turn
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -29,6 +30,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.content.MediaType
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.TransferableContent
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
@@ -73,6 +80,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
@@ -125,6 +135,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -176,8 +187,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -227,6 +236,7 @@ import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
+import com.emanueledipietro.remodex.platform.media.isSupportedComposerImageUri
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
@@ -524,6 +534,7 @@ private val SlashAutocompleteRowHeight = 50.dp
 private const val MaxAutocompleteVisibleRows = 6
 internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
+internal const val ComposerInputFieldTag = "composer_input_field"
 internal const val ComposerSendButtonTag = "composer_send_button"
 internal const val ComposerStopButtonTag = "composer_stop_button"
 internal const val ComposerVoiceButtonTag = "composer_voice_button"
@@ -652,17 +663,71 @@ private fun rememberMentionChipColors(
     )
 }
 
-internal fun syncComposerInputValue(
-    currentValue: TextFieldValue,
+internal fun syncComposerInputState(
+    currentState: TextFieldState,
     externalText: String,
-): TextFieldValue {
-    if (currentValue.text == externalText) {
-        return currentValue
+): Boolean {
+    if (currentState.text.toString() == externalText) {
+        return false
     }
-    return TextFieldValue(
-        text = externalText,
-        selection = TextRange(externalText.length),
+    currentState.setTextAndPlaceCursorAtEnd(externalText)
+    return true
+}
+
+internal fun collectReceivedComposerImageUris(
+    clipData: ClipData,
+    isSupportedImageUri: (Uri) -> Boolean,
+): List<Uri> {
+    return buildList {
+        for (index in 0 until clipData.itemCount) {
+            val uri = clipData.getItemAt(index).uri ?: continue
+            if (isSupportedImageUri(uri)) {
+                add(uri)
+            }
+        }
+    }
+}
+
+private fun decrementReceivedComposerImageUriCount(
+    remainingImageUriCounts: MutableMap<String, Int>,
+    uri: Uri,
+): Boolean {
+    val uriKey = uri.toString()
+    val remainingCount = remainingImageUriCounts[uriKey] ?: return false
+    if (remainingCount <= 1) {
+        remainingImageUriCounts.remove(uriKey)
+    } else {
+        remainingImageUriCounts[uriKey] = remainingCount - 1
+    }
+    return true
+}
+
+private fun handleReceivedComposerContent(
+    transferableContent: TransferableContent,
+    isSupportedImageUri: (Uri) -> Boolean,
+    onReceiveImageUris: (List<Uri>) -> Unit,
+): TransferableContent? {
+    if (!transferableContent.hasMediaType(MediaType.Image)) {
+        return transferableContent
+    }
+
+    val imageUris = collectReceivedComposerImageUris(
+        clipData = transferableContent.clipEntry.clipData,
+        isSupportedImageUri = isSupportedImageUri,
     )
+    if (imageUris.isEmpty()) {
+        return transferableContent
+    }
+
+    onReceiveImageUris(imageUris)
+    val remainingImageUriCounts = imageUris
+        .groupingBy(Uri::toString)
+        .eachCount()
+        .toMutableMap()
+    return transferableContent.consume { item ->
+        val itemUri = item.uri ?: return@consume false
+        decrementReceivedComposerImageUriCount(remainingImageUriCounts, itemUri)
+    }
 }
 
 private data class ConversationBlockAccessoryState(
@@ -729,6 +794,7 @@ fun ConversationScreen(
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
+    onReceiveComposerAttachmentUris: (List<Uri>) -> Unit = {},
     onTapVoiceButton: () -> Unit = {},
     onCancelVoiceRecording: () -> Unit = {},
     onRemoveAttachment: (String) -> Unit,
@@ -1328,6 +1394,7 @@ fun ConversationScreen(
                                         onSelectServiceTier = onSelectServiceTier,
                                         onOpenAttachmentPicker = onOpenAttachmentPicker,
                                         onOpenCameraCapture = onOpenCameraCapture,
+                                        onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
                                         onTapVoiceButton = onTapVoiceButton,
                                         onRemoveAttachment = onRemoveAttachment,
                                         onSelectFileAutocomplete = onSelectFileAutocomplete,
@@ -3497,6 +3564,7 @@ private fun ComposerCard(
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
+    onReceiveComposerAttachmentUris: (List<Uri>) -> Unit,
     onTapVoiceButton: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
@@ -3512,28 +3580,40 @@ private fun ComposerCard(
     onComposerFocusChanged: (Boolean) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val context = LocalContext.current
     val composerSurfaceColor = if (chrome.panelSurfaceStrong.luminance() > 0.5f) {
         chrome.panelSurfaceStrong.copy(alpha = 0.88f)
     } else {
         chrome.panelSurfaceStrong.copy(alpha = 0.94f)
     }
     val composer = uiState.composer
-    var composerInputValue by rememberSaveable(
+    val composerInputState = rememberSaveable(
         uiState.selectedThread?.id,
-        stateSaver = TextFieldValue.Saver,
+        saver = TextFieldState.Saver,
     ) {
-        mutableStateOf(
-            TextFieldValue(
-                text = composer.draftText,
-                selection = TextRange(composer.draftText.length),
-            ),
-        )
+        TextFieldState(initialText = composer.draftText)
     }
+    var suppressComposerDraftDispatch by remember(uiState.selectedThread?.id) { mutableStateOf(false) }
     LaunchedEffect(composer.draftText) {
-        composerInputValue = syncComposerInputValue(
-            currentValue = composerInputValue,
+        suppressComposerDraftDispatch = syncComposerInputState(
+            currentState = composerInputState,
             externalText = composer.draftText,
         )
+    }
+    val latestComposerDraftText by rememberUpdatedState(composer.draftText)
+    val latestOnComposerInputChanged by rememberUpdatedState(onComposerInputChanged)
+    LaunchedEffect(composerInputState, uiState.selectedThread?.id) {
+        snapshotFlow { composerInputState.text.toString() }
+            .drop(1)
+            .collect { nextText ->
+                if (suppressComposerDraftDispatch && nextText == latestComposerDraftText) {
+                    suppressComposerDraftDispatch = false
+                    return@collect
+                }
+                if (nextText != latestComposerDraftText) {
+                    latestOnComposerInputChanged(nextText)
+                }
+            }
     }
     val queuedCount = composer.queuedDrafts.size
     val orderedModels = remember(composer.runtimeConfig.availableModels) {
@@ -3558,6 +3638,15 @@ private fun ComposerCard(
     }
     val canAddAttachments = composer.attachments.size < composer.maxAttachments
     val plusMenuState = rememberComposerMenuState(uiState.selectedThread?.id, "plus")
+    val receiveContentListener = remember(context, onReceiveComposerAttachmentUris) {
+        ReceiveContentListener { transferableContent ->
+            handleReceivedComposerContent(
+                transferableContent = transferableContent,
+                isSupportedImageUri = { uri -> context.isSupportedComposerImageUri(uri) },
+                onReceiveImageUris = onReceiveComposerAttachmentUris,
+            )
+        }
+    }
 
     Surface(
         color = composerSurfaceColor,
@@ -3591,7 +3680,7 @@ private fun ComposerCard(
                     .fillMaxWidth()
                     .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 8.dp),
             ) {
-                if (composerInputValue.text.isBlank()) {
+                if (composerInputState.text.isBlank()) {
                     Text(
                         text = if (composer.canStop) {
                             "Queue a follow-up"
@@ -3606,20 +3695,14 @@ private fun ComposerCard(
                     )
                 }
                 BasicTextField(
-                    value = composerInputValue,
-                    onValueChange = { nextValue ->
-                        composerInputValue = nextValue
-                        if (nextValue.text != composer.draftText) {
-                            onComposerInputChanged(nextValue.text)
-                        }
-                    },
+                    state = composerInputState,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag(ComposerInputFieldTag)
+                        .contentReceiver(receiveContentListener)
                         .onFocusChanged { focusState ->
                             onComposerFocusChanged(focusState.isFocused)
                         },
-                    minLines = 1,
-                    maxLines = 8,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 14.sp,
                         lineHeight = 21.sp,
@@ -3628,6 +3711,10 @@ private fun ComposerCard(
                     keyboardOptions = KeyboardOptions(
                         capitalization = KeyboardCapitalization.Sentences,
                         keyboardType = KeyboardType.Text,
+                    ),
+                    lineLimits = TextFieldLineLimits.MultiLine(
+                        minHeightInLines = 1,
+                        maxHeightInLines = 8,
                     ),
                     cursorBrush = SolidColor(chrome.accent),
                 )
