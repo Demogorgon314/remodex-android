@@ -531,7 +531,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun `refresh threads delegates only while connected and exposes refreshing state`() = runTest {
+    fun `refresh threads refreshes while connected and reuses reconnect recovery when disconnected`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
                 connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
@@ -568,6 +568,43 @@ class AppViewModelTest {
         runCurrent()
 
         assertEquals(1, repository.refreshRequests)
+        assertEquals(1, repository.retryConnectionCalls)
+        assertFalse(viewModel.uiState.value.isRefreshingThreads)
+    }
+
+    @Test
+    fun `refresh threads does not duplicate reconnect while auto reconnect is already retrying`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Saved pairing ready.",
+                    secureState = SecureConnectionState.TRUSTED_MAC,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository).apply {
+            autoReconnectAttemptLimitOverride = 1
+            autoReconnectBackoffMillisOverride = listOf(10L)
+            reconnectSleepChunkMillisOverride = 10L
+        }
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+
+        assertEquals(1, repository.retryConnectionCalls)
+        assertEquals(RemodexConnectionPhase.RETRYING, viewModel.uiState.value.connectionStatus.phase)
+
+        viewModel.refreshThreads()
+        runCurrent()
+
+        assertEquals(1, repository.retryConnectionCalls)
+        assertEquals(0, repository.refreshRequests)
         assertFalse(viewModel.uiState.value.isRefreshingThreads)
     }
 
@@ -869,6 +906,12 @@ class AppViewModelTest {
     fun `create thread explicitly selects the new thread when repository leaves selection unchanged`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
                 threads = listOf(threadSummary(id = "thread-1", title = "Existing thread")),
                 selectedThreadId = "thread-1",
                 selectedThreadSnapshot = threadSummary(id = "thread-1", title = "Existing thread"),
@@ -892,6 +935,12 @@ class AppViewModelTest {
         val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
                 threads = listOf(existingThread),
                 selectedThreadId = existingThread.id,
                 selectedThreadSnapshot = existingThread,
@@ -922,6 +971,12 @@ class AppViewModelTest {
         val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
                 threads = listOf(existingThread),
                 selectedThreadId = existingThread.id,
                 selectedThreadSnapshot = existingThread,
@@ -950,6 +1005,12 @@ class AppViewModelTest {
         val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
                 threads = listOf(existingThread),
                 selectedThreadId = existingThread.id,
                 selectedThreadSnapshot = existingThread,

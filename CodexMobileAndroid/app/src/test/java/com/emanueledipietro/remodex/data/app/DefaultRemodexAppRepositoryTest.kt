@@ -159,6 +159,32 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `trusted reconnect disconnect preserves last known threads instead of clearing sidebar`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val coordinator = createConnectedSecureCoordinator()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        val expectedThreadIds = repository.session.value.threads.map(RemodexThreadSummary::id)
+        assertTrue(expectedThreadIds.isNotEmpty())
+
+        coordinator.disconnect()
+        syncService.updateThreads(emptyList())
+        advanceUntilIdle()
+
+        assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+        assertEquals(expectedThreadIds, repository.session.value.threads.map(RemodexThreadSummary::id))
+    }
+
+    @Test
     fun `cached thread conversion preserves projected timeline order`() {
         val cachedThread = com.emanueledipietro.remodex.data.threads.CachedThreadRecord(
             id = "thread-projected",

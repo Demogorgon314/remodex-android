@@ -91,6 +91,7 @@ import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 private const val ProjectPreviewCount = 10
 private const val SidebarFooterTestTag = "sidebar_footer"
 private const val SidebarNewChatButtonTag = "sidebar_new_chat_button"
+private const val SidebarProjectNewChatButtonTagPrefix = "sidebar_project_new_chat_button_"
 private const val SidebarRenameTextFieldTag = "sidebar_rename_text_field"
 private val SidebarRowCornerRadius = 14.dp
 
@@ -208,7 +209,7 @@ fun ThreadsScreen(
 
         PullToRefreshBox(
             isRefreshing = uiState.isRefreshingThreads,
-            onRefresh = if (uiState.isConnected) onRefreshThreads else ({}),
+            onRefresh = onRefreshThreads,
             modifier = Modifier.weight(1f),
         ) {
             LazyColumn(
@@ -258,6 +259,7 @@ fun ThreadsScreen(
                                         onRevealAll = {
                                             revealedProjectGroupIds = revealedProjectGroupIds + group.id
                                         },
+                                        canCreateThread = uiState.canCreateThread,
                                         isCreatingThread = uiState.isCreatingThread,
                                         onCreateThread = { onCreateThread(group.projectPath) },
                                         onArchiveProject = {
@@ -323,10 +325,11 @@ fun ThreadsScreen(
     if (isNewChatSheetPresented) {
         SidebarNewChatSheet(
             projectGroups = newChatProjectGroups,
+            canCreateThread = uiState.canCreateThread,
             isCreatingThread = uiState.isCreatingThread,
             onDismiss = { isNewChatSheetPresented = false },
             onCreateThread = { projectPath ->
-                if (uiState.isCreatingThread) {
+                if (!uiState.canCreateThread || uiState.isCreatingThread) {
                     return@SidebarNewChatSheet
                 }
                 isNewChatSheetPresented = false
@@ -398,7 +401,7 @@ private fun SidebarHeader(
         )
 
         SidebarNewChatButton(
-            enabled = uiState.isConnected,
+            enabled = uiState.canCreateThread,
             isLoading = uiState.isCreatingThread,
             onClick = onOpenNewChat,
         )
@@ -471,6 +474,7 @@ private fun SidebarNewChatButton(
 @Composable
 private fun SidebarNewChatSheet(
     projectGroups: List<SidebarThreadGroup>,
+    canCreateThread: Boolean,
     isCreatingThread: Boolean,
     onDismiss: () -> Unit,
     onCreateThread: (String?) -> Unit,
@@ -575,7 +579,7 @@ private fun SidebarNewChatSheet(
                                                 SidebarNewChatProjectRow(
                                                     label = group.label,
                                                     iconSystemName = group.iconSystemName,
-                                                    enabled = !isCreatingThread,
+                                                    enabled = canCreateThread && !isCreatingThread,
                                                     onClick = { onCreateThread(group.projectPath) },
                                                 )
                                                 if (index < projectGroups.lastIndex) {
@@ -593,7 +597,7 @@ private fun SidebarNewChatSheet(
 
                         item {
                             SidebarNewChatCloudCard(
-                                enabled = !isCreatingThread,
+                                enabled = canCreateThread && !isCreatingThread,
                                 onClick = { onCreateThread(null) },
                             )
                         }
@@ -791,6 +795,7 @@ private fun ProjectGroupSection(
     expanded: Boolean,
     revealAll: Boolean,
     expandedSubagentParentIds: Set<String>,
+    canCreateThread: Boolean,
     isCreatingThread: Boolean,
     onToggleExpanded: () -> Unit,
     onToggleSubagentExpansion: (String) -> Unit,
@@ -849,10 +854,12 @@ private fun ProjectGroupSection(
             ProjectHeaderActionButton(
                 icon = Icons.Outlined.Add,
                 contentDescription = "New conversation in ${group.label}",
-                enabled = !isCreatingThread,
+                enabled = canCreateThread && !isCreatingThread,
                 isLoading = isCreatingThread,
                 onClick = onCreateThread,
-                modifier = Modifier.align(Alignment.CenterEnd),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .testTag("$SidebarProjectNewChatButtonTagPrefix${group.label}"),
             )
 
             DropdownMenu(

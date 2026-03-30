@@ -1,8 +1,9 @@
 package com.emanueledipietro.remodex.feature.threads
 
 import androidx.activity.ComponentActivity
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -217,6 +218,42 @@ class ThreadsScreenTest {
         render()
 
         composeRule.onAllNodesWithText("Conversation 0").assertCountEquals(0)
+    }
+
+    @Test
+    fun disconnectedSidebarKeepsThreadsVisibleAndDisablesCreateActions() {
+        composeRule.setContent {
+            RemodexTheme {
+                ThreadsScreen(
+                    uiState = AppUiState(
+                        connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.DISCONNECTED, attempt = 1),
+                        threads = listOf(
+                            threadSummary(
+                                id = "thread-1",
+                                title = "Recovered conversation",
+                                projectPath = "/tmp/project-0",
+                            ),
+                        ),
+                    ),
+                    onSelectThread = {},
+                    onRefreshThreads = {},
+                    onRetryConnection = {},
+                    onCreateThread = {},
+                    onSetProjectGroupCollapsed = { _, _ -> },
+                    onRenameThread = { _, _ -> },
+                    onArchiveThread = {},
+                    onUnarchiveThread = {},
+                    onDeleteThread = {},
+                    onArchiveProject = {},
+                    onOpenSettings = {},
+                    onSearchActiveChange = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Recovered conversation").assertIsDisplayed()
+        composeRule.onNodeWithTag("sidebar_new_chat_button").assertIsNotEnabled()
+        composeRule.onNodeWithTag("sidebar_project_new_chat_button_project-0").assertIsNotEnabled()
     }
 
     private fun threadSummary(

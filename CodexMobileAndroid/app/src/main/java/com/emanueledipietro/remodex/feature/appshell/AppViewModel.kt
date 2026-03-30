@@ -151,6 +151,9 @@ data class AppUiState(
 ) {
     val isConnected: Boolean
         get() = connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+
+    val canCreateThread: Boolean
+        get() = isConnected && !isCreatingThread
 }
 
 data class ThreadCompletionBannerUiState(
@@ -731,13 +734,25 @@ class AppViewModel(
     }
 
     fun refreshThreads() {
-        if (!uiState.value.isConnected || isRefreshingThreadsState.value) {
+        val currentState = uiState.value
+        if (isRefreshingThreadsState.value) {
             return
         }
         viewModelScope.launch {
             isRefreshingThreadsState.value = true
             try {
-                repository.refreshThreads()
+                when {
+                    currentState.isConnected -> repository.refreshThreads()
+                    currentState.connectionStatus.phase in setOf(
+                        RemodexConnectionPhase.CONNECTING,
+                        RemodexConnectionPhase.RETRYING,
+                    ) -> Unit
+                    currentState.recoveryState.secureState in setOf(
+                        SecureConnectionState.TRUSTED_MAC,
+                        SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+                    ) -> repository.retryConnection()
+                    else -> Unit
+                }
             } finally {
                 isRefreshingThreadsState.value = false
             }
@@ -778,7 +793,7 @@ class AppViewModel(
         preferredProjectPath: String? = null,
         onCreated: ((String?) -> Unit)? = null,
     ) {
-        if (isCreatingThreadState.value) {
+        if (isCreatingThreadState.value || !uiState.value.canCreateThread) {
             return
         }
         viewModelScope.launch {

@@ -1430,11 +1430,13 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun disconnect() {
+        clearThreadsForExplicitDisconnect()
         secureConnectionCoordinator.disconnect()
         resetBridgeScopedStatus()
     }
 
     override suspend fun forgetTrustedMac() {
+        clearThreadsForExplicitDisconnect()
         secureConnectionCoordinator.forgetTrustedMac()
         resetBridgeScopedStatus()
     }
@@ -1447,6 +1449,9 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun syncThreads(snapshots: List<ThreadSyncSnapshot>) {
+        if (shouldPreserveThreadsDuringConnectionRecovery(snapshots)) {
+            return
+        }
         val projected = withContext(Dispatchers.Default) {
             synchronized(timelineProjectionCacheLock) {
                 timelineProjectionCacheByThread.keys.retainAll(snapshots.map(ThreadSyncSnapshot::id).toSet())
@@ -1467,6 +1472,38 @@ class DefaultRemodexAppRepository(
         scheduleThreadCacheWrite(
             cachedThreads = projected.cachedThreads,
             debounce = snapshots.any(ThreadSyncSnapshot::isRunning),
+        )
+    }
+
+    private fun clearThreadsForExplicitDisconnect() {
+        baseThreadsState.value = emptyList()
+        preferredSelectedThreadId.set(null)
+        cancelPendingThreadListPublish()
+        preferencesState.value = preferencesState.value.copy(selectedThreadId = null)
+        repositoryScope.launch {
+            appPreferencesRepository.setSelectedThreadId(null)
+        }
+        sessionState.update { snapshot ->
+            snapshot.copy(
+                availableModels = resolveAvailableModels(emptyList()),
+                threads = emptyList(),
+                selectedThreadId = null,
+                selectedThreadSnapshot = null,
+            )
+        }
+    }
+
+    private fun shouldPreserveThreadsDuringConnectionRecovery(
+        snapshots: List<ThreadSyncSnapshot>,
+    ): Boolean {
+        if (snapshots.isNotEmpty() || baseThreadsState.value.isEmpty()) {
+            return false
+        }
+        return secureConnectionCoordinator.state.value.secureState in setOf(
+            SecureConnectionState.TRUSTED_MAC,
+            SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+            SecureConnectionState.RECONNECTING,
+            SecureConnectionState.HANDSHAKING,
         )
     }
 
