@@ -139,6 +139,35 @@ data class RemodexApprovalRequest(
     val params: JsonElement? = null,
 )
 
+fun remodexApprovalRequestMessage(request: RemodexApprovalRequest): String {
+    val lines = buildList {
+        request.reason
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let(::add)
+        request.command
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { command -> add("Command: $command") }
+    }
+    return if (lines.isEmpty()) {
+        "Codex is requesting permission to continue."
+    } else {
+        lines.joinToString(separator = "\n\n")
+    }
+}
+
+fun remodexApprovalRequestSummary(request: RemodexApprovalRequest): String {
+    return request.reason
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: request.command
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { command -> "Command: $command" }
+        ?: "Codex is requesting permission to continue."
+}
+
 @Serializable
 data class RemodexSubagentRef(
     val threadId: String,

@@ -131,6 +131,7 @@ class RoomThreadCacheStore(
                     lastUpdatedLabel = record.thread.lastUpdatedLabel,
                     lastUpdatedEpochMs = record.thread.lastUpdatedEpochMs,
                     isRunning = record.thread.isRunning,
+                    isWaitingOnApproval = false,
                     syncState = com.emanueledipietro.remodex.model.RemodexThreadSyncState.valueOf(record.thread.syncState),
                     parentThreadId = record.thread.parentThreadId,
                     agentNickname = record.thread.agentNickname,

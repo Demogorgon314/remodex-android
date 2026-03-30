@@ -1187,6 +1187,14 @@ private fun ThreadRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (thread.isWaitingOnApproval && !isSelected) {
+                    ThreadMetaBadge(
+                        text = "Approval",
+                        containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                        contentColor = MaterialTheme.colorScheme.error,
+                    )
+                }
+
                 if (thread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
                     ThreadMetaBadge(
                         text = "Archived",

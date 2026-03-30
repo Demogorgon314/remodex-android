@@ -413,6 +413,74 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `selecting a connected thread waiting on approval resumes it to recover the approval prompt`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = false,
+                            isWaitingOnApproval = true,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `hydrating a connected thread waiting on approval resumes it to recover the approval prompt`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = false,
+                            isWaitingOnApproval = true,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.hydrateThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
     fun `encrypted reconnect keeps catching up selected streaming thread after initial hydrate`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectStreamingCatchupSyncService()
@@ -1838,6 +1906,36 @@ class DefaultRemodexAppRepositoryTest {
         ) {
             sendPromptCalls += 1
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class WaitingApprovalRecoverySyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        fun updateThreads(threads: List<ThreadSyncSnapshot>) {
+            delegate.updateThreads(threads)
+        }
+
+        override val threads = delegate.threads
+
+        override suspend fun refreshThreads() = Unit
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
         }
     }
 

@@ -112,6 +112,7 @@ import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.remodexApprovalRequestMessage
 import com.emanueledipietro.remodex.platform.media.ComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.canLaunchComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.createComposerCameraCapture
@@ -282,10 +283,19 @@ fun RemodexApp(
         viewModel.onAppForegroundChanged(
             lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
         )
+        notificationManager.setAppForeground(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+        )
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.onAppForegroundChanged(true)
-                Lifecycle.Event.ON_STOP -> viewModel.onAppForegroundChanged(false)
+                Lifecycle.Event.ON_START -> {
+                    viewModel.onAppForegroundChanged(true)
+                    notificationManager.setAppForeground(true)
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    viewModel.onAppForegroundChanged(false)
+                    notificationManager.setAppForeground(false)
+                }
                 Lifecycle.Event.ON_RESUME -> {
                     refreshNotificationUiState()
                 }
@@ -910,8 +920,21 @@ private fun MainPane(
         uiState.threadCompletionBanner?.let { banner ->
             ThreadCompletionBanner(
                 title = banner.title,
+                message = "Answer ready in another chat",
                 onOpen = { onNavigateToThreadCompletion(banner.threadId) },
                 onDismiss = onDismissThreadCompletionBanner,
+            )
+        }
+
+        uiState.approvalBanner?.let { banner ->
+            ThreadCompletionBanner(
+                title = banner.title,
+                message = banner.message,
+                onOpen = {
+                    viewModel.selectThread(banner.threadId)
+                    viewModel.dismissApprovalBanner()
+                },
+                onDismiss = viewModel::dismissApprovalBanner,
             )
         }
 
@@ -1081,7 +1104,7 @@ private fun MainPane(
                     }
                 },
                 title = { Text("Approval request") },
-                text = { Text(approvalRequestMessage(request)) },
+                text = { Text(remodexApprovalRequestMessage(request)) },
             )
         }
 
@@ -1115,24 +1138,6 @@ private fun MainPane(
                 text = { DesktopHandoffErrorBody(message = message) },
             )
         }
-    }
-}
-
-private fun approvalRequestMessage(request: RemodexApprovalRequest): String {
-    val lines = buildList {
-        request.reason
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?.let(::add)
-        request.command
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?.let { command -> add("Command: $command") }
-    }
-    return if (lines.isEmpty()) {
-        "Codex is requesting permission to continue."
-    } else {
-        lines.joinToString(separator = "\n\n")
     }
 }
 
@@ -1566,6 +1571,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 @Composable
 private fun ThreadCompletionBanner(
     title: String,
+    message: String,
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1604,7 +1610,7 @@ private fun ThreadCompletionBanner(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "Answer ready in another chat",
+                    text = message,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

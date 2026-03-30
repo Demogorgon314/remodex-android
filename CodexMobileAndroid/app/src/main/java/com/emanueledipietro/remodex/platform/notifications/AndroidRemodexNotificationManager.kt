@@ -30,11 +30,14 @@ data class RemodexNotificationPermissionUiState(
 
 class AndroidRemodexNotificationManager(
     private val context: Context,
-) : NotificationPermissionChecker, RemodexThreadNotificationPoster, ManagedPushStatusProvider {
+) : NotificationPermissionChecker, RemodexThreadNotificationPoster, ManagedPushStatusProvider, AppForegroundStateProvider {
     private val refreshEventsFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    @Volatile
+    private var appForeground: Boolean = false
     val coordinator = RemodexNotificationCoordinator(
         permissionChecker = this,
         poster = this,
+        appForegroundStateProvider = this,
     )
     override val refreshEvents: Flow<Unit> = refreshEventsFlow.asSharedFlow()
 
@@ -57,7 +60,7 @@ class AndroidRemodexNotificationManager(
             canPostNotifications() -> RemodexNotificationPermissionUiState(
                 isEnabled = true,
                 headline = "Notifications enabled",
-                message = "Turn-complete and attention-needed alerts can bring you back into the relevant thread.",
+                message = "Turn-complete, approval, and attention-needed alerts can bring you back into the relevant thread.",
             )
 
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -68,7 +71,7 @@ class AndroidRemodexNotificationManager(
                 RemodexNotificationPermissionUiState(
                     isEnabled = false,
                     headline = "Notifications are waiting for permission",
-                    message = "Allow Android notifications so Remodex can alert you when a turn finishes or needs input.",
+                    message = "Allow Android notifications so Remodex can alert you when a turn finishes, needs approval, or needs input.",
                     actionLabel = "Allow notifications",
                     canRequestPermission = true,
                 )
@@ -91,14 +94,24 @@ class AndroidRemodexNotificationManager(
             return
         }
         val notificationManager = context.getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(
-            NotificationChannel(
-                ConversationChannelId,
-                "Remodex conversations",
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply {
-                description = "Turn-complete and attention-needed updates from your paired Remodex session."
-            },
+        notificationManager.createNotificationChannels(
+            listOf(
+                NotificationChannel(
+                    ConversationChannelId,
+                    "Remodex conversations",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "Turn-complete and attention-needed updates from your paired Remodex session."
+                },
+                NotificationChannel(
+                    ApprovalChannelId,
+                    "Remodex approvals",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Approval requests that need your review before Codex can continue."
+                    setShowBadge(true)
+                },
+            ),
         )
     }
 
@@ -123,24 +136,39 @@ class AndroidRemodexNotificationManager(
 
     override fun alertsEnabled(): Boolean = canPostNotifications()
 
+    override fun isAppForeground(): Boolean = appForeground
+
+    fun setAppForeground(isForeground: Boolean) {
+        appForeground = isForeground
+    }
+
     fun notifyPushRegistrationStateMayHaveChanged() {
         refreshEventsFlow.tryEmit(Unit)
     }
 
     override fun post(event: RemodexThreadNotificationEvent) {
         NotificationManagerCompat.from(context).notify(
-            event.notificationId(),
-            NotificationCompat.Builder(context, ConversationChannelId)
+            remodexNotificationId(
+                threadId = event.threadId,
+                type = event.type,
+                requestId = event.requestId,
+            ),
+            NotificationCompat.Builder(context, event.channelId())
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(event.title)
                 .setContentText(event.body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(event.body))
                 .setContentIntent(threadPendingIntent(event.threadId))
                 .setAutoCancel(true)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(event.category())
+                .setPriority(event.priority())
+                .setOnlyAlertOnce(event.type != RemodexThreadNotificationType.APPROVAL_NEEDED)
                 .build(),
         )
+    }
+
+    override fun cancel(notificationId: Int) {
+        NotificationManagerCompat.from(context).cancel(notificationId)
     }
 
     private fun threadPendingIntent(threadId: String): PendingIntent {
@@ -159,8 +187,35 @@ class AndroidRemodexNotificationManager(
     }
 }
 
-private fun RemodexThreadNotificationEvent.notificationId(): Int {
-    return 31_000 + (threadId + type.name).hashCode()
+internal fun remodexNotificationId(
+    threadId: String,
+    type: RemodexThreadNotificationType,
+    requestId: String? = null,
+): Int {
+    val stableKey = requestId ?: (threadId + type.name)
+    return 31_000 + stableKey.hashCode()
 }
 
 private const val ConversationChannelId = "remodex_conversations"
+private const val ApprovalChannelId = "remodex_approvals"
+
+private fun RemodexThreadNotificationEvent.channelId(): String {
+    return when (type) {
+        RemodexThreadNotificationType.APPROVAL_NEEDED -> ApprovalChannelId
+        else -> ConversationChannelId
+    }
+}
+
+private fun RemodexThreadNotificationEvent.category(): String {
+    return when (type) {
+        RemodexThreadNotificationType.APPROVAL_NEEDED -> NotificationCompat.CATEGORY_REMINDER
+        else -> NotificationCompat.CATEGORY_MESSAGE
+    }
+}
+
+private fun RemodexThreadNotificationEvent.priority(): Int {
+    return when (type) {
+        RemodexThreadNotificationType.APPROVAL_NEEDED -> NotificationCompat.PRIORITY_HIGH
+        else -> NotificationCompat.PRIORITY_DEFAULT
+    }
+}

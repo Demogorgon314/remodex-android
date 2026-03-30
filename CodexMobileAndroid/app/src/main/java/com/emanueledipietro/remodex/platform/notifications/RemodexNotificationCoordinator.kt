@@ -5,6 +5,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -12,6 +13,7 @@ import kotlinx.coroutines.launch
 enum class RemodexThreadNotificationType {
     TURN_COMPLETED,
     ATTENTION_NEEDED,
+    APPROVAL_NEEDED,
 }
 
 data class RemodexThreadNotificationEvent(
@@ -20,6 +22,7 @@ data class RemodexThreadNotificationEvent(
     val title: String,
     val body: String,
     val type: RemodexThreadNotificationType,
+    val requestId: String? = null,
 )
 
 interface NotificationPermissionChecker {
@@ -30,11 +33,18 @@ interface RemodexThreadNotificationPoster {
     fun createChannels()
 
     fun post(event: RemodexThreadNotificationEvent)
+
+    fun cancel(notificationId: Int)
+}
+
+interface AppForegroundStateProvider {
+    fun isAppForeground(): Boolean
 }
 
 class RemodexNotificationCoordinator(
     private val permissionChecker: NotificationPermissionChecker,
     private val poster: RemodexThreadNotificationPoster,
+    private val appForegroundStateProvider: AppForegroundStateProvider? = null,
 ) {
     private var previousSnapshot: RemodexSessionSnapshot? = null
 
@@ -51,18 +61,48 @@ class RemodexNotificationCoordinator(
     }
 
     fun onSessionSnapshot(snapshot: RemodexSessionSnapshot) {
-        val events = detectThreadNotificationEvents(previousSnapshot, snapshot)
+        cancelStaleApprovalNotification(
+            previousSnapshot = previousSnapshot,
+            currentSnapshot = snapshot,
+            isAppForeground = appForegroundStateProvider?.isAppForeground() == true,
+        )
+        val events = detectThreadNotificationEvents(
+            previousSnapshot = previousSnapshot,
+            currentSnapshot = snapshot,
+            isAppForeground = appForegroundStateProvider?.isAppForeground() == true,
+        )
         previousSnapshot = snapshot
         if (!permissionChecker.canPostNotifications()) {
             return
         }
         events.forEach(poster::post)
     }
+
+    private fun cancelStaleApprovalNotification(
+        previousSnapshot: RemodexSessionSnapshot?,
+        currentSnapshot: RemodexSessionSnapshot,
+        isAppForeground: Boolean,
+    ) {
+        val previousRequest = previousSnapshot?.pendingApprovalRequest ?: return
+        val previousThreadId = previousRequest.threadId?.trim()?.takeIf(String::isNotEmpty) ?: return
+        val currentRequestId = currentSnapshot.pendingApprovalRequest?.id
+        if (currentRequestId == previousRequest.id && !isAppForeground) {
+            return
+        }
+        poster.cancel(
+            remodexNotificationId(
+                threadId = previousThreadId,
+                type = RemodexThreadNotificationType.APPROVAL_NEEDED,
+                requestId = previousRequest.id,
+            ),
+        )
+    }
 }
 
 fun detectThreadNotificationEvents(
     previousSnapshot: RemodexSessionSnapshot?,
     currentSnapshot: RemodexSessionSnapshot,
+    isAppForeground: Boolean = false,
 ): List<RemodexThreadNotificationEvent> {
     if (previousSnapshot == null) {
         return emptyList()
@@ -98,8 +138,39 @@ fun detectThreadNotificationEvents(
                     ),
                 )
             }
+
         }
+        detectApprovalNotification(
+            previousSnapshot = previousSnapshot,
+            currentSnapshot = currentSnapshot,
+            isAppForeground = isAppForeground,
+        )?.let(::add)
     }
+}
+
+private fun detectApprovalNotification(
+    previousSnapshot: RemodexSessionSnapshot,
+    currentSnapshot: RemodexSessionSnapshot,
+    isAppForeground: Boolean,
+): RemodexThreadNotificationEvent? {
+    if (isAppForeground) {
+        return null
+    }
+    val request = currentSnapshot.pendingApprovalRequest ?: return null
+    if (request.id == previousSnapshot.pendingApprovalRequest?.id) {
+        return null
+    }
+    val threadId = request.threadId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+    val thread = currentSnapshot.threads.firstOrNull { candidate -> candidate.id == threadId } ?: return null
+    val displayTitle = thread.displayTitle
+    return RemodexThreadNotificationEvent(
+        threadId = threadId,
+        threadTitle = displayTitle,
+        title = "$displayTitle needs approval",
+        body = remodexApprovalRequestSummary(request),
+        type = RemodexThreadNotificationType.APPROVAL_NEEDED,
+        requestId = request.id,
+    )
 }
 
 private fun detectAttentionMessage(

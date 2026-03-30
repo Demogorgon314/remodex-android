@@ -163,6 +163,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("approval-1", viewModel.uiState.value.pendingApprovalRequest?.id)
+        assertNull(viewModel.uiState.value.approvalBanner)
 
         viewModel.approvePendingApproval()
         advanceUntilIdle()
@@ -180,6 +181,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertNull(viewModel.uiState.value.pendingApprovalRequest)
+        assertNull(viewModel.uiState.value.approvalBanner)
     }
 
     @Test
@@ -200,6 +202,47 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1, repository.declinePendingApprovalRequests)
+    }
+
+    @Test
+    fun `foreground approval banner appears for a different selected thread and can be dismissed`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Current thread",
+        )
+        val approvalThread = threadSummary(
+            id = "thread-2",
+            title = "Approval thread",
+            isWaitingOnApproval = true,
+        )
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(selectedThread, approvalThread),
+            selectedThreadId = selectedThread.id,
+            selectedThreadSnapshot = selectedThread,
+            pendingApprovalRequest = RemodexApprovalRequest(
+                id = "approval-2",
+                requestId = JsonPrimitive("req-2"),
+                method = "item/commandExecution/requestApproval",
+                command = "git status",
+                reason = "Need to inspect the repo state.",
+                threadId = approvalThread.id,
+            ),
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.pendingApprovalRequest)
+        assertEquals("thread-2", viewModel.uiState.value.approvalBanner?.threadId)
+        assertEquals("Approval thread", viewModel.uiState.value.approvalBanner?.title)
+
+        viewModel.dismissApprovalBanner()
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.approvalBanner)
     }
 
     @Test
@@ -2448,6 +2491,7 @@ class AppViewModelTest {
         title: String,
         projectPath: String = "/tmp/remodex",
         isRunning: Boolean = false,
+        isWaitingOnApproval: Boolean = false,
         latestTurnTerminalState: RemodexTurnTerminalState? = null,
         runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
         messages: List<RemodexConversationItem> = emptyList(),
@@ -2459,6 +2503,7 @@ class AppViewModelTest {
             projectPath = projectPath,
             lastUpdatedLabel = "Updated just now",
             isRunning = isRunning,
+            isWaitingOnApproval = isWaitingOnApproval,
             latestTurnTerminalState = latestTurnTerminalState,
             queuedDrafts = 0,
             runtimeLabel = "Auto, medium reasoning",

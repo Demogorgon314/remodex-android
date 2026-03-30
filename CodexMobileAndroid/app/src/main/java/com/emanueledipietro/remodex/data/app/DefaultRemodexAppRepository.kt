@@ -555,9 +555,7 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun hydrateThread(threadId: String) {
-        runHydrationSafely {
-            hydrationService()?.hydrateThread(threadId)
-        }
+        hydrateThreadAndRecoverApproval(threadId)
     }
 
     override suspend fun selectThread(threadId: String) {
@@ -572,9 +570,40 @@ class DefaultRemodexAppRepository(
                         ?: snapshot.selectedThreadSnapshot,
                 )
             }
-            runHydrationSafely {
-                hydrationService()?.hydrateThread(threadId)
-            }
+            hydrateThreadAndRecoverApproval(threadId)
+        }
+    }
+
+    private suspend fun hydrateThreadAndRecoverApproval(threadId: String) {
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(threadId)
+        }
+        recoverPendingApprovalPromptIfNeeded(threadId)
+    }
+
+    private suspend fun recoverPendingApprovalPromptIfNeeded(threadId: String) {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            return
+        }
+        if (threadSyncService.pendingApprovalRequest.value != null) {
+            return
+        }
+        val selectedThread = sessionState.value.threads.firstOrNull { candidate -> candidate.id == threadId }
+        val syncThread = threadSyncService.threads.value.firstOrNull { candidate -> candidate.id == threadId }
+        val isWaitingOnApproval = selectedThread?.isWaitingOnApproval ?: syncThread?.isWaitingOnApproval ?: false
+        if (!isWaitingOnApproval) {
+            return
+        }
+        val resumeService = resumeService() ?: return
+        val preferredProjectPath = selectedThread?.projectPath ?: syncThread?.projectPath.orEmpty()
+        val modelIdentifier = selectedThread?.runtimeConfig?.selectedModelId
+            ?: syncThread?.runtimeConfig?.selectedModelId
+        runHydrationSafely {
+            resumeService.resumeThread(
+                threadId = threadId,
+                preferredProjectPath = preferredProjectPath.ifBlank { null },
+                modelIdentifier = modelIdentifier,
+            )
         }
     }
 
@@ -2098,6 +2127,7 @@ private fun ThreadSyncSnapshot.toCachedThreadRecord(
         lastUpdatedLabel = lastUpdatedLabel,
         lastUpdatedEpochMs = lastUpdatedEpochMs,
         isRunning = isRunning,
+        isWaitingOnApproval = isWaitingOnApproval,
         syncState = syncState,
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,
@@ -2201,6 +2231,7 @@ internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,
         isRunning = isRunning,
+        isWaitingOnApproval = isWaitingOnApproval,
         syncState = syncState,
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,

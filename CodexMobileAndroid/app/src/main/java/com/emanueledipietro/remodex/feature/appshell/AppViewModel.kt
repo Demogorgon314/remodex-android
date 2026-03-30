@@ -50,6 +50,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -139,6 +140,7 @@ data class AppUiState(
     val planComposerSession: PlanComposerSessionUiState? = null,
     val conversationBanner: String? = null,
     val transientBanner: String? = null,
+    val approvalBanner: ApprovalBannerUiState? = null,
     val isHandingOffToMac: Boolean = false,
     val showDesktopHandoffConfirm: Boolean = false,
     val desktopHandoffErrorMessage: String? = null,
@@ -161,6 +163,21 @@ data class AppUiState(
 data class ThreadCompletionBannerUiState(
     val threadId: String,
     val title: String,
+)
+
+data class ApprovalBannerUiState(
+    val threadId: String,
+    val title: String,
+    val message: String,
+)
+
+private data class BaseUiOverlayState(
+    val gitUiState: GitUiTransientState,
+    val sendSignalsByThread: Map<String, ComposerSendUiSignals>,
+    val planSessionsByThread: Map<String, PlanComposerSessionUiState>,
+    val voiceUiState: ComposerVoiceUiState,
+    val isAppForeground: Boolean,
+    val dismissedApprovalBannerRequestIds: Set<String>,
 )
 
 data class DesktopHandoffUiState(
@@ -320,6 +337,8 @@ class AppViewModel(
     private val desktopHandoffState = MutableStateFlow(DesktopHandoffUiState())
     private val transientBannerState = MutableStateFlow<String?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
+    private val dismissedApprovalBannerRequestIdsState = MutableStateFlow<Set<String>>(emptySet())
+    private val isAppForegroundState = MutableStateFlow(false)
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
@@ -464,15 +483,31 @@ class AppViewModel(
             )
         }
 
+    private val baseUiOverlayState =
+        combine(
+            baseUiTransientState,
+            voiceUiRenderState,
+            isAppForegroundState,
+            dismissedApprovalBannerRequestIdsState,
+        ) { transientState, voiceUiState, isAppForeground, dismissedApprovalBannerRequestIds ->
+            val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
+            BaseUiOverlayState(
+                gitUiState = gitUiState,
+                sendSignalsByThread = sendSignalsByThread,
+                planSessionsByThread = planSessionsByThread,
+                voiceUiState = voiceUiState,
+                isAppForeground = isAppForeground,
+                dismissedApprovalBannerRequestIds = dismissedApprovalBannerRequestIds,
+            )
+        }
+
     private val baseUiState =
         combine(
             sessionRenderState,
             composerRenderStateA,
             composerRenderStateB,
-            baseUiTransientState,
-            voiceUiRenderState,
-        ) { sessionRenderState, renderStateA, renderStateB, transientState, voiceUiState ->
-            val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
+            baseUiOverlayState,
+        ) { sessionRenderState, renderStateA, renderStateB, overlayState ->
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
@@ -487,7 +522,8 @@ class AppViewModel(
             val gitState = selectedThread?.id?.let(renderStateB.gitStatesByThread::get) ?: RemodexGitState()
             val selectedGitBaseBranch = selectedThread?.id?.let(renderStateB.baseBranchesByThread::get)
                 ?: gitState.branches.defaultBranch.orEmpty()
-            val selectedThreadSendSignals = selectedThread?.id?.let(sendSignalsByThread::get) ?: ComposerSendUiSignals()
+            val selectedThreadSendSignals =
+                selectedThread?.id?.let(overlayState.sendSignalsByThread::get) ?: ComposerSendUiSignals()
             AppUiState(
                 onboardingCompleted = snapshot.onboardingCompleted,
                 connectionStatus = snapshot.connectionStatus,
@@ -534,27 +570,32 @@ class AppViewModel(
                         reviewSelection = reviewSelection,
                         isSubagentsSelectionArmed = isSubagentsSelectionArmed,
                     ),
-                    voiceUiState = voiceUiState,
+                    voiceUiState = overlayState.voiceUiState,
                     isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED,
                     gitState = gitState,
                     selectedGitBaseBranch = selectedGitBaseBranch,
                     thread = selectedThread,
                 ),
-                planComposerSession = selectedThread?.id?.let(planSessionsByThread::get),
+                planComposerSession = selectedThread?.id?.let(overlayState.planSessionsByThread::get),
                 conversationBanner = conversationBanner(
                     selectedThread = selectedThread,
                     secureConnection = snapshot.secureConnection,
                 ),
-                gitSyncAlert = selectedThread?.id?.let(gitUiState.gitSyncAlertsByThread::get),
+                approvalBanner = approvalBanner(
+                    snapshot = snapshot,
+                    isAppForeground = overlayState.isAppForeground,
+                    dismissedRequestIds = overlayState.dismissedApprovalBannerRequestIds,
+                ),
+                gitSyncAlert = selectedThread?.id?.let(overlayState.gitUiState.gitSyncAlertsByThread::get),
                 assistantRevertStatesByMessageId = assistantRevertPresentations(
                     threads = snapshot.threads,
                     selectedThread = selectedThread,
                     secureConnection = snapshot.secureConnection,
-                    revertedMessageIds = gitUiState.revertedMessageIds,
+                    revertedMessageIds = overlayState.gitUiState.revertedMessageIds,
                 ),
                 composerSendDismissSignal = selectedThreadSendSignals.dismissSignal,
                 composerSendAnchorSignal = selectedThreadSendSignals.anchorSignal,
-                assistantRevertSheet = gitUiState.assistantRevertSheet,
+                assistantRevertSheet = overlayState.gitUiState.assistantRevertSheet,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
             )
         }
@@ -717,6 +758,11 @@ class AppViewModel(
         transientBannerState.value = null
     }
 
+    fun dismissApprovalBanner() {
+        val requestId = repository.session.value.pendingApprovalRequest?.id ?: return
+        dismissedApprovalBannerRequestIdsState.update { dismissed -> dismissed + requestId }
+    }
+
     fun completeOnboarding() {
         viewModelScope.launch {
             repository.completeOnboarding()
@@ -725,6 +771,7 @@ class AppViewModel(
 
     fun onAppForegroundChanged(isForeground: Boolean) {
         isAppForeground = isForeground
+        isAppForegroundState.value = isForeground
         if (!isForeground) {
             invalidateVoiceCapture()
             return
@@ -2952,6 +2999,30 @@ class AppViewModel(
             }
             else -> null
         }
+    }
+
+    private fun approvalBanner(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+        isAppForeground: Boolean,
+        dismissedRequestIds: Set<String>,
+    ): ApprovalBannerUiState? {
+        if (!isAppForeground) {
+            return null
+        }
+        val request = snapshot.pendingApprovalRequest ?: return null
+        if (request.id in dismissedRequestIds) {
+            return null
+        }
+        val requestThreadId = request.threadId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        if (snapshot.selectedThread?.id == requestThreadId) {
+            return null
+        }
+        val thread = snapshot.threads.firstOrNull { candidate -> candidate.id == requestThreadId } ?: return null
+        return ApprovalBannerUiState(
+            threadId = requestThreadId,
+            title = thread.displayTitle,
+            message = remodexApprovalRequestSummary(request),
+        )
     }
 
     private fun presentTransientBanner(message: String) {

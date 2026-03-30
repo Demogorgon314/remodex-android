@@ -15,6 +15,7 @@ data class CachedThreadRecord(
     val lastUpdatedLabel: String,
     val lastUpdatedEpochMs: Long,
     val isRunning: Boolean,
+    val isWaitingOnApproval: Boolean = false,
     val syncState: RemodexThreadSyncState = RemodexThreadSyncState.LIVE,
     val parentThreadId: String? = null,
     val agentNickname: String? = null,
