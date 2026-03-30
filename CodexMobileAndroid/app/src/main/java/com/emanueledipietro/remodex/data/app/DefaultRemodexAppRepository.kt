@@ -343,6 +343,7 @@ class DefaultRemodexAppRepository(
                         val shouldResumeAfterReconnect =
                             selectedThreadBeforeRecovery?.isRunning == true ||
                                 refreshedSnapshot?.isRunning == true ||
+                                refreshedSnapshot?.isWaitingOnApproval == true ||
                                 refreshedSelectedThread?.isRunning == true
                         val selectedThreadForRecovery = refreshedSelectedThread ?: selectedThreadBeforeRecovery
                         if (shouldResumeAfterReconnect) {
@@ -417,20 +418,27 @@ class DefaultRemodexAppRepository(
 
         val refreshedSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
             ?: return true
-        if (refreshedSnapshot.isRunning) {
-            runHydrationSafely {
-                resumeService()?.resumeThread(
-                    threadId = threadId,
-                    preferredProjectPath = refreshedSnapshot.projectPath.ifBlank { null },
-                    modelIdentifier = refreshedSnapshot.runtimeConfig.selectedModelId,
-                )
+        if (refreshedSnapshot.isRunning || refreshedSnapshot.isWaitingOnApproval) {
+            val resumeService = resumeService()
+            if (resumeService?.isThreadResumedLocally(threadId) != true) {
+                runHydrationSafely {
+                    resumeService?.resumeThread(
+                        threadId = threadId,
+                        preferredProjectPath = refreshedSnapshot.projectPath.ifBlank { null },
+                        modelIdentifier = refreshedSnapshot.runtimeConfig.selectedModelId,
+                    )
+                }
             }
         }
 
         val settledSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
             ?: return true
-        return !settledSnapshot.isRunning &&
-            projectThreadTimelineItems(settledSnapshot).none(RemodexConversationItem::isStreaming)
+        val hasPendingApprovalForThread = threadSyncService.pendingApprovalRequest.value?.threadId == threadId
+        return hasPendingApprovalForThread || (
+            !settledSnapshot.isRunning &&
+                !settledSnapshot.isWaitingOnApproval &&
+                projectThreadTimelineItems(settledSnapshot).none(RemodexConversationItem::isStreaming)
+            )
     }
 
     private suspend fun fetchBridgeManagedAccountState() =

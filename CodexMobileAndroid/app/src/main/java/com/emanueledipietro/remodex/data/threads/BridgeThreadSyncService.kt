@@ -88,6 +88,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.Locale
@@ -779,6 +780,12 @@ class BridgeThreadSyncService(
             result = buildApprovalDecisionResponse(decision),
         )
         backingPendingApprovalRequest.value = null
+        request.threadId?.let { threadId ->
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = false,
+            )
+        }
     }
 
     override suspend fun declinePendingApproval() {
@@ -789,6 +796,12 @@ class BridgeThreadSyncService(
             result = buildApprovalDecisionResponse("decline"),
         )
         backingPendingApprovalRequest.value = null
+        request.threadId?.let { threadId ->
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = false,
+            )
+        }
     }
 
     override suspend fun continueOnMac(threadId: String) {
@@ -2187,6 +2200,7 @@ class BridgeThreadSyncService(
         val statusObject = paramsObject.firstObject("status")
             ?: eventObject?.firstObject("status")
             ?: paramsObject.firstObject("event")?.firstObject("status")
+        val activityState = decodeThreadActivityState(statusObject)
         val normalizedStatus = normalizeStatus(
             statusObject?.firstString("type", "statusType", "status_type")
                 ?: paramsObject.firstString("status")
@@ -2244,6 +2258,29 @@ class BridgeThreadSyncService(
                     )
                 }
             }
+        }
+        val waitingOnApproval = when {
+            activityState != null -> activityState.isWaitingOnApproval
+            normalizedStatus == "running"
+                || normalizedStatus == "processing"
+                || normalizedStatus == "inprogress"
+                || normalizedStatus == "started"
+                || normalizedStatus == "pending"
+                || normalizedStatus == "idle"
+                || normalizedStatus == "notloaded"
+                || normalizedStatus == "completed"
+                || normalizedStatus == "done"
+                || normalizedStatus == "finished"
+                || normalizedStatus == "stopped"
+                || normalizedStatus == "systemerror" -> false
+
+            else -> null
+        }
+        if (waitingOnApproval != null) {
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = waitingOnApproval,
+            )
         }
     }
 
@@ -2413,6 +2450,12 @@ class BridgeThreadSyncService(
     private fun handleServerRequestResolvedNotification(paramsObject: JsonObject) {
         val requestId = paramsObject.firstValue("requestId", "request_id") ?: return
         val threadId = resolveThreadId(paramsObject)
+        if (backingPendingApprovalRequest.value?.requestId == requestId && threadId != null) {
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = false,
+            )
+        }
         removePendingApprovalRequest(
             requestId = requestId,
             threadIdHint = threadId,
@@ -2449,9 +2492,21 @@ class BridgeThreadSyncService(
                 if (error is CancellationException) {
                     throw error
                 }
+                request.threadId?.let { threadId ->
+                    updateThreadWaitingOnApproval(
+                        threadId = threadId,
+                        isWaitingOnApproval = true,
+                    )
+                }
                 backingPendingApprovalRequest.value = request
             }
             return
+        }
+        request.threadId?.let { threadId ->
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = true,
+            )
         }
         backingPendingApprovalRequest.value = request
     }
@@ -5157,6 +5212,11 @@ class BridgeThreadSyncService(
         val hasInterruptibleTurnWithoutId: Boolean,
     )
 
+    private data class ThreadActivityState(
+        val isWaitingOnApproval: Boolean,
+        val isWaitingOnUserInput: Boolean,
+    )
+
     private data class CommandExecutionRunState(
         val itemId: String?,
         val phase: CommandExecutionRunPhase,
@@ -5210,6 +5270,9 @@ class BridgeThreadSyncService(
                 availableModels = availableModels.value,
             ),
         )
+        val activityState = decodeThreadActivityState(
+            threadObject.firstObject("status"),
+        )
         return ThreadSyncSnapshot(
             id = id,
             title = title,
@@ -5219,6 +5282,7 @@ class BridgeThreadSyncService(
             lastUpdatedLabel = relativeUpdatedLabel(updatedEpochMs),
             lastUpdatedEpochMs = updatedEpochMs,
             isRunning = threadHasKnownRunningState(id),
+            isWaitingOnApproval = activityState?.isWaitingOnApproval ?: existing?.isWaitingOnApproval ?: false,
             syncState = syncState,
             parentThreadId = threadObject.firstString("parentThreadId", "parent_thread_id") ?: existing?.parentThreadId,
             agentNickname = threadObject.firstString("agentNickname", "agent_nickname") ?: existing?.agentNickname,
@@ -6022,6 +6086,41 @@ class BridgeThreadSyncService(
 
     private fun threadHasKnownRunningState(threadId: String): Boolean {
         return activeTurnIdByThread.containsKey(threadId) || runningThreadFallbackIds.contains(threadId)
+    }
+
+    private fun decodeThreadActivityState(statusObject: JsonObject?): ThreadActivityState? {
+        val flags = statusObject
+            ?.firstArray("activeFlags", "active_flags")
+            .orEmpty()
+            .mapNotNull { value -> value.jsonPrimitive.contentOrNull }
+            .map(::normalizeStatus)
+            .toSet()
+        val normalizedStatus = normalizeStatus(
+            statusObject?.firstString("type", "statusType", "status_type").orEmpty(),
+        )
+        if (normalizedStatus != "active" && flags.isEmpty()) {
+            return null
+        }
+        return ThreadActivityState(
+            isWaitingOnApproval = "waitingonapproval" in flags,
+            isWaitingOnUserInput = "waitingonuserinput" in flags,
+        )
+    }
+
+    private fun updateThreadWaitingOnApproval(
+        threadId: String,
+        isWaitingOnApproval: Boolean,
+    ) {
+        if (threadId.isBlank()) {
+            return
+        }
+        updateThread(threadId) { snapshot ->
+            if (snapshot.isWaitingOnApproval == isWaitingOnApproval) {
+                snapshot
+            } else {
+                snapshot.copy(isWaitingOnApproval = isWaitingOnApproval)
+            }
+        }
     }
 
     private fun ThreadSyncSnapshot.withResolvedLiveThreadState(

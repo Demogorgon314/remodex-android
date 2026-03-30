@@ -357,6 +357,62 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `encrypted reconnect resumes selected thread that is waiting on approval`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-notifications") {
+                    snapshot.copy(
+                        isRunning = false,
+                        isWaitingOnApproval = true,
+                    )
+                } else {
+                    snapshot
+                }
+            },
+        )
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-waiting-approval",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydrateCallsBeforeReconnect = syncService.hydrateCalls
+        val resumeCallsBeforeReconnect = syncService.resumeCalls
+
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        advanceUntilIdle()
+
+        assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
+        assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
+    }
+
+    @Test
     fun `encrypted reconnect keeps catching up selected streaming thread after initial hydrate`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectStreamingCatchupSyncService()

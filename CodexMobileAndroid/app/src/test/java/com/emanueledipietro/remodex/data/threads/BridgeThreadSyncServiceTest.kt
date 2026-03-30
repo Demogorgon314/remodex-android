@@ -193,6 +193,48 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `thread snapshot parses waitingOnApproval from active thread status`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        val snapshot = invokePrivateMethod(
+            service,
+            "parseThreadSnapshot",
+            buildJsonObject {
+                put("id", JsonPrimitive("thread-waiting-approval"))
+                put("title", JsonPrimitive("Approval thread"))
+                put("cwd", JsonPrimitive("/tmp/thread-waiting-approval"))
+                put(
+                    "status",
+                    buildJsonObject {
+                        put("type", JsonPrimitive("active"))
+                        put(
+                            "activeFlags",
+                            buildJsonArray {
+                                add(JsonPrimitive("waitingOnApproval"))
+                            },
+                        )
+                    },
+                )
+            },
+            RemodexThreadSyncState.LIVE,
+            null,
+        ) as ThreadSyncSnapshot?
+
+        assertNotNull(snapshot)
+        assertTrue(snapshot?.isWaitingOnApproval == true)
+        assertFalse(snapshot?.isRunning == true)
+    }
+
+    @Test
     fun `thread read merge uses latest live timeline instead of stale snapshot`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
