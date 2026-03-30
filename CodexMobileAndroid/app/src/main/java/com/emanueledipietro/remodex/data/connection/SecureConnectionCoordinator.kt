@@ -5,12 +5,11 @@ import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -65,12 +64,12 @@ class SecureConnectionCoordinator(
 
     private val connectionState = MutableStateFlow(initialSnapshot())
     private val bridgeProfilesState = MutableStateFlow(currentBridgeProfilesSnapshot())
-    private val notificationsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
-    private val requestsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
+    private val notificationsChannel = Channel<RpcMessage>(Channel.UNLIMITED)
+    private val requestsChannel = Channel<RpcMessage>(Channel.UNLIMITED)
     val state: StateFlow<SecureConnectionSnapshot> = connectionState.asStateFlow()
     val bridgeProfiles: StateFlow<BridgeProfilesSnapshot> = bridgeProfilesState.asStateFlow()
-    val notifications: SharedFlow<RpcMessage> = notificationsFlow.asSharedFlow()
-    val requests: SharedFlow<RpcMessage> = requestsFlow.asSharedFlow()
+    val notifications: Flow<RpcMessage> = notificationsChannel.receiveAsFlow()
+    val requests: Flow<RpcMessage> = requestsChannel.receiveAsFlow()
 
     suspend fun sendRequest(
         method: String,
@@ -730,11 +729,11 @@ class SecureConnectionCoordinator(
         val requestKey = rpcIdKey(rpcMessage.id)
         when {
             rpcMessage.method != null && rpcMessage.id == null -> {
-                notificationsFlow.tryEmit(rpcMessage)
+                notificationsChannel.trySend(rpcMessage)
             }
 
             rpcMessage.method != null && rpcMessage.id != null -> {
-                requestsFlow.tryEmit(rpcMessage)
+                requestsChannel.trySend(rpcMessage)
             }
 
             requestKey != null -> {

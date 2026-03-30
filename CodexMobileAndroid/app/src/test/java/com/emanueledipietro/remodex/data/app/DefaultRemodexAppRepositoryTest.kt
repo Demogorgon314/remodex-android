@@ -308,6 +308,48 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `thread projection cache reuses projected items when timeline mutations are unchanged`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        val snapshot = ThreadSyncSnapshot(
+            id = "thread-cache-hit",
+            title = "Cache hit",
+            preview = "Streaming output",
+            projectPath = "/tmp/project-cache-hit",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "assistant-1",
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        kind = ConversationItemKind.CHAT,
+                        text = "Streaming output",
+                        turnId = "turn-cache-hit",
+                        itemId = "assistant-item-1",
+                        isStreaming = true,
+                        orderIndex = 0L,
+                    ),
+                ),
+            ),
+        )
+
+        val initialProjected = invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            snapshot,
+        )
+        val cachedProjected = invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            snapshot.copy(lastUpdatedEpochMs = 2L),
+        )
+
+        assertTrue(initialProjected === cachedProjected)
+    }
+
+    @Test
     fun `encrypted reconnect resumes selected running thread to recover live output`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)

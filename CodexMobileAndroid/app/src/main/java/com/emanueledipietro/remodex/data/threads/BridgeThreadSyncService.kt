@@ -82,6 +82,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -217,6 +218,17 @@ class BridgeThreadSyncService(
         val inlineTotals: DecodedFileChangeInlineTotals?,
     )
 
+    private data class AssistantStreamingTrace(
+        val deltaCount: Int = 0,
+        val totalChars: Int = 0,
+        val lastDeltaLength: Int = 0,
+        val lastTurnId: String? = null,
+        val lastItemId: String? = null,
+        val finalAnswerCompleted: Boolean = false,
+        val idleObserved: Boolean = false,
+        val turnCompletedObserved: Boolean = false,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
@@ -230,6 +242,7 @@ class BridgeThreadSyncService(
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private val reviewDebugTurnIds = mutableSetOf<String>()
     private val reviewDebugThreadIds = mutableSetOf<String>()
+    private val streamingTraceByThread = mutableMapOf<String, AssistantStreamingTrace>()
     private val runningThreadFallbackIds = mutableSetOf<String>()
     private val assistantCompletionFingerprintByThread = mutableMapOf<String, AssistantCompletionFingerprint>()
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
@@ -300,11 +313,11 @@ class BridgeThreadSyncService(
         }
 
         scope.launch {
-            secureConnectionCoordinator.notifications.collectLatest(::handleNotification)
+            secureConnectionCoordinator.notifications.collect(::handleNotification)
         }
 
         scope.launch {
-            secureConnectionCoordinator.requests.collectLatest(::handleRequest)
+            secureConnectionCoordinator.requests.collect(::handleRequest)
         }
     }
 
@@ -2229,6 +2242,11 @@ class BridgeThreadSyncService(
     private fun handleTurnCompletedNotification(paramsObject: JsonObject) {
         val turnId = extractTurnIdForTurnLifecycleEvent(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        logAssistantStreamingTraceTerminal(
+            threadId = threadId,
+            event = "turnCompleted",
+            turnId = turnId,
+        )
         logReviewDebug(
             stage = "turnCompleted",
             method = "turn/completed",
@@ -2294,6 +2312,10 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "finished"
                 || normalizedStatus == "stopped"
                 || normalizedStatus == "systemerror" -> {
+                logAssistantStreamingTraceThreadStatus(
+                    threadId = threadId,
+                    normalizedStatus = normalizedStatus,
+                )
                 val activeTurnIdForThread = activeTurnIdByThread[threadId]
                 val shouldCatchUpLifecycle = (
                     activeTurnIdForThread != null ||
@@ -2373,12 +2395,18 @@ class BridgeThreadSyncService(
         if (resolvedTurnId.isNullOrBlank()) {
             return
         }
-        threadIdByTurnId[resolvedTurnId] = threadId
         val itemId = extractItemId(
             paramsObject = paramsObject,
             eventObject = eventObject,
             itemObject = extractIncomingItemObject(paramsObject, eventObject),
         )
+        logAssistantStreamingTraceDelta(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            deltaLength = delta.length,
+        )
+        threadIdByTurnId[resolvedTurnId] = threadId
         val preferredMessageId = streamingMessageId(
             itemId = itemId,
             turnId = resolvedTurnId,
@@ -3042,6 +3070,13 @@ class BridgeThreadSyncService(
             appendTimelineMutation(
                 threadId = threadId,
                 mutation = TimelineMutation.Complete(messageId = resolvedMessageId),
+            )
+        }
+        if (isFinalAnswerAssistantPhase(itemObject)) {
+            logAssistantStreamingTraceFinalAnswer(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemObject.firstString("id"),
             )
         }
     }
@@ -6022,6 +6057,16 @@ class BridgeThreadSyncService(
         return decodeItemText(itemObject)
     }
 
+    private fun isFinalAnswerAssistantPhase(itemObject: JsonObject): Boolean {
+        val normalizedPhase = itemObject
+            .firstString("phase", "messagePhase", "message_phase")
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.filter(Char::isLetterOrDigit)
+            .orEmpty()
+        return normalizedPhase == "finalanswer" || normalizedPhase == "final"
+    }
+
     private fun decodeEnteredReviewModeText(itemObject: JsonObject): String {
         val reviewLabel = decodeStringParts(itemObject.firstValue("review"))
             .joinToString(separator = "\n")
@@ -6320,6 +6365,7 @@ class BridgeThreadSyncService(
     ) {
         activeTurnIdByThread[threadId] = turnId
         threadIdByTurnId[turnId] = threadId
+        streamingTraceByThread[threadId] = AssistantStreamingTrace(lastTurnId = turnId)
         runningThreadFallbackIds.remove(threadId)
         latestTurnTerminalStateByThread.remove(threadId)
         stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() - turnId
@@ -6737,6 +6783,78 @@ class BridgeThreadSyncService(
             }
         }
         return false
+    }
+
+    private fun logAssistantStreamingTraceDelta(
+        threadId: String,
+        turnId: String,
+        itemId: String?,
+        deltaLength: Int,
+    ) {
+        val nextTrace = (streamingTraceByThread[threadId] ?: AssistantStreamingTrace()).copy(
+            deltaCount = streamingTraceByThread[threadId]?.deltaCount?.plus(1) ?: 1,
+            totalChars = (streamingTraceByThread[threadId]?.totalChars ?: 0) + deltaLength,
+            lastDeltaLength = deltaLength,
+            lastTurnId = turnId,
+            lastItemId = itemId,
+        )
+        streamingTraceByThread[threadId] = nextTrace
+        if (nextTrace.deltaCount <= 3 || nextTrace.deltaCount % 32 == 0) {
+            emitStreamingTraceLog(
+                "assistantStreamTrace event=delta threadId=$threadId turnId=$turnId itemId=${itemId.orEmpty()} count=${nextTrace.deltaCount} chars=${nextTrace.totalChars} lastDelta=$deltaLength activeTurnId=${activeTurnIdByThread[threadId].orEmpty()}",
+            )
+        }
+    }
+
+    private fun logAssistantStreamingTraceFinalAnswer(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+    ) {
+        val previous = streamingTraceByThread[threadId] ?: AssistantStreamingTrace()
+        val nextTrace = previous.copy(
+            finalAnswerCompleted = true,
+            lastTurnId = turnId ?: previous.lastTurnId,
+            lastItemId = itemId ?: previous.lastItemId,
+        )
+        streamingTraceByThread[threadId] = nextTrace
+        emitStreamingTraceLog(
+            "assistantStreamTrace event=finalAnswerCompleted threadId=$threadId turnId=${(turnId ?: nextTrace.lastTurnId).orEmpty()} itemId=${(itemId ?: nextTrace.lastItemId).orEmpty()} count=${nextTrace.deltaCount} chars=${nextTrace.totalChars} lastDelta=${nextTrace.lastDeltaLength} activeTurnId=${activeTurnIdByThread[threadId].orEmpty()}",
+        )
+    }
+
+    private fun logAssistantStreamingTraceThreadStatus(
+        threadId: String,
+        normalizedStatus: String,
+    ) {
+        val previous = streamingTraceByThread[threadId] ?: AssistantStreamingTrace()
+        val nextTrace = previous.copy(
+            idleObserved = previous.idleObserved || normalizedStatus == "idle",
+        )
+        streamingTraceByThread[threadId] = nextTrace
+        emitStreamingTraceLog(
+            "assistantStreamTrace event=threadStatus threadId=$threadId status=$normalizedStatus turnId=${nextTrace.lastTurnId.orEmpty()} itemId=${nextTrace.lastItemId.orEmpty()} count=${nextTrace.deltaCount} chars=${nextTrace.totalChars} finalAnswer=${nextTrace.finalAnswerCompleted} activeTurnId=${activeTurnIdByThread[threadId].orEmpty()}",
+        )
+    }
+
+    private fun logAssistantStreamingTraceTerminal(
+        threadId: String,
+        event: String,
+        turnId: String?,
+    ) {
+        val previous = streamingTraceByThread[threadId] ?: AssistantStreamingTrace()
+        val nextTrace = previous.copy(
+            turnCompletedObserved = previous.turnCompletedObserved || event == "turnCompleted",
+            lastTurnId = turnId ?: previous.lastTurnId,
+        )
+        emitStreamingTraceLog(
+            "assistantStreamTrace event=$event threadId=$threadId turnId=${(turnId ?: nextTrace.lastTurnId).orEmpty()} itemId=${nextTrace.lastItemId.orEmpty()} count=${nextTrace.deltaCount} chars=${nextTrace.totalChars} finalAnswer=${nextTrace.finalAnswerCompleted} idle=${nextTrace.idleObserved} activeTurnId=${activeTurnIdByThread[threadId].orEmpty()}",
+        )
+        streamingTraceByThread.remove(threadId)
+    }
+
+    private fun emitStreamingTraceLog(message: String) {
+        runCatching { Log.d(logTag, message) }
     }
 
     private fun logReviewDebug(

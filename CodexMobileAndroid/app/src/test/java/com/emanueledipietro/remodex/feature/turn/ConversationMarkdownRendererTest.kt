@@ -41,6 +41,24 @@ class ConversationMarkdownRendererTest {
     }
 
     @Test
+    fun `render token changes when mermaid body changes outside prior sampled windows`() {
+        val first = buildString {
+            append("```mermaid\n")
+            repeat(160) { append('a') }
+            append("\n```")
+        }
+        val second = StringBuilder(first).apply {
+            setCharAt("```mermaid\n".length + 20, 'b')
+            setCharAt("```mermaid\n".length + 100, 'c')
+        }.toString()
+
+        assertNotEquals(
+            conversationMarkdownRenderToken(first),
+            conversationMarkdownRenderToken(second),
+        )
+    }
+
+    @Test
     fun `markdown parser extracts fenced code blocks as standalone segments`() {
         val markdown = """
             Before paragraph

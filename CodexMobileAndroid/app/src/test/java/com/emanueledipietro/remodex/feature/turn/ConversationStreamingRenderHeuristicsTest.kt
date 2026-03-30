@@ -5,16 +5,31 @@ import org.junit.Test
 
 class ConversationStreamingRenderHeuristicsTest {
     @Test
-    fun `streaming plain text display preserves newlines and expands tabs`() {
+    fun `streaming plain text display leaves tabs and newlines untouched`() {
         val formatted = formatStreamingPlainTextForDisplay("A\n\tB")
 
-        assertEquals("A\n    B", formatted)
+        assertEquals("A\n\tB", formatted)
     }
 
     @Test
-    fun `streaming plain text display preserves repeated spaces for tables`() {
-        val formatted = formatStreamingPlainTextForDisplay("| a  | b |")
+    fun `streaming plain text display leaves mermaid fences untouched`() {
+        val formatted = formatStreamingPlainTextForDisplay(
+            """
+            ```mermaid
+            graph TD
+            A-->B
+            ```
+            """.trimIndent(),
+        )
 
-        assertEquals("| a  | b |", formatted)
+        assertEquals(
+            """
+            ```mermaid
+            graph TD
+            A-->B
+            ```
+            """.trimIndent(),
+            formatted,
+        )
     }
 }

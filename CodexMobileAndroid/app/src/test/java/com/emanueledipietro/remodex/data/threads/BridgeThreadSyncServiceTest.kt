@@ -4779,6 +4779,85 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `final answer completion alone does not clear running state without terminal lifecycle events`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-final-answer-fallback",
+                    title = "Final answer fallback thread",
+                    preview = "Working...",
+                    projectPath = "/tmp/project-final-answer-fallback",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-item-final",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Partial",
+                                turnId = "turn-final-answer-fallback",
+                                itemId = "assistant-item-final",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-final-answer-fallback",
+            "turn-final-answer-fallback",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-final-answer-fallback"))
+                put("turnId", JsonPrimitive("turn-final-answer-fallback"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-item-final"))
+                        put("type", JsonPrimitive("agent_message"))
+                        put("phase", JsonPrimitive("final_answer"))
+                        put("text", JsonPrimitive("Finished response"))
+                    },
+                )
+            },
+            true,
+        )
+        advanceUntilIdle()
+
+        val thread = service.threads.value.first { it.id == "thread-final-answer-fallback" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .first { item -> item.id == "assistant-item-final" }
+
+        assertEquals("Finished response", assistant.text)
+        assertFalse(assistant.isStreaming)
+        assertTrue(thread.isRunning)
+        assertEquals("turn-final-answer-fallback", thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+    }
+
+    @Test
     fun `forced lifecycle catchup keeps retrying until delayed history is complete`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

@@ -84,6 +84,7 @@ import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import org.json.JSONObject
+import java.security.MessageDigest
 
 internal sealed interface ConversationMarkdownSegment {
     data class Markdown(val text: String) : ConversationMarkdownSegment
@@ -131,36 +132,14 @@ private data class ConversationMarkdownTextRenderToken(
     val enablesSelection: Boolean,
 )
 
-private const val ConversationMarkdownRenderTokenSampleSize = 16
-
 internal fun conversationMarkdownRenderToken(text: String): String {
-    if (text.isEmpty()) {
-        return "0|||"
-    }
-
-    fun sample(startIndex: Int): String {
-        val length = text.length
-        val safeStart = startIndex.coerceIn(0, (length - 1).coerceAtLeast(0))
-        val safeEnd = (safeStart + ConversationMarkdownRenderTokenSampleSize).coerceAtMost(length)
-        val builder = StringBuilder((safeEnd - safeStart) * 2)
-        for (index in safeStart until safeEnd) {
-            val code = text[index].code
-            builder.append(code.toString(16))
-            builder.append('-')
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest(text.toByteArray(Charsets.UTF_8))
+    return buildString(digest.size * 2) {
+        digest.forEach { byte ->
+            append(((byte.toInt() ushr 4) and 0xF).toString(16))
+            append((byte.toInt() and 0xF).toString(16))
         }
-        return builder.toString()
-    }
-
-    val midStart = ((text.length - ConversationMarkdownRenderTokenSampleSize) / 2).coerceAtLeast(0)
-    val endStart = (text.length - ConversationMarkdownRenderTokenSampleSize).coerceAtLeast(0)
-    return buildString {
-        append(text.length)
-        append('|')
-        append(sample(startIndex = 0))
-        append('|')
-        append(sample(startIndex = midStart))
-        append('|')
-        append(sample(startIndex = endStart))
     }
 }
 

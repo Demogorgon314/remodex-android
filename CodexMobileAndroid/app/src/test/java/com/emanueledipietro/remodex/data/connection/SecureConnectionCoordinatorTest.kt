@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.connection
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -325,6 +326,42 @@ class SecureConnectionCoordinatorTest {
         assertTrue(pendingRequest.isCancelled)
     }
 
+    @Test
+    fun `incoming notifications preserve turn completion after many streaming deltas`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+
+        repeat(80) { index ->
+            invokePrivateMethod<Unit>(
+                coordinator,
+                "routeIncomingPayload",
+                """{"method":"item/agentMessage/delta","params":{"delta":"chunk-$index"}}""",
+            )
+        }
+        invokePrivateMethod<Unit>(
+            coordinator,
+            "routeIncomingPayload",
+            """{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}""",
+        )
+
+        val queuedMethods = mutableListOf<String>()
+        val notifications = notificationsChannel(coordinator)
+        while (true) {
+            val result = notifications.tryReceive()
+            if (result.isFailure) {
+                break
+            }
+            queuedMethods += result.getOrThrow().method.orEmpty()
+        }
+
+        assertEquals(81, queuedMethods.size)
+        assertEquals("turn/completed", queuedMethods.last())
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,
@@ -346,6 +383,15 @@ class SecureConnectionCoordinatorTest {
         val field = SecureConnectionCoordinator::class.java.getDeclaredField("pendingRequests")
         field.isAccessible = true
         return field.get(coordinator) as LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun notificationsChannel(
+        coordinator: SecureConnectionCoordinator,
+    ): Channel<RpcMessage> {
+        val field = SecureConnectionCoordinator::class.java.getDeclaredField("notificationsChannel")
+        field.isAccessible = true
+        return field.get(coordinator) as Channel<RpcMessage>
     }
 
     private fun <T> invokePrivateMethod(

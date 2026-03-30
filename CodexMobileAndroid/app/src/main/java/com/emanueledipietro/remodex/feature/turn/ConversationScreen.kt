@@ -1584,18 +1584,7 @@ private fun ConversationMarkdownText(
 }
 
 internal fun formatStreamingPlainTextForDisplay(text: String): String {
-    val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
-    if (normalized.isEmpty()) {
-        return normalized
-    }
-    return buildString(normalized.length) {
-        normalized.forEach { character ->
-            when (character) {
-                '\t' -> append("    ")
-                else -> append(character)
-            }
-        }
-    }
+    return text
 }
 
 @Composable
@@ -6180,21 +6169,21 @@ private fun AssistantConversationRow(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-                if (item.text.isNotBlank()) {
-                    if (item.isStreaming) {
-                        LightweightStreamingAssistantMarkdownText(
-                            text = item.text,
-                            chrome = chrome,
-                        )
-                    } else {
-                        ConversationMarkdownText(
-                            text = item.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = chrome.bodyText,
-                            onLongPress = showContextMenuAt,
-                        )
-                    }
+            if (item.text.isNotBlank()) {
+                if (item.isStreaming) {
+                    LightweightStreamingAssistantMarkdownText(
+                        text = item.text,
+                        chrome = chrome,
+                    )
+                } else {
+                    ConversationMarkdownText(
+                        text = item.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
+                        onLongPress = showContextMenuAt,
+                    )
                 }
+            }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
                 Text(
                     text = supportingText,
