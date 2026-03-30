@@ -1646,6 +1646,14 @@ private fun ConversationTopOverlays(
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = chrome.titleText,
+                            modifier = Modifier.remodexLabelShimmer(
+                                enabled = uiState.connectionStatus.phase == RemodexConnectionPhase.RETRYING,
+                                durationMillis = 1250,
+                                highlightAlpha = 0.5f,
+                                bandCoverage = 0.62f,
+                                startPhase = -0.75f,
+                                endPhase = 1.45f,
+                            ),
                         )
                         Text(
                             text = uiState.connectionMessage,
@@ -6446,7 +6454,7 @@ private fun ThinkingTitle(
         modifier = Modifier.remodexLabelShimmer(
             enabled = isStreaming,
             durationMillis = 1600,
-            highlightAlpha = 0.45f,
+            highlightAlpha = 0.58f,
             bandCoverage = 0.6f,
             startPhase = -0.6f,
             endPhase = 1.4f,
@@ -7597,7 +7605,7 @@ private fun TerminalRunningIndicator() {
             modifier = Modifier.remodexLabelShimmer(
                 enabled = true,
                 durationMillis = 4000,
-                highlightAlpha = 0.35f,
+                highlightAlpha = 0.52f,
                 bandCoverage = 0.5f,
                 startPhase = -0.5f,
                 endPhase = 5f,
