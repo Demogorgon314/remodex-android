@@ -6632,46 +6632,38 @@ private fun FileChangeConversationRow(
         allowsSelectText = true,
         onClick = detailsPresentation?.let { presentation -> { onOpenDetails(presentation) } },
     ) { showContextMenuAt ->
-        Surface(
-            color = chrome.panelSurface,
-            shape = RemodexConversationShapes.card,
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (groupedEntries.isNotEmpty()) {
-                    groupedEntries.forEach { group ->
-                        FileChangeInlineGroup(
-                            group = group,
-                            chrome = chrome,
-                        )
-                    }
-                } else if (item.text.isNotBlank()) {
-                    ConversationMarkdownText(
-                        text = item.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = chrome.bodyText,
-                        onLongPress = showContextMenuAt,
+            if (groupedEntries.isNotEmpty()) {
+                groupedEntries.forEach { group ->
+                    FileChangeInlineGroup(
+                        group = group,
+                        chrome = chrome,
                     )
                 }
-                item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-                    Text(
-                        text = supportingText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = chrome.secondaryText,
-                    )
-                }
-                if (accessoryState?.showsRunningIndicator == true) {
-                    TerminalRunningIndicator()
-                } else if (item.isStreaming) {
-                    StreamingIndicator(label = "Running")
-                }
+            } else if (item.text.isNotBlank()) {
+                ConversationMarkdownText(
+                    text = item.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
+                    onLongPress = showContextMenuAt,
+                )
+            }
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            } else if (item.isStreaming) {
+                StreamingIndicator(label = "Running")
             }
         }
     }
@@ -6684,12 +6676,12 @@ private fun FileChangeInlineGroup(
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Text(
             text = group.key,
             style = MaterialTheme.typography.labelSmall,
-            color = chrome.secondaryText.copy(alpha = 0.72f),
+            color = chrome.secondaryText.copy(alpha = 0.6f),
         )
         group.entries.forEach { entry ->
             FileChangeInlineActionRow(
@@ -6707,44 +6699,31 @@ private fun FileChangeInlineActionRow(
     showActionLabel: Boolean,
     chrome: RemodexConversationChrome,
 ) {
+    val linkColor = MaterialTheme.colorScheme.primary
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
         if (showActionLabel) {
             Text(
                 text = entry.action?.label ?: FileChangeAction.EDITED.label,
                 style = MaterialTheme.typography.labelSmall,
-                color = chrome.secondaryText.copy(alpha = 0.72f),
+                color = chrome.secondaryText.copy(alpha = 0.6f),
             )
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
+            Text(
+                text = entry.compactPath,
+                style = MaterialTheme.typography.bodySmall,
+                color = linkColor,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis,
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = entry.compactPath,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = chrome.accent,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                entry.fullDirectoryPath?.let { directoryPath ->
-                    Text(
-                        text = directoryPath,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = chrome.tertiaryText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
+            )
             FileChangeDiffCounts(
                 additions = entry.additions,
                 deletions = entry.deletions,
@@ -9726,26 +9705,27 @@ private fun AssistantBlockDiffAction(
     val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
     val totalAdditions = remember(entries) { entries.sumOf(FileChangeSummaryEntry::additions) }
     val totalDeletions = remember(entries) { entries.sumOf(FileChangeSummaryEntry::deletions) }
+    val buttonShape = RoundedCornerShape(12.dp)
 
     Surface(
-        color = chrome.nestedSurface,
-        shape = RemodexConversationShapes.nestedCard,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+        shape = buttonShape,
+        border = BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.9f)),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
         Row(
             modifier = Modifier
                 .clickable(onClick = onTap)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 imageVector = Icons.Outlined.Search,
                 contentDescription = null,
-                tint = chrome.secondaryText,
-                modifier = Modifier.size(14.dp),
+                tint = chrome.secondaryText.copy(alpha = 0.9f),
+                modifier = Modifier.size(13.dp),
             )
             Text(
                 text = "Diff",

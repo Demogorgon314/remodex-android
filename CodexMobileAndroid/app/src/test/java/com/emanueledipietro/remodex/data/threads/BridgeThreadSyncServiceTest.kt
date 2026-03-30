@@ -61,6 +61,22 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `approval decision response wraps decision in object shape`() {
+        assertEquals(
+            buildJsonObject {
+                put("decision", JsonPrimitive("accept"))
+            },
+            buildApprovalDecisionResponse("accept"),
+        )
+        assertEquals(
+            buildJsonObject {
+                put("decision", JsonPrimitive("decline"))
+            },
+            buildApprovalDecisionResponse("decline"),
+        )
+    }
+
+    @Test
     fun `assistant lifecycle start text preserves existing streaming content and ignores lifecycle body`() {
         assertEquals("", assistantLifecycleStartedText(null))
         assertEquals("already streamed", assistantLifecycleStartedText("already streamed"))

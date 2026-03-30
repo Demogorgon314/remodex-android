@@ -140,6 +140,7 @@ class DefaultRemodexAppRepository(
             bridgeUpdatePrompt = threadSyncService.bridgeUpdatePrompt.value,
             supportsThreadFork = threadSyncService.supportsThreadFork.value,
             availableModels = threadSyncService.availableModels.value,
+            pendingApprovalRequest = threadSyncService.pendingApprovalRequest.value,
             threads = initialBaseThreads,
             selectedThreadId = initialBaseThreads.firstOrNull()?.id,
             selectedThreadSnapshot = initialBaseThreads.firstOrNull(),
@@ -229,11 +230,13 @@ class DefaultRemodexAppRepository(
                         availableModels = availableModels,
                         bridgeUpdatePrompt = null,
                         supportsThreadFork = true,
+                        pendingApprovalRequest = null,
                     )
                 },
                 threadSyncService.bridgeUpdatePrompt,
                 threadSyncService.supportsThreadFork,
-            ) { baseInputs, bridgeUpdatePrompt, supportsThreadFork ->
+                threadSyncService.pendingApprovalRequest,
+            ) { baseInputs, bridgeUpdatePrompt, supportsThreadFork, pendingApprovalRequest ->
                 SessionInputs(
                     preferences = baseInputs.preferences,
                     secureConnection = baseInputs.secureConnection,
@@ -242,6 +245,7 @@ class DefaultRemodexAppRepository(
                     availableModels = baseInputs.availableModels,
                     bridgeUpdatePrompt = bridgeUpdatePrompt,
                     supportsThreadFork = supportsThreadFork,
+                    pendingApprovalRequest = pendingApprovalRequest,
                 )
             }.collectLatest { inputs ->
                 val preferences = inputs.preferences
@@ -293,6 +297,7 @@ class DefaultRemodexAppRepository(
                         ),
                         bridgeUpdatePrompt = inputs.bridgeUpdatePrompt,
                         supportsThreadFork = inputs.supportsThreadFork,
+                        pendingApprovalRequest = inputs.pendingApprovalRequest,
                         threads = threads,
                         selectedThreadId = selectedThreadId,
                         selectedThreadSnapshot = resolveSelectedThreadSnapshot(
@@ -837,6 +842,14 @@ class DefaultRemodexAppRepository(
         answersByQuestionId: Map<String, List<String>>,
     ) {
         threadCommandService.respondToStructuredUserInput(requestId, answersByQuestionId)
+    }
+
+    override suspend fun approvePendingApproval(forSession: Boolean) {
+        threadCommandService.approvePendingApproval(forSession)
+    }
+
+    override suspend fun declinePendingApproval() {
+        threadCommandService.declinePendingApproval()
     }
 
     override suspend fun continueOnMac(threadId: String) {
@@ -2097,6 +2110,7 @@ private data class SessionInputs(
     val availableModels: List<RemodexModelOption>,
     val bridgeUpdatePrompt: com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt?,
     val supportsThreadFork: Boolean,
+    val pendingApprovalRequest: com.emanueledipietro.remodex.model.RemodexApprovalRequest?,
 )
 
 private fun resolveSelectedThreadId(

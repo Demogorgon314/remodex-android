@@ -831,6 +831,66 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project removes duplicate file change rows when finalized relative path payload supersedes absolute path recap`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "file-absolute",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = """
+                        Edited /Users/wangkai/Developer/github/remodex/CodexMobileAndroid/app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt
+                    """.trimIndent(),
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "file-relative",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = """
+                        Edited CodexMobileAndroid/app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt +12 -11
+                    """.trimIndent(),
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("file-relative"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `project keeps distinct file change rows when paths differ`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "file-client",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "Edited client/src/App.kt +2 -1",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "file-server",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "Edited server/src/App.kt +3 -2",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("file-client", "file-server"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `project upgrades placeholder subagent cards when populated agent rows arrive`() {
         val projected = TurnTimelineReducer.project(
             listOf(

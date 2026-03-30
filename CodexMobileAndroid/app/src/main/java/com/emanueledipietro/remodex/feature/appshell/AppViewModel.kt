@@ -14,6 +14,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
@@ -125,6 +126,7 @@ data class AppUiState(
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
+    val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val isCreatingThread: Boolean = false,
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
@@ -504,6 +506,13 @@ class AppViewModel(
                 bridgeProfiles = snapshot.bridgeProfiles,
                 bridgeUpdatePrompt = snapshot.bridgeUpdatePrompt,
                 supportsThreadFork = snapshot.supportsThreadFork,
+                pendingApprovalRequest = selectedThread?.let { thread ->
+                    snapshot.pendingApprovalRequest?.takeIf { request ->
+                        request.threadId.isNullOrBlank() || request.threadId == thread.id
+                    }
+                } ?: snapshot.pendingApprovalRequest?.takeIf { request ->
+                    request.threadId.isNullOrBlank()
+                },
                 composer = composerState(
                     draftText = draftText,
                     attachments = attachments,
@@ -1077,6 +1086,32 @@ class AppViewModel(
         answersByQuestionId: Map<String, List<String>>,
     ) {
         repository.respondToStructuredUserInput(requestId, answersByQuestionId)
+    }
+
+    fun approvePendingApproval() {
+        viewModelScope.launch {
+            runCatching {
+                repository.approvePendingApproval()
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                presentTransientBanner(error.message ?: "Could not approve this request.")
+            }
+        }
+    }
+
+    fun declinePendingApproval() {
+        viewModelScope.launch {
+            runCatching {
+                repository.declinePendingApproval()
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                presentTransientBanner(error.message ?: "Could not decline this request.")
+            }
+        }
     }
 
     suspend fun sendPlanFollowUp(

@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.app
 
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
@@ -26,6 +27,7 @@ data class RemodexSessionSnapshot(
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
+    val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val threads: List<RemodexThreadSummary> = emptyList(),
     val selectedThreadId: String? = null,
     val selectedThreadSnapshot: RemodexThreadSummary? = null,

@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
@@ -55,6 +56,7 @@ interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
+    val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?>
     val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?>
     val supportsThreadFork: StateFlow<Boolean>
 
@@ -90,6 +92,10 @@ interface ThreadCommandService {
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,
     )
+
+    suspend fun approvePendingApproval(forSession: Boolean = false)
+
+    suspend fun declinePendingApproval()
 
     suspend fun continueOnMac(threadId: String)
 

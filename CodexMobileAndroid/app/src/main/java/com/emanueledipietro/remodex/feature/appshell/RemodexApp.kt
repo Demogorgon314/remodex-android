@@ -106,6 +106,7 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeDetailSheet
 import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
@@ -1066,6 +1067,24 @@ private fun MainPane(
             )
         }
 
+        uiState.pendingApprovalRequest?.let { request ->
+            AlertDialog(
+                onDismissRequest = {},
+                dismissButton = {
+                    TextButton(onClick = viewModel::declinePendingApproval) {
+                        Text("Decline")
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = viewModel::approvePendingApproval) {
+                        Text("Approve")
+                    }
+                },
+                title = { Text("Approval request") },
+                text = { Text(approvalRequestMessage(request)) },
+            )
+        }
+
         if (uiState.showDesktopHandoffConfirm) {
             AlertDialog(
                 onDismissRequest = viewModel::dismissDesktopHandoffDialogs,
@@ -1096,6 +1115,24 @@ private fun MainPane(
                 text = { DesktopHandoffErrorBody(message = message) },
             )
         }
+    }
+}
+
+private fun approvalRequestMessage(request: RemodexApprovalRequest): String {
+    val lines = buildList {
+        request.reason
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let(::add)
+        request.command
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { command -> add("Command: $command") }
+    }
+    return if (lines.isEmpty()) {
+        "Codex is requesting permission to continue."
+    } else {
+        lines.joinToString(separator = "\n\n")
     }
 }
 

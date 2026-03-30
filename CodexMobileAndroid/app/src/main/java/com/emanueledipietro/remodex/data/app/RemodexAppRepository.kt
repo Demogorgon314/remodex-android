@@ -77,6 +77,10 @@ interface RemodexAppRepository {
         answersByQuestionId: Map<String, List<String>>,
     )
 
+    suspend fun approvePendingApproval(forSession: Boolean = false)
+
+    suspend fun declinePendingApproval()
+
     suspend fun continueOnMac(threadId: String)
 
     suspend fun stopTurn(threadId: String)

@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -217,6 +218,7 @@ class BridgeThreadSyncService(
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
         MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
     private val activeTurnIdByThread = mutableMapOf<String, String>()
@@ -240,6 +242,7 @@ class BridgeThreadSyncService(
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
         backingCommandExecutionDetails
+    override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
 
@@ -284,6 +287,7 @@ class BridgeThreadSyncService(
                     resumedThreadIds.clear()
                     backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
+                    backingPendingApprovalRequest.value = null
                 }
             }
         }
@@ -756,6 +760,35 @@ class BridgeThreadSyncService(
             id = requestId,
             result = buildStructuredUserInputResponse(answersByQuestionId),
         )
+    }
+
+    override suspend fun approvePendingApproval(forSession: Boolean) {
+        val request = backingPendingApprovalRequest.value
+            ?: throw IllegalStateException("No pending approval request.")
+        val normalizedMethod = request.method.trim()
+        val isCommandApproval =
+            normalizedMethod == "item/commandExecution/requestApproval" ||
+                normalizedMethod == "item/command_execution/request_approval"
+        val decision = if (forSession && isCommandApproval) {
+            "acceptForSession"
+        } else {
+            "accept"
+        }
+        secureConnectionCoordinator.sendResponse(
+            id = request.requestId,
+            result = buildApprovalDecisionResponse(decision),
+        )
+        backingPendingApprovalRequest.value = null
+    }
+
+    override suspend fun declinePendingApproval() {
+        val request = backingPendingApprovalRequest.value
+            ?: throw IllegalStateException("No pending approval request.")
+        secureConnectionCoordinator.sendResponse(
+            id = request.requestId,
+            result = buildApprovalDecisionResponse("decline"),
+        )
+        backingPendingApprovalRequest.value = null
     }
 
     override suspend fun continueOnMac(threadId: String) {
@@ -2029,6 +2062,18 @@ class BridgeThreadSyncService(
         val requestId = message.id
         val paramsObject = message.params?.jsonObjectOrNull
         when (method) {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval" -> {
+                if (requestId != null) {
+                    handleApprovalRequest(
+                        requestId = requestId,
+                        method = method,
+                        paramsObject = paramsObject,
+                        params = message.params,
+                    )
+                    return
+                }
+            }
             "item/tool/requestUserInput" -> {
                 if (requestId != null && paramsObject != null) {
                     handleStructuredUserInputRequest(
@@ -2038,6 +2083,15 @@ class BridgeThreadSyncService(
                     return
                 }
             }
+        }
+        if (method.endsWith("requestApproval") && requestId != null) {
+            handleApprovalRequest(
+                requestId = requestId,
+                method = method,
+                paramsObject = paramsObject,
+                params = message.params,
+            )
+            return
         }
         secureConnectionCoordinator.sendErrorResponse(
             id = requestId,
@@ -2359,10 +2413,47 @@ class BridgeThreadSyncService(
     private fun handleServerRequestResolvedNotification(paramsObject: JsonObject) {
         val requestId = paramsObject.firstValue("requestId", "request_id") ?: return
         val threadId = resolveThreadId(paramsObject)
+        removePendingApprovalRequest(
+            requestId = requestId,
+            threadIdHint = threadId,
+        )
         removeStructuredUserInputPrompt(
             requestId = requestId,
             threadIdHint = threadId,
         )
+    }
+
+    private suspend fun handleApprovalRequest(
+        requestId: JsonElement,
+        method: String,
+        paramsObject: JsonObject?,
+        params: JsonElement?,
+    ) {
+        val request = RemodexApprovalRequest(
+            id = rpcIdKey(requestId) ?: requestId.toString(),
+            requestId = requestId,
+            method = method,
+            command = paramsObject?.firstString("command"),
+            reason = paramsObject?.firstString("reason"),
+            threadId = paramsObject?.firstString("threadId", "thread_id"),
+            turnId = paramsObject?.firstString("turnId", "turn_id"),
+            params = params,
+        )
+        if (approvalAccessMode(threadId = request.threadId) == RemodexAccessMode.FULL_ACCESS) {
+            try {
+                secureConnectionCoordinator.sendResponse(
+                    id = requestId,
+                    result = buildApprovalDecisionResponse("accept"),
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                backingPendingApprovalRequest.value = request
+            }
+            return
+        }
+        backingPendingApprovalRequest.value = request
     }
 
     private fun appendFileChangeDelta(paramsObject: JsonObject) {
@@ -3220,6 +3311,32 @@ class BridgeThreadSyncService(
                     )
                 }
         }
+    }
+
+    private fun removePendingApprovalRequest(
+        requestId: JsonElement,
+        threadIdHint: String? = null,
+    ) {
+        val resolvedRequestId = rpcIdKey(requestId) ?: return
+        val currentRequest = backingPendingApprovalRequest.value ?: return
+        if (currentRequest.id != resolvedRequestId) {
+            return
+        }
+        if (threadIdHint != null && currentRequest.threadId != null && currentRequest.threadId != threadIdHint) {
+            return
+        }
+        backingPendingApprovalRequest.value = null
+    }
+
+    private fun approvalAccessMode(threadId: String?): RemodexAccessMode {
+        if (threadId == null) {
+            return RemodexAccessMode.ON_REQUEST
+        }
+        return backingThreads.value
+            .firstOrNull { snapshot -> snapshot.id == threadId }
+            ?.runtimeConfig
+            ?.accessMode
+            ?: RemodexAccessMode.ON_REQUEST
     }
 
     private fun appendSystemTextDelta(
@@ -6610,6 +6727,12 @@ internal fun buildStructuredUserInputResponse(
                 }
             },
         )
+    }
+}
+
+internal fun buildApprovalDecisionResponse(decision: String): JsonObject {
+    return buildJsonObject {
+        put("decision", JsonPrimitive(decision))
     }
 }
 

@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
@@ -48,6 +49,7 @@ class FakeThreadSyncService(
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
     private val resumedThreadIds = mutableSetOf<String>()
@@ -58,6 +60,7 @@ class FakeThreadSyncService(
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = backingCommandExecutionDetails
+    override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
 
@@ -71,6 +74,10 @@ class FakeThreadSyncService(
 
     fun updateSupportsThreadFork(supports: Boolean) {
         backingSupportsThreadFork.value = supports
+    }
+
+    fun updatePendingApprovalRequest(request: RemodexApprovalRequest?) {
+        backingPendingApprovalRequest.value = request
     }
 
     fun updateThreads(threads: List<ThreadSyncSnapshot>) {
@@ -312,6 +319,14 @@ class FakeThreadSyncService(
         answersByQuestionId: Map<String, List<String>>,
     ) {
         // Fake mode accepts the response without changing timeline state.
+    }
+
+    override suspend fun approvePendingApproval(forSession: Boolean) {
+        backingPendingApprovalRequest.value = null
+    }
+
+    override suspend fun declinePendingApproval() {
+        backingPendingApprovalRequest.value = null
     }
 
     override suspend fun continueOnMac(threadId: String) {

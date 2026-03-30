@@ -13,6 +13,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
@@ -52,6 +53,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
@@ -129,6 +131,75 @@ class AppViewModelTest {
         assertEquals(1, repository.dismissBridgeUpdatePromptCalls)
         assertEquals(1, repository.retryConnectionCalls)
         assertNull(viewModel.uiState.value.bridgeUpdatePrompt)
+    }
+
+    @Test
+    fun `pending approval is shown only for the selected thread and approve delegates to repository`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Composer thread",
+            projectPath = "/tmp/remodex",
+        )
+        val otherThread = threadSummary(
+            id = "thread-2",
+            title = "Other thread",
+            projectPath = "/tmp/remodex-2",
+        )
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(selectedThread, otherThread),
+            selectedThreadId = selectedThread.id,
+            selectedThreadSnapshot = selectedThread,
+            pendingApprovalRequest = RemodexApprovalRequest(
+                id = "approval-1",
+                requestId = JsonPrimitive("req-1"),
+                method = "item/commandExecution/requestApproval",
+                command = "git status",
+                reason = "Need to inspect the repo state.",
+                threadId = selectedThread.id,
+            ),
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals("approval-1", viewModel.uiState.value.pendingApprovalRequest?.id)
+
+        viewModel.approvePendingApproval()
+        advanceUntilIdle()
+
+        assertEquals(listOf(false), repository.approvePendingApprovalRequests)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            pendingApprovalRequest = RemodexApprovalRequest(
+                id = "approval-2",
+                requestId = JsonPrimitive("req-2"),
+                method = "item/commandExecution/requestApproval",
+                threadId = otherThread.id,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.pendingApprovalRequest)
+    }
+
+    @Test
+    fun `declining pending approval delegates to repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                pendingApprovalRequest = RemodexApprovalRequest(
+                    id = "approval-1",
+                    requestId = JsonPrimitive("req-1"),
+                    method = "item/fileChange/requestApproval",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.declinePendingApproval()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.declinePendingApprovalRequests)
     }
 
     @Test
@@ -1948,6 +2019,7 @@ class AppViewModelTest {
         val commitGitChangesRequests = mutableListOf<Pair<String, String?>>()
         val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
         val continueOnMacRequests = mutableListOf<String>()
+        val approvePendingApprovalRequests = mutableListOf<Boolean>()
         val discardRuntimeChangesRequests = mutableListOf<String>()
         val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
         val forkThreadRequests = mutableListOf<Triple<String, RemodexComposerForkDestination, String?>>()
@@ -1966,6 +2038,7 @@ class AppViewModelTest {
         var createThreadError: Throwable? = null
         var sendPromptError: Throwable? = null
         var continueOnMacError: Throwable? = null
+        var declinePendingApprovalRequests = 0
         var forkThreadError: Throwable? = null
         var forkThreadResult: String? = null
         var forkThreadFailureSessionSnapshot: RemodexSessionSnapshot? = null
@@ -2109,6 +2182,14 @@ class AppViewModelTest {
             requestId: JsonElement,
             answersByQuestionId: Map<String, List<String>>,
         ) = Unit
+
+        override suspend fun approvePendingApproval(forSession: Boolean) {
+            approvePendingApprovalRequests += forSession
+        }
+
+        override suspend fun declinePendingApproval() {
+            declinePendingApprovalRequests += 1
+        }
 
         override suspend fun continueOnMac(threadId: String) {
             continueOnMacRequests += threadId

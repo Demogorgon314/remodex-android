@@ -128,6 +128,18 @@ data class RemodexStructuredUserInputRequest(
 }
 
 @Serializable
+data class RemodexApprovalRequest(
+    val id: String,
+    val requestId: JsonElement,
+    val method: String,
+    val command: String? = null,
+    val reason: String? = null,
+    val threadId: String? = null,
+    val turnId: String? = null,
+    val params: JsonElement? = null,
+)
+
+@Serializable
 data class RemodexSubagentRef(
     val threadId: String,
     val agentId: String? = null,

@@ -951,14 +951,123 @@ object TurnTimelineReducer {
             key = key,
             paths = paths,
             isStreaming = item.isStreaming,
+            hasNonZeroTotals = fileChangeHasNonZeroTotals(item.text),
         )
     }
 
     private fun extractFileChangePaths(text: String): Set<String> {
+        val keys = mutableSetOf<String>()
+        text.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .forEach { line ->
+                var candidate = line
+                if (candidate.startsWith("- ") || candidate.startsWith("* ") || candidate.startsWith("• ")) {
+                    candidate = candidate.drop(2).trim()
+                }
+
+                when {
+                    candidate.startsWith("Path:", ignoreCase = true) -> {
+                        normalizedFileChangePathKey(candidate.drop(5))?.let(keys::add)
+                    }
+
+                    candidate.startsWith("+++ ") || candidate.startsWith("--- ") -> {
+                        normalizedFileChangePathKey(candidate.drop(4))?.let(keys::add)
+                    }
+
+                    candidate.startsWith("diff --git ") -> {
+                        val components = candidate.split(' ').filter(String::isNotBlank)
+                        if (components.size >= 4) {
+                            normalizedFileChangePathKey(components[3])?.let(keys::add)
+                        }
+                    }
+
+                    else -> {
+                        val lower = candidate.lowercase()
+                        val actionVerb = fileChangeActionPrefixes.firstOrNull(lower::startsWith)
+                        if (actionVerb != null) {
+                            val rawPath = inlineTotalsRegex.replace(
+                                candidate.drop(actionVerb.length).trim(),
+                                "",
+                            ).trim()
+                            normalizedFileChangePathKey(rawPath)?.let(keys::add)
+                        }
+                    }
+                }
+            }
+
+        if (keys.isNotEmpty()) {
+            return keys
+        }
+
         return filePathRegex.findAll(text)
-            .map { match -> match.value }
-            .filter { value -> value.contains('.') }
+            .mapNotNull { match -> normalizedFileChangePathKey(match.value) }
             .toSet()
+    }
+
+    private fun normalizedFileChangePathKey(rawPath: String): String? {
+        var normalized = rawPath.trim()
+        if (normalized.isEmpty() || normalized == "/dev/null") {
+            return null
+        }
+
+        normalized = normalized
+            .replace('\\', '/')
+            .replace("`", "")
+            .replace("\"", "")
+            .replace("'", "")
+
+        if (normalized.startsWith("(") && normalized.endsWith(")") && normalized.length > 2) {
+            normalized = normalized.drop(1).dropLast(1)
+        }
+        if (normalized.startsWith("a/") || normalized.startsWith("b/")) {
+            normalized = normalized.drop(2)
+        }
+        if (normalized.startsWith("./")) {
+            normalized = normalized.drop(2)
+        }
+
+        normalized = lineNumberSuffixRegex.replace(normalized, "")
+        while (normalized.isNotEmpty() && normalized.last() in trailingPathPunctuation) {
+            normalized = normalized.dropLast(1)
+        }
+
+        normalized = normalized.trim().replace(duplicateSlashRegex, "/")
+        return normalized.takeIf(String::isNotEmpty)?.lowercase()
+    }
+
+    private fun fileChangeHasNonZeroTotals(text: String): Boolean {
+        if (text.lineSequence().any { line -> inlineTotalsRegex.containsMatchIn(line.trim()) }) {
+            return true
+        }
+        return FileChangeRenderParser.renderState(text).summary?.entries?.any { entry ->
+            entry.additions > 0 || entry.deletions > 0
+        } == true
+    }
+
+    private fun fileChangePathsContainedBy(
+        olderPaths: Set<String>,
+        newerPaths: Set<String>,
+    ): Boolean {
+        return olderPaths.all { olderPath ->
+            newerPaths.any { newerPath -> fileChangePathMatches(lhs = olderPath, rhs = newerPath) }
+        }
+    }
+
+    private fun fileChangePathMatches(
+        lhs: String,
+        rhs: String,
+    ): Boolean {
+        if (lhs == rhs) {
+            return true
+        }
+
+        val (longer, shorter) = if (lhs.length >= rhs.length) lhs to rhs else rhs to lhs
+        if (!longer.endsWith("/$shorter")) {
+            return false
+        }
+
+        return shorter.count { it == '/' } >= 1
     }
 
     private fun fileChangeMessage(
@@ -978,10 +1087,17 @@ object TurnTimelineReducer {
         if (newer.paths.isEmpty() || older.paths.isEmpty()) {
             return false
         }
-        if (older.turnId == null && newer.turnId != null && older.paths.all(newer.paths::contains)) {
+        val newerContainsOlderPaths = fileChangePathsContainedBy(
+            olderPaths = older.paths,
+            newerPaths = newer.paths,
+        )
+        if (older.turnId == null && newer.turnId != null && newerContainsOlderPaths) {
             return true
         }
-        if (older.isStreaming && !newer.isStreaming && older.paths.all(newer.paths::contains)) {
+        if (older.isStreaming && !newer.isStreaming && newerContainsOlderPaths) {
+            return true
+        }
+        if (newerContainsOlderPaths && newer.hasNonZeroTotals && !older.hasNonZeroTotals) {
             return true
         }
         return false
@@ -1082,7 +1198,22 @@ object TurnTimelineReducer {
         val key: String?,
         val paths: Set<String>,
         val isStreaming: Boolean,
+        val hasNonZeroTotals: Boolean,
     )
 
     private val filePathRegex = Regex("""(?<![\w/])(?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9_-]+""")
+    private val inlineTotalsRegex = Regex("""\s*[+\uFF0B]\s*\d+\s*[-\u2212\u2013\u2014\uFE63\uFF0D]\s*\d+\s*$""")
+    private val lineNumberSuffixRegex = Regex(""":\d+(?::\d+)?$""")
+    private val duplicateSlashRegex = Regex("/+")
+    private val trailingPathPunctuation = setOf(',', '.', ';')
+    private val fileChangeActionPrefixes = listOf(
+        "edited ",
+        "updated ",
+        "added ",
+        "created ",
+        "deleted ",
+        "removed ",
+        "renamed ",
+        "moved ",
+    )
 }
