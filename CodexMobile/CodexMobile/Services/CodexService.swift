@@ -174,6 +174,7 @@ enum CodexNotificationPayloadKeys {
     static let threadId = "threadId"
     static let turnId = "turnId"
     static let result = "result"
+    static let requestId = "requestId"
 }
 
 // Tracks the real terminal outcome of a run, including user interruption.
@@ -339,6 +340,8 @@ final class CodexService {
     var supportsTurnCollaborationMode = false
     // Runtime compatibility flag for `thread/start|turn/start.serviceTier` speed controls.
     var supportsServiceTier = true
+    // Runtime compatibility flag for the bridge-owned `voice/resolveAuth` voice flow.
+    var supportsBridgeVoiceAuth = true
     // Runtime compatibility flag for native `thread/fork` conversation branching.
     var supportsThreadFork = true
     // Seeds brand-new chats with one-shot composer actions like code review.
@@ -368,6 +371,8 @@ final class CodexService {
     var hasPresentedServiceTierBridgeUpdatePrompt = false
     var hasPresentedThreadForkBridgeUpdatePrompt = false
     var hasPresentedMinimumBridgePackageUpdatePrompt = false
+    // Remembers the latest optional npm update we already surfaced so foreground refreshes stay non-spammy.
+    var lastPresentedAvailableBridgePackageVersion: String?
     // Mirrors the sidebar ready-dot with a tappable in-app banner when another chat finishes.
     var threadCompletionBanner: CodexThreadCompletionBanner?
     // Explains why a push-opened chat could not be restored and offers a recovery path.
@@ -430,6 +435,7 @@ final class CodexService {
     var backgroundTurnGraceTaskID: UIBackgroundTaskIdentifier = .invalid
     var hasConfiguredNotifications = false
     var runCompletionNotificationDedupedAt: [String: Date] = [:]
+    var structuredUserInputNotificationDedupedAt: [String: Date] = [:]
     var notificationCenterDelegateProxy: CodexNotificationCenterDelegateProxy?
     var notificationObserverTokens: [NSObjectProtocol] = []
     var remoteNotificationDeviceToken: String?
