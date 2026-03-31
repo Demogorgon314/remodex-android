@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -258,6 +259,17 @@ private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
+private const val StreamingMarkdownPreviewThrottleMs = 150L
+private const val StreamingMarkdownPreviewMaxChars = 3_500
+private val StreamingMarkdownImageRegex = Regex("""!\[[^\]]*]\([^)]+\)""")
+private val StreamingMarkdownTableDelimiterRegex = Regex(
+    """^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$""",
+    setOf(RegexOption.MULTILINE),
+)
+private val StreamingMarkdownTableRowRegex = Regex(
+    """^\s*\|(?:[^|\n]*\|){2,}\s*$""",
+    setOf(RegexOption.MULTILINE),
+)
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -1656,6 +1668,29 @@ private fun ConversationMarkdownText(
 
 internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
+}
+
+internal fun shouldRenderStreamingMarkdownPreview(text: String): Boolean {
+    if (text.isBlank()) {
+        return false
+    }
+    if (text.length > StreamingMarkdownPreviewMaxChars) {
+        return false
+    }
+    return !containsHeavyStreamingMarkdownBlock(text)
+}
+
+internal fun containsHeavyStreamingMarkdownBlock(text: String): Boolean {
+    if (text.contains("```mermaid", ignoreCase = true)) {
+        return true
+    }
+    if (StreamingMarkdownImageRegex.containsMatchIn(text)) {
+        return true
+    }
+    if (!StreamingMarkdownTableDelimiterRegex.containsMatchIn(text)) {
+        return false
+    }
+    return StreamingMarkdownTableRowRegex.containsMatchIn(text)
 }
 
 @Composable
@@ -6279,7 +6314,7 @@ private fun AssistantConversationRow(
         ) {
             if (item.text.isNotBlank()) {
                 if (item.isStreaming) {
-                    LightweightStreamingAssistantMarkdownText(
+                    StreamingAssistantMarkdownText(
                         text = item.text,
                         chrome = chrome,
                     )
@@ -6322,18 +6357,52 @@ private fun AssistantConversationRow(
 }
 
 @Composable
-private fun LightweightStreamingAssistantMarkdownText(
+private fun StreamingAssistantMarkdownText(
     text: String,
     chrome: RemodexConversationChrome,
 ) {
     val displayText = remember(text) { formatStreamingPlainTextForDisplay(text) }
-    Text(
-        text = displayText,
-        modifier = Modifier.fillMaxWidth(),
-        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-        color = chrome.bodyText,
-        softWrap = true,
-    )
+    val allowsMarkdownPreview = remember(text) {
+        shouldRenderStreamingMarkdownPreview(text)
+    }
+    var previewText by remember { mutableStateOf<String?>(null) }
+    var lastPreviewAppliedAtMs by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(text, allowsMarkdownPreview) {
+        if (!allowsMarkdownPreview) {
+            previewText = null
+            lastPreviewAppliedAtMs = 0L
+            return@LaunchedEffect
+        }
+
+        val now = SystemClock.uptimeMillis()
+        val elapsed = now - lastPreviewAppliedAtMs
+        if (previewText == null || elapsed >= StreamingMarkdownPreviewThrottleMs) {
+            previewText = text
+            lastPreviewAppliedAtMs = now
+            return@LaunchedEffect
+        }
+
+        delay(StreamingMarkdownPreviewThrottleMs - elapsed)
+        previewText = text
+        lastPreviewAppliedAtMs = SystemClock.uptimeMillis()
+    }
+
+    if (previewText == text && allowsMarkdownPreview) {
+        ConversationMarkdownText(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.bodyText,
+        )
+    } else {
+        Text(
+            text = displayText,
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            color = chrome.bodyText,
+            softWrap = true,
+        )
+    }
 }
 
 @Composable
@@ -8985,7 +9054,7 @@ private fun StructuredUserInputSummaryRow(item: RemodexConversationItem) {
             ) {
                 Text(
                     text = summaryLabel,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                     color = chrome.secondaryText,
                     modifier = Modifier.weight(1f),
                 )
