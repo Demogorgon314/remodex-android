@@ -259,6 +259,7 @@ private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
+private const val StructuredSystemSummaryAutoCollapseDelayMs = 650L
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -6529,12 +6530,27 @@ private fun StructuredSystemSummaryRow(
     }
     var expanded by rememberSaveable(item.id) { mutableStateOf(item.isStreaming && hasDetails) }
     var wasStreaming by rememberSaveable(item.id) { mutableStateOf(item.isStreaming) }
+    var autoExpandedDuringStreaming by rememberSaveable(item.id) {
+        mutableStateOf(item.isStreaming && hasDetails)
+    }
 
     LaunchedEffect(item.id, item.isStreaming, hasDetails) {
         when {
-            item.isStreaming && hasDetails && !wasStreaming -> expanded = true
-            !item.isStreaming && wasStreaming -> expanded = false
-            !hasDetails -> expanded = false
+            !hasDetails -> {
+                expanded = false
+                autoExpandedDuringStreaming = false
+            }
+
+            item.isStreaming -> {
+                expanded = true
+                autoExpandedDuringStreaming = true
+            }
+
+            !item.isStreaming && wasStreaming && autoExpandedDuringStreaming -> {
+                delay(StructuredSystemSummaryAutoCollapseDelayMs)
+                expanded = false
+                autoExpandedDuringStreaming = false
+            }
         }
         wasStreaming = item.isStreaming
     }
