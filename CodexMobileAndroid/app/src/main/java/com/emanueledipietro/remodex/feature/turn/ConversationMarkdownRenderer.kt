@@ -1,7 +1,13 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Handler
@@ -17,6 +23,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -39,21 +48,29 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -72,9 +89,16 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import coil.imageLoader
 import coil.compose.AsyncImage
 import coil.load
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.github.chrisbanes.photoview.PhotoView
+import com.emanueledipietro.remodex.model.decodeInlineImageDataUrlBytes
+import com.emanueledipietro.remodex.platform.media.GalleryImageSaver
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import io.noties.markwon.AbstractMarkwonPlugin
@@ -83,8 +107,15 @@ import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.security.MessageDigest
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 internal sealed interface ConversationMarkdownSegment {
     data class Markdown(val text: String) : ConversationMarkdownSegment
@@ -144,6 +175,150 @@ internal fun conversationMarkdownRenderToken(text: String): String {
 }
 
 @Composable
+private fun rememberConversationMarkdownSaveController(): ConversationMarkdownSaveController {
+    val context = LocalContext.current
+    val appContext = remember(context) { context.applicationContext }
+    val coroutineScope = rememberCoroutineScope()
+    var pendingSave by remember { mutableStateOf<PendingConversationGallerySave?>(null) }
+
+    fun showToastMessage(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun performSave(request: PendingConversationGallerySave) {
+        coroutineScope.launch {
+            val result = GalleryImageSaver.saveBitmap(
+                context = appContext,
+                bitmap = request.bitmap,
+                suggestedName = request.suggestedName,
+            )
+            result.fold(
+                onSuccess = {
+                    showToastMessage("Saved to Photos.")
+                },
+                onFailure = { error ->
+                    showToastMessage(error.message ?: "Couldn't save this image.")
+                },
+            )
+            request.onComplete()
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val request = pendingSave
+        pendingSave = null
+        if (granted && request != null) {
+            performSave(request)
+        } else if (!granted) {
+            showToastMessage("Storage permission is required to save images to Photos.")
+            request?.onComplete()
+        }
+    }
+
+    fun enqueueSave(request: PendingConversationGallerySave) {
+        val permission = GalleryImageSaver.requiredWritePermission()
+        if (
+            permission != null &&
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingSave = request
+            permissionLauncher.launch(permission)
+            return
+        }
+        performSave(request)
+    }
+
+    return remember(context, appContext) {
+        object : ConversationMarkdownSaveController {
+            override fun saveBitmap(
+                bitmap: Bitmap,
+                suggestedName: String,
+                onComplete: () -> Unit,
+            ) {
+                enqueueSave(
+                    PendingConversationGallerySave(
+                        bitmap = bitmap,
+                        suggestedName = suggestedName,
+                        onComplete = onComplete,
+                    ),
+                )
+            }
+
+            override fun saveImageFromUrl(
+                imageUrl: String,
+                suggestedName: String,
+                onComplete: () -> Unit,
+            ) {
+                coroutineScope.launch {
+                    val bitmap = loadBitmapForSave(
+                        context = appContext,
+                        imageUrl = imageUrl,
+                    )
+                    if (bitmap == null) {
+                        showToastMessage("Couldn't load this image.")
+                        onComplete()
+                    } else {
+                        enqueueSave(
+                            PendingConversationGallerySave(
+                                bitmap = bitmap,
+                                suggestedName = suggestedName,
+                                onComplete = onComplete,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            override fun copyText(
+                label: String,
+                text: String,
+            ) {
+                val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+                clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+            }
+
+            override fun showMessage(message: String) {
+                showToastMessage(message)
+            }
+        }
+    }
+}
+
+private data class PendingConversationGallerySave(
+    val bitmap: Bitmap,
+    val suggestedName: String,
+    val onComplete: () -> Unit,
+)
+
+private data class ConversationMarkdownPreviewSaveState(
+    val onSave: () -> Unit,
+    val isLoading: Boolean,
+)
+
+private interface ConversationMarkdownSaveController {
+    fun saveBitmap(
+        bitmap: Bitmap,
+        suggestedName: String,
+        onComplete: () -> Unit = {},
+    )
+
+    fun saveImageFromUrl(
+        imageUrl: String,
+        suggestedName: String,
+        onComplete: () -> Unit = {},
+    )
+
+    fun copyText(
+        label: String,
+        text: String,
+    )
+
+    fun showMessage(message: String)
+}
+
+@Composable
 internal fun ConversationRichMarkdownContent(
     text: String,
     modifier: Modifier = Modifier,
@@ -153,6 +328,7 @@ internal fun ConversationRichMarkdownContent(
     onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
     val segments = remember(text) { parseConversationMarkdownSegments(text) }
+    val saveController = rememberConversationMarkdownSaveController()
     var preview by remember(text) { mutableStateOf<ConversationMarkdownPreview?>(null) }
 
     Column(
@@ -179,6 +355,7 @@ internal fun ConversationRichMarkdownContent(
 
                 is ConversationMarkdownSegment.Mermaid -> ConversationMermaidSegment(
                     source = segment.source,
+                    saveController = saveController,
                     onLongPress = onLongPress,
                     onPreview = {
                         preview = ConversationMarkdownPreview.Mermaid(
@@ -192,6 +369,7 @@ internal fun ConversationRichMarkdownContent(
                     url = segment.url,
                     altText = segment.altText,
                     title = segment.title,
+                    saveController = saveController,
                     onLongPress = onLongPress,
                     onPreview = {
                         preview = ConversationMarkdownPreview.Image(
@@ -208,6 +386,7 @@ internal fun ConversationRichMarkdownContent(
     preview?.let { resolvedPreview ->
         ConversationMarkdownPreviewDialog(
             preview = resolvedPreview,
+            saveController = saveController,
             onDismiss = { preview = null },
         )
     }
@@ -646,95 +825,110 @@ private fun ConversationMarkdownCodeBlockSegment(
 @Composable
 private fun ConversationMermaidSegment(
     source: String,
+    saveController: ConversationMarkdownSaveController,
     onLongPress: ((IntOffset) -> Unit)?,
     onPreview: () -> Unit,
 ) {
     val view = LocalView.current
-    val chrome = remodexConversationChrome()
-    val isDark = isSystemInDarkTheme()
-    val density = LocalDensity.current
-    var contentHeightPx by remember(source) { mutableStateOf(0) }
-    val minHeight = 120.dp
-    val resolvedHeight = remember(contentHeightPx, density) {
-        if (contentHeightPx <= 0) {
-            minHeight
-        } else {
-            with(density) { contentHeightPx.toDp() }.coerceAtLeast(minHeight)
+    val coroutineScope = rememberCoroutineScope()
+    val mermaidBridge = remember(source) { MermaidWebViewBridge() }
+    var webView by remember(source) { mutableStateOf<WebView?>(null) }
+    var isSaving by remember(source) { mutableStateOf(false) }
+    var didCopy by remember(source) { mutableStateOf(false) }
+
+    LaunchedEffect(didCopy) {
+        if (didCopy) {
+            delay(1_500)
+            didCopy = false
         }
     }
-    val mermaidHtml = remember(source, chrome, isDark) {
-        buildMermaidHtml(
-            source = source,
-            isDark = isDark,
-            accentColor = chrome.accent.toArgb(),
-            textColor = chrome.bodyText.toArgb(),
-            borderColor = chrome.subtleBorder.toArgb(),
-            surfaceColor = chrome.panelSurface.toArgb(),
-        )
-    }
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = minHeight),
-        color = chrome.panelSurface,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+    Box(
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Box {
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(min = 0.dp)
-                    .heightIn(min = minHeight)
-                    .padding(8.dp),
-                factory = { context ->
-                    WebView(context).apply {
-                        setBackgroundColor(AndroidColor.TRANSPARENT)
-                        overScrollMode = WebView.OVER_SCROLL_NEVER
-                        isVerticalScrollBarEnabled = false
-                        isHorizontalScrollBarEnabled = false
-                        settings.javaScriptEnabled = true
-                        settings.allowFileAccess = true
-                        settings.domStorageEnabled = true
-                        addJavascriptInterface(
-                            MermaidHeightBridge { heightPx ->
-                                contentHeightPx = heightPx
-                            },
-                            "AndroidHeight",
-                        )
-                        webChromeClient = WebChromeClient()
-                        webViewClient = object : WebViewClient() {}
+        ConversationMermaidPreviewCard(
+            source = source,
+            modifier = Modifier.fillMaxWidth(),
+            minHeight = 120.dp,
+            bridge = mermaidBridge,
+            onWebViewChanged = { webView = it },
+        )
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(16.dp))
+                .markdownPreviewGestureModifier(
+                    onTap = {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onPreview()
+                    },
+                    onLongPress = onLongPress,
+                ),
+        )
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ConversationMarkdownFloatingActionButton(
+                contentDescription = if (didCopy) "Copied diagram code" else "Copy diagram code",
+                icon = Icons.Outlined.ContentCopy,
+                activeIcon = Icons.Outlined.Check,
+                isActive = didCopy,
+                onClick = {
+                    saveController.copyText(
+                        label = "Mermaid diagram",
+                        text = fencedMermaidCodeBlock(source),
+                    )
+                    saveController.showMessage("Copied diagram code.")
+                    didCopy = true
+                },
+                buttonSize = 34.dp,
+            )
+            ConversationMarkdownFloatingActionButton(
+                contentDescription = "Save diagram",
+                icon = Icons.Outlined.FileDownload,
+                isLoading = isSaving,
+                onClick = {
+                    if (isSaving) {
+                        return@ConversationMarkdownFloatingActionButton
+                    }
+                    val resolvedWebView = webView
+                    if (resolvedWebView == null) {
+                        saveController.showMessage("Diagram isn't ready to save yet.")
+                        return@ConversationMarkdownFloatingActionButton
+                    }
+                    coroutineScope.launch {
+                        isSaving = true
+                        try {
+                            val bitmap = exportMermaidBitmapFromWebView(
+                                webView = resolvedWebView,
+                                bridge = mermaidBridge,
+                            )
+                            if (bitmap != null) {
+                                saveController.saveBitmap(
+                                    bitmap = bitmap,
+                                    suggestedName = "diagram",
+                                    onComplete = {
+                                        isSaving = false
+                                    },
+                                )
+                            } else {
+                                saveController.showMessage("Diagram isn't ready to save yet.")
+                                isSaving = false
+                            }
+                        } catch (error: CancellationException) {
+                            isSaving = false
+                            throw error
+                        } catch (error: Throwable) {
+                            isSaving = false
+                        }
                     }
                 },
-                update = { webView ->
-                    webView.layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        with(density) { resolvedHeight.roundToPx() },
-                    )
-                    webView.loadDataWithBaseURL(
-                        "file:///android_asset/",
-                        mermaidHtml,
-                        "text/html",
-                        "utf-8",
-                        null,
-                    )
-                },
-            )
-
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .clip(RoundedCornerShape(16.dp))
-                    .markdownPreviewGestureModifier(
-                        onTap = {
-                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                            onPreview()
-                        },
-                        onLongPress = onLongPress,
-                    ),
+                buttonSize = 34.dp,
             )
         }
     }
@@ -745,44 +939,48 @@ private fun ConversationMarkdownImageSegment(
     url: String,
     altText: String?,
     title: String?,
+    saveController: ConversationMarkdownSaveController,
     onLongPress: ((IntOffset) -> Unit)?,
     onPreview: () -> Unit,
 ) {
     val view = LocalView.current
     val chrome = remodexConversationChrome()
+    val suggestedName = title ?: altText ?: "image"
 
-    Surface(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .markdownPreviewGestureModifier(
-                onTap = {
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    onPreview()
-                },
-                onLongPress = onLongPress,
-            ),
-        color = chrome.panelSurface,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+            .heightIn(min = 120.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            AsyncImage(
-                model = url,
-                contentDescription = altText ?: title ?: "Image",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 120.dp, max = 320.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(chrome.nestedSurface),
-                contentScale = ContentScale.Fit,
-            )
-        }
+        AsyncImage(
+            model = url,
+            contentDescription = altText ?: title ?: "Image",
+            modifier = Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(16.dp))
+                .markdownPreviewGestureModifier(
+                    onTap = {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onPreview()
+                    },
+                    onLongPress = onLongPress,
+                ),
+            contentScale = ContentScale.Fit,
+        )
+
+        ConversationMarkdownFloatingActionButton(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp),
+            contentDescription = "Save image",
+            icon = Icons.Outlined.FileDownload,
+            onClick = {
+                saveController.saveImageFromUrl(
+                    imageUrl = url,
+                    suggestedName = suggestedName,
+                )
+            },
+        )
     }
 }
 
@@ -824,12 +1022,43 @@ private fun platformSelectionHighlightColor(context: Context): Int {
     return TextView(context).highlightColor
 }
 
+private fun fencedMermaidCodeBlock(source: String): String {
+    val normalizedSource = source.trimEnd('\n', '\r')
+    return "```mermaid\n$normalizedSource\n```"
+}
+
 @Composable
 private fun ConversationMarkdownPreviewDialog(
     preview: ConversationMarkdownPreview,
+    saveController: ConversationMarkdownSaveController,
     onDismiss: () -> Unit,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    var registeredSaveState by remember(preview) { mutableStateOf<ConversationMarkdownPreviewSaveState?>(null) }
+    var didCopyDiagramCode by remember(preview) { mutableStateOf(false) }
+
+    LaunchedEffect(didCopyDiagramCode) {
+        if (didCopyDiagramCode) {
+            delay(1_500)
+            didCopyDiagramCode = false
+        }
+    }
+
+    val previewSaveState = when (preview) {
+        is ConversationMarkdownPreview.Image -> {
+            ConversationMarkdownPreviewSaveState(
+                onSave = {
+                    saveController.saveImageFromUrl(
+                        imageUrl = preview.url,
+                        suggestedName = preview.title ?: preview.altText ?: "image",
+                    )
+                },
+                isLoading = false,
+            )
+        }
+
+        is ConversationMarkdownPreview.Mermaid -> registeredSaveState
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -850,6 +1079,8 @@ private fun ConversationMarkdownPreviewDialog(
 
                 is ConversationMarkdownPreview.Mermaid -> ConversationMermaidPreview(
                     preview = preview,
+                    saveController = saveController,
+                    onSaveStateChanged = { registeredSaveState = it },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -895,6 +1126,49 @@ private fun ConversationMarkdownPreviewDialog(
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
+
+                if (preview is ConversationMarkdownPreview.Mermaid) {
+                    ConversationMarkdownPreviewGlassChip(
+                        shape = RoundedCornerShape(999.dp),
+                    ) {
+                        ConversationMarkdownPreviewToolbarActionButton(
+                            onClick = {
+                                saveController.copyText(
+                                    label = "Mermaid diagram",
+                                    text = fencedMermaidCodeBlock(preview.source),
+                                )
+                                saveController.showMessage("Copied diagram code.")
+                                didCopyDiagramCode = true
+                            },
+                            contentDescription = if (didCopyDiagramCode) {
+                                "Copied diagram code"
+                            } else {
+                                "Copy diagram code"
+                            },
+                            icon = Icons.Outlined.ContentCopy,
+                            activeIcon = Icons.Outlined.Check,
+                            isActive = didCopyDiagramCode,
+                            tint = colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                previewSaveState?.let { saveState ->
+                    ConversationMarkdownPreviewGlassChip(
+                        shape = RoundedCornerShape(999.dp),
+                    ) {
+                        ConversationMarkdownPreviewToolbarActionButton(
+                            onClick = saveState.onSave,
+                            contentDescription = when (preview) {
+                                is ConversationMarkdownPreview.Image -> "Save image"
+                                is ConversationMarkdownPreview.Mermaid -> "Save diagram"
+                            },
+                            icon = Icons.Outlined.FileDownload,
+                            isLoading = saveState.isLoading,
+                            tint = colorScheme.onSurface,
+                        )
+                    }
+                }
             }
         }
     }
@@ -934,8 +1208,61 @@ private fun ZoomableConversationImagePreview(
 @Composable
 private fun ConversationMermaidPreview(
     preview: ConversationMarkdownPreview.Mermaid,
+    saveController: ConversationMarkdownSaveController,
+    onSaveStateChanged: ((ConversationMarkdownPreviewSaveState?) -> Unit),
     modifier: Modifier = Modifier,
 ) {
+    val coroutineScope = rememberCoroutineScope()
+    val mermaidBridge = remember(preview.source) { MermaidWebViewBridge() }
+    var webView by remember(preview.source) { mutableStateOf<WebView?>(null) }
+    var isSaving by remember(preview.source) { mutableStateOf(false) }
+
+    LaunchedEffect(webView, preview.source, saveController, coroutineScope, isSaving) {
+        onSaveStateChanged(
+            webView?.let { resolvedWebView ->
+                ConversationMarkdownPreviewSaveState(
+                    onSave = save@{
+                        if (isSaving) {
+                            return@save
+                        }
+                        coroutineScope.launch {
+                            isSaving = true
+                            try {
+                                val bitmap = exportMermaidBitmapFromWebView(
+                                    webView = resolvedWebView,
+                                    bridge = mermaidBridge,
+                                )
+                                if (bitmap != null) {
+                                    saveController.saveBitmap(
+                                        bitmap = bitmap,
+                                        suggestedName = "diagram",
+                                        onComplete = {
+                                            isSaving = false
+                                        },
+                                    )
+                                } else {
+                                    saveController.showMessage("Diagram isn't ready to save yet.")
+                                    isSaving = false
+                                }
+                            } catch (error: CancellationException) {
+                                isSaving = false
+                                throw error
+                            } catch (error: Throwable) {
+                                isSaving = false
+                            }
+                        }
+                    },
+                    isLoading = isSaving,
+                )
+            },
+        )
+    }
+    DisposableEffect(onSaveStateChanged) {
+        onDispose {
+            onSaveStateChanged(null)
+        }
+    }
+
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center,
@@ -944,6 +1271,8 @@ private fun ConversationMermaidPreview(
             source = preview.source,
             modifier = Modifier.fillMaxSize(),
             previewMode = true,
+            bridge = mermaidBridge,
+            onWebViewChanged = { webView = it },
         )
     }
 }
@@ -1026,21 +1355,112 @@ private fun ConversationMarkdownPreviewGlassChip(
 }
 
 @Composable
+private fun ConversationMarkdownFloatingActionButton(
+    modifier: Modifier = Modifier,
+    contentDescription: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    activeIcon: ImageVector? = null,
+    isActive: Boolean = false,
+    buttonSize: androidx.compose.ui.unit.Dp = 40.dp,
+    isLoading: Boolean = false,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Black.copy(alpha = 0.48f),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        IconButton(
+            onClick = onClick,
+            enabled = !isLoading,
+            modifier = Modifier.size(buttonSize),
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size((buttonSize.value * 0.42f).dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White.copy(alpha = 0.96f),
+                )
+            } else {
+                Icon(
+                    imageVector = if (isActive) {
+                        activeIcon ?: icon
+                    } else {
+                        icon
+                    },
+                    contentDescription = contentDescription,
+                    modifier = Modifier.size((buttonSize.value * 0.45f).dp),
+                    tint = Color.White.copy(alpha = 0.96f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationMarkdownPreviewToolbarActionButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    icon: ImageVector,
+    tint: Color,
+    activeIcon: ImageVector? = null,
+    isActive: Boolean = false,
+    isLoading: Boolean = false,
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = !isLoading,
+        modifier = Modifier.size(40.dp),
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = tint,
+            )
+        } else {
+            Icon(
+                imageVector = if (isActive) {
+                    activeIcon ?: icon
+                } else {
+                    icon
+                },
+                contentDescription = contentDescription,
+                tint = tint,
+            )
+        }
+    }
+}
+
+@Composable
 private fun ConversationMermaidPreviewCard(
     source: String,
     modifier: Modifier = Modifier,
     previewMode: Boolean = false,
+    minHeight: androidx.compose.ui.unit.Dp = 220.dp,
+    bridge: MermaidWebViewBridge,
+    onWebViewChanged: (WebView?) -> Unit = {},
 ) {
     val chrome = remodexConversationChrome()
     val isDark = isSystemInDarkTheme()
     val density = LocalDensity.current
     var contentHeightPx by remember(source) { mutableStateOf(0) }
-    val minHeight = 220.dp
     val resolvedHeight = remember(contentHeightPx, density) {
         if (contentHeightPx <= 0) {
             minHeight
         } else {
             with(density) { contentHeightPx.toDp() }.coerceAtLeast(minHeight)
+        }
+    }
+    DisposableEffect(bridge) {
+        bridge.onHeight = { reportedHeight ->
+            contentHeightPx = reportedHeight
+        }
+        onDispose {
+            bridge.onHeight = null
+            bridge.onExportDataUrl = null
         }
     }
     val mermaidHtml = remember(source, chrome, isDark) {
@@ -1060,10 +1480,14 @@ private fun ConversationMermaidPreviewCard(
         Modifier
             .fillMaxWidth()
             .heightIn(min = minHeight)
-            .padding(12.dp)
     }
 
     val webContent: @Composable () -> Unit = {
+        DisposableEffect(onWebViewChanged) {
+            onDispose {
+                onWebViewChanged(null)
+            }
+        }
         AndroidView(
             modifier = androidViewModifier,
             factory = { context ->
@@ -1080,17 +1504,14 @@ private fun ConversationMermaidPreviewCard(
                     settings.displayZoomControls = false
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
-                    addJavascriptInterface(
-                        MermaidHeightBridge { heightPx ->
-                            contentHeightPx = heightPx
-                        },
-                        "AndroidHeight",
-                    )
+                    addJavascriptInterface(bridge, "AndroidMermaid")
                     webChromeClient = WebChromeClient()
                     webViewClient = object : WebViewClient() {}
+                    onWebViewChanged(this)
                 }
             },
             update = { webView ->
+                onWebViewChanged(webView)
                 webView.layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     if (previewMode) ViewGroup.LayoutParams.MATCH_PARENT else with(density) { resolvedHeight.roundToPx() },
@@ -1111,17 +1532,157 @@ private fun ConversationMermaidPreviewCard(
             webContent()
         }
     } else {
-        Surface(
-            modifier = modifier.heightIn(min = minHeight),
-            color = chrome.panelSurface,
-            shape = RoundedCornerShape(20.dp),
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp)),
         ) {
             webContent()
         }
     }
+}
+
+private suspend fun exportMermaidBitmapFromWebView(
+    webView: WebView,
+    bridge: MermaidWebViewBridge,
+): Bitmap? {
+    val dataUrl = requestMermaidPngDataUrl(
+        webView = webView,
+        bridge = bridge,
+        exportScale = 4,
+    ) ?: return null
+    val pngBytes = decodeInlineImageDataUrlBytes(dataUrl) ?: return null
+    return BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size)
+}
+
+private suspend fun requestMermaidPngDataUrl(
+    webView: WebView,
+    bridge: MermaidWebViewBridge,
+    exportScale: Int,
+): String? =
+    suspendCancellableCoroutine { continuation ->
+        bridge.onExportDataUrl = { dataUrl ->
+            if (continuation.isActive) {
+                bridge.onExportDataUrl = null
+                continuation.resume(dataUrl)
+            }
+        }
+        webView.evaluateJavascript(
+            """
+            (function() {
+              const bridge = window.AndroidMermaid;
+              if (!bridge || typeof bridge.postExportDataUrl !== 'function') {
+                return;
+              }
+
+              const tryExport = function(attempt) {
+                try {
+                  const root = document.getElementById('root') || document.body;
+                  const svg = root ? root.querySelector('svg') : null;
+                  if (!svg) {
+                    if (attempt < 20) {
+                      window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+                    } else {
+                      bridge.postExportDataUrl(null);
+                    }
+                    return;
+                  }
+
+                  const rect = svg.getBoundingClientRect();
+                  const viewBox = svg.viewBox && svg.viewBox.baseVal;
+                  const intrinsicWidth =
+                    (viewBox && viewBox.width) ||
+                    parseFloat(svg.getAttribute('width')) ||
+                    rect.width ||
+                    0;
+                  const intrinsicHeight =
+                    (viewBox && viewBox.height) ||
+                    parseFloat(svg.getAttribute('height')) ||
+                    rect.height ||
+                    0;
+                  const width = Math.max(
+                    1,
+                    Math.ceil(intrinsicWidth)
+                  );
+                  const height = Math.max(
+                    1,
+                    Math.ceil(intrinsicHeight)
+                  );
+                  const resolvedScale = Math.max(
+                    1,
+                    $exportScale,
+                    Math.ceil(window.devicePixelRatio || 1)
+                  );
+                  const clonedSvg = svg.cloneNode(true);
+                  clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                  clonedSvg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+                  if (!clonedSvg.getAttribute('viewBox') && viewBox && viewBox.width > 0 && viewBox.height > 0) {
+                    clonedSvg.setAttribute('viewBox', `${'$'}{viewBox.x} ${'$'}{viewBox.y} ${'$'}{viewBox.width} ${'$'}{viewBox.height}`);
+                  }
+                  if (!clonedSvg.getAttribute('width')) {
+                    clonedSvg.setAttribute('width', String(width));
+                  }
+                  if (!clonedSvg.getAttribute('height')) {
+                    clonedSvg.setAttribute('height', String(height));
+                  }
+                  const serializedSvg = new XMLSerializer().serializeToString(clonedSvg);
+                  const encodedSvg = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(serializedSvg);
+                  const image = new Image();
+                  image.onload = function() {
+                    try {
+                      const canvas = document.createElement('canvas');
+                      canvas.width = width * resolvedScale;
+                      canvas.height = height * resolvedScale;
+                      const context = canvas.getContext('2d');
+                      if (!context) {
+                        bridge.postExportDataUrl(null);
+                        return;
+                      }
+                      context.clearRect(0, 0, canvas.width, canvas.height);
+                      context.scale(resolvedScale, resolvedScale);
+                      context.drawImage(image, 0, 0, width, height);
+                      bridge.postExportDataUrl(canvas.toDataURL('image/png'));
+                    } catch (error) {
+                      bridge.postExportDataUrl(null);
+                    }
+                  };
+                  image.onerror = function() {
+                    if (attempt < 20) {
+                      window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+                    } else {
+                      bridge.postExportDataUrl(null);
+                    }
+                  };
+                  image.src = encodedSvg;
+                } catch (error) {
+                  if (attempt < 20) {
+                    window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+                  } else {
+                    bridge.postExportDataUrl(null);
+                  }
+                }
+              };
+
+              tryExport(0);
+            })();
+            """.trimIndent(),
+            null,
+        )
+        continuation.invokeOnCancellation {
+            bridge.onExportDataUrl = null
+        }
+    }
+
+private suspend fun loadBitmapForSave(
+    context: Context,
+    imageUrl: String,
+): Bitmap? = withContext(Dispatchers.IO) {
+    val request = ImageRequest.Builder(context)
+        .data(imageUrl)
+        .allowHardware(false)
+        .build()
+    val result = context.imageLoader.execute(request) as? SuccessResult ?: return@withContext null
+    result.drawable.toBitmap(config = Bitmap.Config.ARGB_8888)
 }
 
 private fun buildMermaidHtml(
@@ -1132,6 +1693,7 @@ private fun buildMermaidHtml(
     borderColor: Int,
     surfaceColor: Int,
     previewMode: Boolean = false,
+    exportMode: Boolean = false,
 ): String {
     val theme = if (isDark) "dark" else "neutral"
     val escapedSource = JSONObject.quote(source)
@@ -1151,22 +1713,22 @@ private fun buildMermaidHtml(
                 padding: 0;
                 background: transparent;
                 color: $textCss;
-                overflow: ${if (previewMode) "auto" else "hidden"};
+                overflow: ${if (previewMode && !exportMode) "auto" else "hidden"};
                 width: 100%;
                 height: 100%;
               }
               body {
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                ${if (previewMode) "display: flex; align-items: center; justify-content: center;" else ""}
+                ${if (previewMode && !exportMode) "display: flex; align-items: center; justify-content: center;" else ""}
               }
               #root {
                 box-sizing: border-box;
-                width: ${if (previewMode) "auto" else "100%"};
-                min-height: ${if (previewMode) "auto" else "104px"};
-                padding: ${if (previewMode) "0" else "10px 12px"};
-                border-radius: ${if (previewMode) "0" else "14px"};
-                background: ${if (previewMode) "transparent" else surfaceCss};
-                border: ${if (previewMode) "none" else "1px solid $borderCss"};
+                width: auto;
+                min-height: auto;
+                padding: 0;
+                border-radius: 0;
+                background: transparent;
+                border: none;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -1179,8 +1741,8 @@ private fun buildMermaidHtml(
                 line-height: 1.45;
               }
               svg {
-                max-width: ${if (previewMode) "none" else "100%"};
-                max-height: ${if (previewMode) "none" else "auto"};
+                max-width: ${if (previewMode || exportMode) "none" else "100%"};
+                max-height: ${if (previewMode || exportMode) "none" else "auto"};
                 height: auto;
               }
               a {
@@ -1219,8 +1781,8 @@ private fun buildMermaidHtml(
                       document.body.scrollHeight ||
                       120
                     );
-                    if (window.AndroidHeight && window.AndroidHeight.postHeight) {
-                      window.AndroidHeight.postHeight(height);
+                    if (window.AndroidMermaid && window.AndroidMermaid.postHeight) {
+                      window.AndroidMermaid.postHeight(height);
                     }
                   });
                 }
@@ -1239,10 +1801,11 @@ private fun toCssColor(argb: Int): String {
     return "rgba($red, $green, $blue, $alpha)"
 }
 
-private class MermaidHeightBridge(
-    private val onHeight: (Int) -> Unit,
-) {
+private class MermaidWebViewBridge {
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    var onHeight: ((Int) -> Unit)? = null
+    var onExportDataUrl: ((String?) -> Unit)? = null
 
     @JavascriptInterface
     fun postHeight(heightPx: Int) {
@@ -1250,7 +1813,14 @@ private class MermaidHeightBridge(
             return
         }
         mainHandler.post {
-            onHeight(heightPx)
+            onHeight?.invoke(heightPx)
+        }
+    }
+
+    @JavascriptInterface
+    fun postExportDataUrl(dataUrl: String?) {
+        mainHandler.post {
+            onExportDataUrl?.invoke(dataUrl)
         }
     }
 }
