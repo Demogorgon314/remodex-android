@@ -102,6 +102,11 @@ enum class RemodexSlashCommand(
         subtitle = "Compress the current thread context window",
         token = "/compact",
     ),
+    PLAN(
+        title = "Plan Mode",
+        subtitle = "Toggle plan mode for this thread",
+        token = "/plan",
+    ),
     SUBAGENTS(
         title = "Subagents",
         subtitle = "Insert a canned prompt that asks Codex to delegate work",
@@ -116,6 +121,7 @@ enum class RemodexSlashCommand(
             FORK -> "arrow.triangle.branch"
             STATUS -> "speedometer"
             COMPACT -> "arrow.down.left.and.arrow.up.right"
+            PLAN -> "checklist"
             SUBAGENTS -> "person.crop.circle"
         }
 
@@ -125,6 +131,7 @@ enum class RemodexSlashCommand(
             FORK,
             STATUS,
             COMPACT,
+            PLAN,
             SUBAGENTS,
         )
 
@@ -170,6 +177,7 @@ data class RemodexComposerAutocompleteState(
     val forkDestinations: List<RemodexComposerForkDestination> = emptyList(),
     val hasComposerContentConflictingWithReview: Boolean = false,
     val isThreadRunning: Boolean = false,
+    val selectedPlanningMode: RemodexPlanningMode = RemodexPlanningMode.AUTO,
     val selectedGitBaseBranch: String = "",
     val gitDefaultBranch: String = "",
 )

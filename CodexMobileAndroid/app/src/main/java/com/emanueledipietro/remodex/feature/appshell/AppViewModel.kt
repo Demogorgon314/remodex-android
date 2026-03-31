@@ -1063,6 +1063,21 @@ class AppViewModel(
 
     fun updateComposerInput(value: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
+        if (
+            RemodexComposerCommandLogic.isStandaloneSlashCommand(
+                text = value,
+                commandToken = RemodexSlashCommand.PLAN.token,
+            )
+        ) {
+            composerDrafts.update { draftsByThread ->
+                draftsByThread.toMutableMap().apply {
+                    this[threadId] = ""
+                }
+            }
+            clearComposerAutocomplete()
+            togglePlanningMode(threadId)
+            return
+        }
         composerDrafts.update { draftsByThread ->
             draftsByThread.toMutableMap().apply {
                 this[threadId] = value
@@ -1547,6 +1562,18 @@ class AppViewModel(
                 clearComposerAutocomplete()
             }
 
+            RemodexSlashCommand.PLAN -> {
+                composerDrafts.update { draftsByThread ->
+                    val currentDraft = draftsByThread[threadId].orEmpty()
+                    draftsByThread.toMutableMap().apply {
+                        this[threadId] = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(currentDraft)
+                            ?: currentDraft
+                    }
+                }
+                clearComposerAutocomplete()
+                togglePlanningMode(threadId)
+            }
+
             RemodexSlashCommand.CODE_REVIEW -> {
                 composerDrafts.update { draftsByThread ->
                     val currentDraft = draftsByThread[threadId].orEmpty()
@@ -1797,6 +1824,18 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
             repository.setPlanningMode(threadId, planningMode)
+        }
+    }
+
+    private fun togglePlanningMode(threadId: String) {
+        val currentMode = uiState.value.composer.runtimeConfig.planningMode
+        val nextMode = if (currentMode == RemodexPlanningMode.PLAN) {
+            RemodexPlanningMode.AUTO
+        } else {
+            RemodexPlanningMode.PLAN
+        }
+        viewModelScope.launch {
+            repository.setPlanningMode(threadId, nextMode)
         }
     }
 
@@ -3056,6 +3095,7 @@ class AppViewModel(
                     panel = RemodexComposerAutocompletePanel.COMMANDS,
                     slashQuery = slashToken.query,
                     availableCommands = availableCommands,
+                    selectedPlanningMode = composer.runtimeConfig.planningMode,
                     slashCommands = RemodexSlashCommand.filtered(slashToken.query)
                         .filter { command -> availableCommands.contains(command) },
                 )

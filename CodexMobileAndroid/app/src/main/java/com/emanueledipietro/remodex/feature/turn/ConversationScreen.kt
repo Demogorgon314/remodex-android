@@ -4594,6 +4594,7 @@ private fun SlashCommandAutocompletePanel(
                     val enabled = isCommandEnabled(command, autocomplete)
                     SlashCommandRow(
                         command = command,
+                        title = commandTitle(command, autocomplete),
                         enabled = enabled,
                         subtitle = commandSubtitle(command, autocomplete, enabled),
                         onClick = { onSelectCommand(command) },
@@ -4795,6 +4796,7 @@ private fun SkillAutocompleteRow(
 @Composable
 private fun SlashCommandRow(
     command: RemodexSlashCommand,
+    title: String,
     enabled: Boolean,
     subtitle: String,
     onClick: () -> Unit,
@@ -4828,7 +4830,7 @@ private fun SlashCommandRow(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
-                text = command.title,
+                text = title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = contentColor,
@@ -5035,8 +5037,25 @@ private fun isCommandEnabled(
         RemodexSlashCommand.COMPACT,
         -> !autocomplete.isThreadRunning
         RemodexSlashCommand.STATUS,
+        RemodexSlashCommand.PLAN,
         RemodexSlashCommand.SUBAGENTS,
         -> true
+    }
+}
+
+private fun commandTitle(
+    command: RemodexSlashCommand,
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+): String {
+    return when (command) {
+        RemodexSlashCommand.PLAN -> {
+            if (autocomplete.selectedPlanningMode == RemodexPlanningMode.PLAN) {
+                "Exit Plan Mode"
+            } else {
+                "Enter Plan Mode"
+            }
+        }
+        else -> command.title
     }
 }
 
@@ -5053,6 +5072,13 @@ private fun commandSubtitle(
     }
     if (!enabled) {
         return "Clear draft text, files, skills, and images first"
+    }
+    if (command == RemodexSlashCommand.PLAN) {
+        return if (autocomplete.selectedPlanningMode == RemodexPlanningMode.PLAN) {
+            "Switch this thread back to normal mode"
+        } else {
+            "Keep the thread in planning mode until you toggle it off"
+        }
     }
     return command.subtitle
 }
@@ -5097,6 +5123,7 @@ private fun slashCommandIcon(command: RemodexSlashCommand): ImageVector {
         RemodexSlashCommand.FORK -> Icons.AutoMirrored.Outlined.CallSplit
         RemodexSlashCommand.STATUS -> Icons.Outlined.Speed
         RemodexSlashCommand.COMPACT -> Icons.Outlined.Bolt
+        RemodexSlashCommand.PLAN -> Icons.Outlined.Checklist
         RemodexSlashCommand.SUBAGENTS -> Icons.Outlined.AccountCircle
     }
 }
