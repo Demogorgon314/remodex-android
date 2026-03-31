@@ -5773,6 +5773,122 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `hydrate thread keeps metadata-only file change items as generic status rows`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-filechange-metadata-only",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-filechange-metadata"))
+                                            put("title", JsonPrimitive("Metadata only file change thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-filechange-metadata"))
+                                            put("updatedAt", JsonPrimitive(1_713_333_555))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-filechange-metadata"))
+                                put("title", JsonPrimitive("Metadata only file change thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-filechange-metadata"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-filechange-metadata"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("filechange-item-metadata"))
+                                                                put("type", JsonPrimitive("file_change"))
+                                                                put("status", JsonPrimitive("completed"))
+                                                                put(
+                                                                    "changes",
+                                                                    buildJsonArray {
+                                                                        add(
+                                                                            buildJsonObject {
+                                                                                put("path", JsonPrimitive("app/src/Main.kt"))
+                                                                                put("kind", JsonPrimitive("update"))
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-filechange-metadata")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-filechange-metadata" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            val fileChangeItem = projected.single { item ->
+                item.kind == ConversationItemKind.FILE_CHANGE
+            }
+
+            assertEquals("Updated files.", fileChangeItem.text)
+            assertFalse(fileChangeItem.text.contains("Path:"))
+            assertNull(FileChangeRenderParser.renderState(fileChangeItem.text).summary)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `hydrate thread upserts restored active thread even when thread list omitted it`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

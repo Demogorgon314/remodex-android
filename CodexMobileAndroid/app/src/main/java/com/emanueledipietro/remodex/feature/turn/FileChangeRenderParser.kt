@@ -113,16 +113,7 @@ internal object FileChangeRenderParser {
         if (patchChunks.isNotEmpty()) {
             return patchChunks
         }
-        return entries.mapIndexed { index, entry ->
-            PerFileDiffChunk(
-                id = "$index-${entry.path}",
-                path = entry.path,
-                action = entry.action ?: FileChangeAction.EDITED,
-                additions = entry.additions,
-                deletions = entry.deletions,
-                diffCode = "",
-            )
-        }
+        return emptyList()
     }
 
     private fun parseSummary(sourceText: String): FileChangeSummary? {
@@ -155,7 +146,7 @@ internal object FileChangeRenderParser {
                     val patchEntry = parsePatchChunk(diffCode).firstOrNull()
                     val kindAction = FileChangeAction.fromKind(kind)
                     val patchAction = patchEntry?.action
-                    FileChangeSummaryEntry(
+                    val entry = FileChangeSummaryEntry(
                         path = patchEntry?.path ?: path,
                         additions = patchEntry?.additions ?: totals?.first ?: 0,
                         deletions = patchEntry?.deletions ?: totals?.second ?: 0,
@@ -164,14 +155,18 @@ internal object FileChangeRenderParser {
                             else -> kindAction ?: patchAction ?: FileChangeAction.EDITED
                         },
                     )
+                    entry.takeIf { hasEntryEvidence(it, diffCode) }
                 }
 
-                path != null -> FileChangeSummaryEntry(
-                    path = path,
-                    additions = totals?.first ?: 0,
-                    deletions = totals?.second ?: 0,
-                    action = FileChangeAction.fromKind(kind) ?: FileChangeAction.EDITED,
-                )
+                path != null -> {
+                    val entry = FileChangeSummaryEntry(
+                        path = path,
+                        additions = totals?.first ?: 0,
+                        deletions = totals?.second ?: 0,
+                        action = FileChangeAction.fromKind(kind) ?: FileChangeAction.EDITED,
+                    )
+                    entry.takeIf(::hasEntryEvidence)
+                }
 
                 else -> null
             }
@@ -180,7 +175,7 @@ internal object FileChangeRenderParser {
 
     private fun parseUnifiedPatchEntries(sourceText: String): List<FileChangeSummaryEntry> {
         return splitUnifiedPatchByFile(sourceText).mapNotNull { chunk ->
-            parsePatchChunk(chunk).firstOrNull()
+            parsePatchChunk(chunk).firstOrNull()?.takeIf { entry -> hasEntryEvidence(entry, chunk) }
         }
     }
 
@@ -231,6 +226,9 @@ internal object FileChangeRenderParser {
                 ?: return@mapIndexedNotNull null
             val entry = entries.firstOrNull { it.path == path }
             val diffCode = extractFencedCode(lines).orEmpty()
+            if (!RemodexUnifiedPatchParser.looksLikePatchText(diffCode) || !hasPatchBodyEvidence(diffCode)) {
+                return@mapIndexedNotNull null
+            }
             PerFileDiffChunk(
                 id = "$index-$path",
                 path = path,
@@ -282,7 +280,7 @@ internal object FileChangeRenderParser {
             }
 
             val diffCode = codeLines.joinToString(separator = "\n").trim()
-            if (!RemodexUnifiedPatchParser.looksLikePatchText(diffCode)) {
+            if (!RemodexUnifiedPatchParser.looksLikePatchText(diffCode) || !hasPatchBodyEvidence(diffCode)) {
                 continue
             }
 
@@ -312,6 +310,9 @@ internal object FileChangeRenderParser {
     ): List<PerFileDiffChunk> {
         return splitUnifiedPatchByFile(bodyText).mapIndexedNotNull { index, chunk ->
             val entry = parsePatchChunk(chunk).firstOrNull() ?: entries.getOrNull(index) ?: return@mapIndexedNotNull null
+            if (!hasEntryEvidence(entry, chunk)) {
+                return@mapIndexedNotNull null
+            }
             PerFileDiffChunk(
                 id = "$index-${entry.path}",
                 path = entry.path,
@@ -400,5 +401,33 @@ internal object FileChangeRenderParser {
             normalized.contains("\ndeleted file mode ") || normalized.contains("\n+++ /dev/null") -> FileChangeAction.DELETED
             else -> FileChangeAction.EDITED
         }
+    }
+
+    private fun hasEntryEvidence(
+        entry: FileChangeSummaryEntry,
+        diffCode: String? = null,
+    ): Boolean {
+        return entry.additions > 0 || entry.deletions > 0 || hasPatchBodyEvidence(diffCode)
+    }
+
+    private fun hasPatchBodyEvidence(diffCode: String?): Boolean {
+        if (diffCode.isNullOrBlank()) {
+            return false
+        }
+        val (additions, deletions) = countPatchBodyLines(diffCode)
+        return additions > 0 || deletions > 0
+    }
+
+    private fun countPatchBodyLines(diffCode: String): Pair<Int, Int> {
+        var additions = 0
+        var deletions = 0
+        diffCode.lineSequence().forEach { line ->
+            when {
+                line.startsWith("+++") || line.startsWith("---") -> Unit
+                line.startsWith("+") -> additions += 1
+                line.startsWith("-") -> deletions += 1
+            }
+        }
+        return additions to deletions
     }
 }

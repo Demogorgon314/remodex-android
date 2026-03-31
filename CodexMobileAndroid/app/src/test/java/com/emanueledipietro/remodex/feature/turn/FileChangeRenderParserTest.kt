@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.turn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -89,6 +90,39 @@ class FileChangeRenderParserTest {
     }
 
     @Test
+    fun renderState_discardsMetadataOnlyRenderedEntriesWithoutTotalsOrPatchEvidence() {
+        val rendered = """
+            Status: completed
+
+            Path: src/Empty.kt
+            Kind: update
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
+
+        assertNull(renderState.summary)
+        assertTrue(chunks.isEmpty())
+    }
+
+    @Test
+    fun renderState_discardsZeroTotalsRenderedEntriesWithoutPatchEvidence() {
+        val rendered = """
+            Status: completed
+
+            Path: src/Zero.kt
+            Kind: add
+            Totals: +0 -0
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
+
+        assertNull(renderState.summary)
+        assertTrue(chunks.isEmpty())
+    }
+
+    @Test
     fun renderState_prefersPatchActionOverGenericUpdateKind() {
         val rendered = """
             Status: completed
@@ -173,5 +207,23 @@ class FileChangeRenderParserTest {
         assertEquals(listOf("src/First.kt", "src/Second.kt"), chunks.map(PerFileDiffChunk::path))
         assertTrue(chunks[0].diffCode.contains("diff --git a/src/First.kt b/src/First.kt"))
         assertTrue(chunks[1].diffCode.contains("diff --git a/src/Second.kt b/src/Second.kt"))
+    }
+
+    @Test
+    fun diffChunks_doesNotCreateEmptyDetailChunksFromTotalsOnlyEntries() {
+        val rendered = """
+            Status: completed
+
+            Path: src/SummaryOnly.kt
+            Kind: update
+            Totals: +4 -2
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val entries = renderState.summary?.entries.orEmpty()
+        val chunks = FileChangeRenderParser.diffChunks(rendered, entries)
+
+        assertEquals(1, entries.size)
+        assertTrue(chunks.isEmpty())
     }
 }
