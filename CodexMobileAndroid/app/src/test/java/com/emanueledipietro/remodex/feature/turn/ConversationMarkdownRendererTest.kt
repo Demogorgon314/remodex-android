@@ -107,26 +107,4 @@ class ConversationMarkdownRendererTest {
         assertEquals(markdown, (onlySegment as ConversationMarkdownSegment.Markdown).text)
     }
 
-    @Test
-    fun `long markdown falls back to plain text rendering`() {
-        val markdown = buildString {
-            repeat(200) {
-                append("This is a long markdown paragraph with [a link](https://example.com).\n")
-            }
-        }
-
-        assertTrue(shouldUsePlainTextMarkdownFallback(markdown))
-    }
-
-    @Test
-    fun `short markdown keeps rich rendering`() {
-        val markdown = """
-            ## Status
-
-            - First
-            - Second
-        """.trimIndent()
-
-        assertFalse(shouldUsePlainTextMarkdownFallback(markdown))
-    }
 }

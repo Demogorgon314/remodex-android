@@ -558,6 +558,15 @@ object TurnTimelineReducer {
     private fun hasInterleavedAssistantActivityFlow(
         turnItems: List<RemodexConversationItem>,
     ): Boolean {
+        val distinctAssistantMessageIds = turnItems
+            .asSequence()
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+            .map(RemodexConversationItem::id)
+            .toSet()
+        if (distinctAssistantMessageIds.size > 1) {
+            return true
+        }
+
         val distinctAssistantItemIds = turnItems
             .asSequence()
             .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }

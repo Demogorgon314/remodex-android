@@ -4681,6 +4681,95 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `structured work finalizes the current assistant segment before later assistant deltas`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-assistant-segments",
+                    title = "Assistant segments",
+                    preview = "",
+                    projectPath = "/tmp/project-assistant-segments",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-segments"))
+                put("turnId", JsonPrimitive("turn-assistant-segments"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-segments"))
+                put("turnId", JsonPrimitive("turn-assistant-segments"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("search-item-segment"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("compose lazycolumn"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-segments"))
+                put("turnId", JsonPrimitive("turn-assistant-segments"))
+                put("delta", JsonPrimitive("Second streamed answer block"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-assistant-segments" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+        val webSearchItem = projected.single { it.kind == ConversationItemKind.WEB_SEARCH }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("assistant-turn-assistant-segments", assistantItems[0].id)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("First streamed answer block", assistantItems[0].text)
+        assertEquals("assistant-turn-assistant-segments-seg-1", assistantItems[1].id)
+        assertTrue(assistantItems[1].isStreaming)
+        assertEquals("Second streamed answer block", assistantItems[1].text)
+        assertEquals(
+            listOf(
+                assistantItems[0].id,
+                webSearchItem.id,
+                assistantItems[1].id,
+            ),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `hydrate thread clears stale active turn when history shows the turn completed`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
