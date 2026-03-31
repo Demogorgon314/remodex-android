@@ -78,6 +78,8 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
+import com.emanueledipietro.remodex.model.remodexGptHintText
+import com.emanueledipietro.remodex.model.remodexGptSummaryText
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 import java.text.DateFormat
 import java.text.NumberFormat
@@ -630,7 +632,7 @@ private fun SettingsChatGptCard(
     onRefresh: () -> Unit,
     onRequestLogout: () -> Unit,
 ) {
-    val hintText = gptHintText(
+    val hintText = remodexGptHintText(
         snapshot = snapshot,
         isConnected = isConnected,
     )
@@ -641,7 +643,7 @@ private fun SettingsChatGptCard(
     SettingsCard(title = "ChatGPT") {
         SettingsGptHeroRow(
             snapshot = snapshot,
-            summary = gptSummaryText(
+            summary = remodexGptSummaryText(
                 snapshot = snapshot,
                 isConnected = isConnected,
             ),
@@ -1647,56 +1649,6 @@ private fun notificationStatusLabel(
         permissionUiState.requiresSystemSettings -> "Denied"
         else -> "Unknown"
     }
-}
-
-private fun gptHintText(
-    snapshot: RemodexGptAccountSnapshot,
-    isConnected: Boolean,
-): String? {
-    if (snapshot.needsReauth) {
-        return "Voice on this bridge needs a fresh ChatGPT sign-in on your Mac."
-    }
-    if (snapshot.isAuthenticated && snapshot.isVoiceTokenReady) {
-        return null
-    }
-    if (snapshot.isAuthenticated) {
-        return "Waiting for voice sync..."
-    }
-    if (snapshot.hasActiveLogin && isConnected) {
-        return "Finish the ChatGPT sign-in flow in the browser on your Mac."
-    }
-    if (snapshot.hasActiveLogin) {
-        return "Reconnect to your bridge to finish sign-in on your Mac."
-    }
-    if (!isConnected) {
-        return "Connect to your bridge first."
-    }
-    return "ChatGPT voice uses the account already signed in on your Mac."
-}
-
-private fun gptSummaryText(
-    snapshot: RemodexGptAccountSnapshot,
-    isConnected: Boolean,
-): String {
-    if (snapshot.needsReauth) {
-        return "Refresh the ChatGPT sign-in on your paired Mac."
-    }
-    if (snapshot.isAuthenticated && snapshot.isVoiceTokenReady) {
-        return "Using the ChatGPT session from your paired Mac bridge."
-    }
-    if (snapshot.isAuthenticated) {
-        return "Signed in. Waiting for voice sync from your Mac."
-    }
-    if (snapshot.hasActiveLogin && isConnected) {
-        return "Finish the browser sign-in flow on your paired Mac."
-    }
-    if (snapshot.hasActiveLogin) {
-        return "Reconnect to your bridge to continue sign-in."
-    }
-    if (!isConnected) {
-        return "Connect to your paired Mac before checking ChatGPT voice."
-    }
-    return "Sign in to ChatGPT on the paired Mac, not on this phone."
 }
 
 private fun gptHintTone(

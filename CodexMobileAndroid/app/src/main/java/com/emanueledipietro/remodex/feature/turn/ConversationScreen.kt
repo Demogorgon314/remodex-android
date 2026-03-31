@@ -199,6 +199,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
+import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceRecoveryAction
+import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceRecoveryTone
+import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceRecoveryUiState
 import com.emanueledipietro.remodex.feature.appshell.PlanComposerSessionUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
@@ -846,6 +849,7 @@ internal fun buildRepositoryDiffSheetPresentation(rawPatch: String): FileChangeS
 fun ConversationScreen(
     uiState: AppUiState,
     onRetryConnection: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     onComposerInputChanged: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit = { _, _ -> },
@@ -1485,6 +1489,13 @@ fun ConversationScreen(
                                         onOpenCameraCapture = onOpenCameraCapture,
                                         onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
                                         onTapVoiceButton = onTapVoiceButton,
+                                        onHandleVoiceRecoveryAction = { action ->
+                                            when (action) {
+                                                ComposerVoiceRecoveryAction.RETRY_CONNECTION -> onRetryConnection()
+                                                ComposerVoiceRecoveryAction.OPEN_SETTINGS -> onOpenSettings()
+                                                ComposerVoiceRecoveryAction.RETRY_VOICE -> onTapVoiceButton()
+                                            }
+                                        },
                                         onRemoveAttachment = onRemoveAttachment,
                                         onSelectFileAutocomplete = onSelectFileAutocomplete,
                                         onRemoveMentionedFile = onRemoveMentionedFile,
@@ -1847,6 +1858,123 @@ private fun ComposerInlineNotice(
         style = MaterialTheme.typography.bodySmall,
         color = color,
     )
+}
+
+@Composable
+private fun ComposerVoiceRecoveryCard(
+    recovery: ComposerVoiceRecoveryUiState,
+    onAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = remodexConversationChrome()
+    val tint = when (recovery.tone) {
+        ComposerVoiceRecoveryTone.WARNING -> Color(0xFFF29D38)
+        ComposerVoiceRecoveryTone.ERROR -> chrome.destructive
+        ComposerVoiceRecoveryTone.PROGRESS -> chrome.accent
+    }
+    val statusLabel = when (recovery.tone) {
+        ComposerVoiceRecoveryTone.WARNING -> "Action needed"
+        ComposerVoiceRecoveryTone.ERROR -> "Unavailable"
+        ComposerVoiceRecoveryTone.PROGRESS -> "Syncing"
+    }
+    Surface(
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(22.dp)
+                    .background(
+                        color = tint.copy(alpha = 0.12f),
+                        shape = CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (recovery.tone == ComposerVoiceRecoveryTone.PROGRESS) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.8.dp,
+                        color = tint,
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(
+                                color = tint,
+                                shape = CircleShape,
+                            ),
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Voice mode",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = chrome.secondaryText,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(3.dp)
+                            .background(chrome.subtleBorder, CircleShape),
+                    )
+                    Text(
+                        text = statusLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = tint,
+                    )
+                }
+                Text(
+                    text = recovery.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                Text(
+                    text = recovery.summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+                recovery.detail?.let { detail ->
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = chrome.tertiaryText,
+                    )
+                }
+            }
+
+            recovery.actionLabel?.let { actionLabel ->
+                Text(
+                    text = actionLabel,
+                    modifier = Modifier.clickable(onClick = onAction),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = tint,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -3772,6 +3900,7 @@ private fun ComposerCard(
     onOpenCameraCapture: () -> Unit,
     onReceiveComposerAttachmentUris: (List<Uri>) -> Unit,
     onTapVoiceButton: () -> Unit,
+    onHandleVoiceRecoveryAction: (ComposerVoiceRecoveryAction) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -3937,6 +4066,20 @@ private fun ComposerCard(
                 ComposerInlineNotice(
                     text = limitMessage,
                     color = chrome.destructive,
+                )
+            }
+            composer.voiceRecovery?.let { recovery ->
+                ComposerVoiceRecoveryCard(
+                    recovery = recovery,
+                    onAction = {
+                        when (recovery.action) {
+                            ComposerVoiceRecoveryAction.RETRY_CONNECTION,
+                            ComposerVoiceRecoveryAction.OPEN_SETTINGS,
+                            ComposerVoiceRecoveryAction.RETRY_VOICE
+                            -> onHandleVoiceRecoveryAction(recovery.action)
+                            null -> Unit
+                        }
+                    },
                 )
             }
             composer.composerMessage?.let { message ->
