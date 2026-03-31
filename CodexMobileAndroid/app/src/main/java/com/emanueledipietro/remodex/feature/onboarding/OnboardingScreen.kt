@@ -29,12 +29,19 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Waves
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,6 +130,22 @@ private val onboardingSteps = listOf(
 )
 
 private const val OnboardingPageCount = 5
+private const val CodexInstallStepPageIndex = 2
+private const val CodexInstallCommand = "npm install -g @openai/codex@latest"
+
+internal enum class OnboardingContinueAction {
+    SHOW_CODEX_INSTALL_CONFIRMATION,
+    ADVANCE,
+    COMPLETE,
+}
+
+internal fun onboardingContinueAction(currentPage: Int): OnboardingContinueAction {
+    return when {
+        currentPage == CodexInstallStepPageIndex -> OnboardingContinueAction.SHOW_CODEX_INSTALL_CONFIRMATION
+        currentPage < OnboardingPageCount - 1 -> OnboardingContinueAction.ADVANCE
+        else -> OnboardingContinueAction.COMPLETE
+    }
+}
 
 @Composable
 fun OnboardingScreen(
@@ -130,6 +153,24 @@ fun OnboardingScreen(
 ) {
     val pagerState = rememberPagerState(pageCount = { OnboardingPageCount })
     val coroutineScope = rememberCoroutineScope()
+    var showCodexInstallReminder by rememberSaveable { mutableStateOf(false) }
+
+    fun advanceToNextPage() {
+        coroutineScope.launch {
+            pagerState.animateScrollToPage(pagerState.currentPage + 1)
+        }
+    }
+
+    fun handleContinue() {
+        when (onboardingContinueAction(currentPage = pagerState.currentPage)) {
+            OnboardingContinueAction.SHOW_CODEX_INSTALL_CONFIRMATION -> {
+                showCodexInstallReminder = true
+            }
+
+            OnboardingContinueAction.ADVANCE -> advanceToNextPage()
+            OnboardingContinueAction.COMPLETE -> onContinue()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -156,14 +197,36 @@ fun OnboardingScreen(
 
             OnboardingBottomBar(
                 currentPage = pagerState.currentPage,
-                onContinue = {
-                    if (pagerState.currentPage < OnboardingPageCount - 1) {
-                        coroutineScope.launch {
-                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                        }
-                    } else {
-                        onContinue()
+                onContinue = ::handleContinue,
+            )
+        }
+
+        if (showCodexInstallReminder) {
+            AlertDialog(
+                onDismissRequest = { showCodexInstallReminder = false },
+                dismissButton = {
+                    TextButton(onClick = { showCodexInstallReminder = false }) {
+                        Text("Stay Here")
                     }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showCodexInstallReminder = false
+                            advanceToNextPage()
+                        },
+                    ) {
+                        Text("Continue Anyway")
+                    }
+                },
+                title = {
+                    Text("Install Codex CLI First")
+                },
+                text = {
+                    Text(
+                        "Copy and paste \"$CodexInstallCommand\" on your Mac before moving on. " +
+                            "Remodex will not work until Codex CLI is installed and available in your PATH.",
+                    )
                 },
             )
         }
