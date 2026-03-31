@@ -599,7 +599,7 @@ internal fun planAccessoryContentDescription(snapshot: PlanAccessorySnapshot): S
     return "Open active plan. ${snapshot.status.label}, ${snapshot.progressDescription}. ${snapshot.summary}"
 }
 private val SkillAutocompleteRowHeight = 50.dp
-private val SlashAutocompleteRowHeight = 50.dp
+private val SlashAutocompleteRowHeight = 40.dp
 private const val MaxAutocompleteVisibleRows = 6
 internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
@@ -4815,23 +4815,23 @@ private fun SlashCommandRow(
                     onClick()
                 },
             )
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(
             imageVector = slashCommandIcon(command),
             contentDescription = null,
             tint = contentColor,
-            modifier = Modifier.width(22.dp),
+            modifier = Modifier.width(18.dp),
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 color = contentColor,
                 maxLines = 1,
@@ -4839,7 +4839,7 @@ private fun SlashCommandRow(
             )
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                 color = chrome.secondaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -4847,7 +4847,7 @@ private fun SlashCommandRow(
         }
         Text(
             text = command.token,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = chrome.secondaryText,
             maxLines = 1,
         )
