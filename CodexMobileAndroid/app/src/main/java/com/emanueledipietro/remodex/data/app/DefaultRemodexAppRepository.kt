@@ -27,9 +27,9 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
-import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -37,6 +37,7 @@ import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -1259,8 +1260,7 @@ class DefaultRemodexAppRepository(
 
     override suspend fun startCodeReview(
         threadId: String,
-        target: RemodexComposerReviewTarget,
-        baseBranch: String?,
+        request: RemodexCodeReviewRequest,
     ) {
         var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
         try {
@@ -1279,8 +1279,7 @@ class DefaultRemodexAppRepository(
             resumeThreadBeforeSend(thread = continuationThread)
             threadCommandService.startCodeReview(
                 threadId = continuationThreadId,
-                target = target,
-                baseBranch = baseBranch,
+                request = request,
             )
             refreshBaseThreadsFromSync()
             return
@@ -1288,8 +1287,7 @@ class DefaultRemodexAppRepository(
         try {
             threadCommandService.startCodeReview(
                 threadId = threadId,
-                target = target,
-                baseBranch = baseBranch,
+                request = request,
             )
         } catch (error: Throwable) {
             if (error is CancellationException) {
@@ -1305,8 +1303,7 @@ class DefaultRemodexAppRepository(
             resumeThreadBeforeSend(thread = continuationThread)
             threadCommandService.startCodeReview(
                 threadId = continuationThreadId,
-                target = target,
-                baseBranch = baseBranch,
+                request = request,
             )
         }
         refreshBaseThreadsFromSync()
@@ -1368,6 +1365,10 @@ class DefaultRemodexAppRepository(
 
     override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
         return threadCommandService.loadGitDiff(threadId)
+    }
+
+    override suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> {
+        return threadCommandService.loadGitCommits(threadId)
     }
 
     override suspend fun checkoutGitBranch(

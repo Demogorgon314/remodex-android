@@ -220,6 +220,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.decodeInlineImageDataUrlBytes
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -874,6 +875,8 @@ fun ConversationScreen(
     onRemoveMentionedSkill: (String) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectCodeReviewBranch: (String) -> Unit,
+    onSelectCodeReviewCommit: (RemodexGitCommit) -> Unit,
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
@@ -1468,6 +1471,8 @@ fun ConversationScreen(
                                             onSelectSkillAutocomplete = onSelectSkillAutocomplete,
                                             onSelectSlashCommand = handleSelectSlashCommand,
                                             onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                            onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                                            onSelectCodeReviewCommit = onSelectCodeReviewCommit,
                                             onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                                             onForkThread = handleForkThread,
                                             modifier = Modifier
@@ -1503,6 +1508,8 @@ fun ConversationScreen(
                                         onRemoveMentionedSkill = onRemoveMentionedSkill,
                                         onSelectSlashCommand = handleSelectSlashCommand,
                                         onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                        onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                                        onSelectCodeReviewCommit = onSelectCodeReviewCommit,
                                         onClearReviewSelection = onClearReviewSelection,
                                         onClearSubagentsSelection = onClearSubagentsSelection,
                                         onCloseComposerAutocomplete = onCloseComposerAutocomplete,
@@ -3908,6 +3915,8 @@ private fun ComposerCard(
     onRemoveMentionedSkill: (String) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectCodeReviewBranch: (String) -> Unit,
+    onSelectCodeReviewCommit: (RemodexGitCommit) -> Unit,
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
@@ -4355,10 +4364,10 @@ private fun ComposerAccessoryStrip(
             }
         }
 
-        composer.reviewSelection?.target?.let { target ->
+        composer.reviewSelection?.request?.let { request ->
             AccessoryChipRow {
                 AccessoryChip(
-                    label = "Code Review: ${target.title}",
+                    label = "Code Review: ${request.displayTitle}",
                     colors = neutralChipColors,
                     onRemove = onClearReviewSelection,
                 )
@@ -4453,6 +4462,8 @@ private fun AutocompletePanel(
     onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectCodeReviewBranch: (String) -> Unit,
+    onSelectCodeReviewCommit: (RemodexGitCommit) -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     modifier: Modifier = Modifier,
@@ -4495,18 +4506,24 @@ private fun AutocompletePanel(
                     autocomplete = autocomplete,
                     onSelectCommand = onSelectSlashCommand,
                     onSelectReviewTarget = onSelectCodeReviewTarget,
+                    onSelectReviewBranch = onSelectCodeReviewBranch,
+                    onSelectReviewCommit = onSelectCodeReviewCommit,
                     onSelectForkDestination = onForkThread,
                     onClose = onCloseComposerAutocomplete,
                 )
             }
 
             RemodexComposerAutocompletePanel.REVIEW_TARGETS,
+            RemodexComposerAutocompletePanel.REVIEW_BRANCHES,
+            RemodexComposerAutocompletePanel.REVIEW_COMMITS,
             RemodexComposerAutocompletePanel.FORK_DESTINATIONS,
             -> {
                 SlashCommandAutocompletePanel(
                     autocomplete = autocomplete,
                     onSelectCommand = onSelectSlashCommand,
                     onSelectReviewTarget = onSelectCodeReviewTarget,
+                    onSelectReviewBranch = onSelectCodeReviewBranch,
+                    onSelectReviewCommit = onSelectCodeReviewCommit,
                     onSelectForkDestination = onForkThread,
                     onClose = onCloseComposerAutocomplete,
                 )
@@ -4580,6 +4597,8 @@ private fun SlashCommandAutocompletePanel(
     autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
     onSelectCommand: (RemodexSlashCommand) -> Unit,
     onSelectReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectReviewBranch: (String) -> Unit,
+    onSelectReviewCommit: (RemodexGitCommit) -> Unit,
     onSelectForkDestination: (RemodexComposerForkDestination) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -4610,7 +4629,7 @@ private fun SlashCommandAutocompletePanel(
             Column(modifier = Modifier.fillMaxWidth()) {
                 AutocompleteSubmenuHeader(
                     title = "Code Review",
-                    subtitle = "Choose what the reviewer should compare.",
+                    subtitle = "Select a review preset.",
                     closeContentDescription = "Close code review options",
                     onClose = onClose,
                 )
@@ -4618,12 +4637,69 @@ private fun SlashCommandAutocompletePanel(
                     ReviewTargetRow(
                         target = target,
                         subtitle = reviewTargetSubtitle(target, autocomplete),
-                        enabled = target != RemodexComposerReviewTarget.BASE_BRANCH ||
-                            resolvedBaseBranchName(autocomplete) != null,
+                        enabled = when (target) {
+                            RemodexComposerReviewTarget.BASE_BRANCH -> autocomplete.reviewBranches.isNotEmpty()
+                            else -> true
+                        },
                         onClick = { onSelectReviewTarget(target) },
                     )
                     if (index != autocomplete.reviewTargets.lastIndex) {
                         HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                    }
+                }
+            }
+        }
+
+        RemodexComposerAutocompletePanel.REVIEW_BRANCHES -> {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                AutocompleteSubmenuHeader(
+                    title = "Base Branch",
+                    subtitle = "Select a base branch to compare against.",
+                    closeContentDescription = "Close base branch options",
+                    onClose = onClose,
+                )
+                if (autocomplete.reviewBranches.isEmpty()) {
+                    AutocompleteEmptyState("No branches available")
+                } else {
+                    autocomplete.reviewBranches.forEachIndexed { index, branch ->
+                        ReviewBranchRow(
+                            branch = branch,
+                            isSelected = branch == resolvedBaseBranchName(autocomplete),
+                            onClick = { onSelectReviewBranch(branch) },
+                        )
+                        if (index != autocomplete.reviewBranches.lastIndex) {
+                            HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                        }
+                    }
+                }
+            }
+        }
+
+        RemodexComposerAutocompletePanel.REVIEW_COMMITS -> {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                AutocompleteSubmenuHeader(
+                    title = "Review a Commit",
+                    subtitle = "Select a recent commit to review.",
+                    closeContentDescription = "Close commit review options",
+                    onClose = onClose,
+                )
+                when {
+                    autocomplete.isReviewLoading -> {
+                        AutocompleteLoadingState("Loading recent commits...")
+                    }
+                    autocomplete.reviewCommits.isEmpty() -> {
+                        AutocompleteEmptyState("No recent commits available")
+                    }
+                    else -> {
+                        autocomplete.reviewCommits.forEachIndexed { index, commit ->
+                            ReviewCommitRow(
+                                commit = commit,
+                                onClick = { onSelectReviewCommit(commit) },
+                            )
+                            if (index != autocomplete.reviewCommits.lastIndex) {
+                                HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+                            }
+                        }
                     }
                 }
             }
@@ -4875,12 +4951,15 @@ private fun ReviewTargetRow(
                     onClick()
                 },
             )
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
     ) {
         Text(
             text = target.title,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 14.sp,
+                lineHeight = 17.sp,
+            ),
             fontWeight = FontWeight.SemiBold,
             color = contentColor,
             maxLines = 1,
@@ -4888,8 +4967,117 @@ private fun ReviewTargetRow(
         )
         Text(
             text = subtitle,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+            ),
             color = remodexConversationChrome().secondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun ReviewBranchRow(
+    branch: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SlashAutocompleteRowHeight)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Folder,
+            contentDescription = null,
+            tint = if (isSelected) chrome.accent else chrome.titleText,
+            modifier = Modifier.width(22.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = branch,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 14.sp,
+                    lineHeight = 17.sp,
+                ),
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = if (isSelected) "Current review base branch" else "Compare current work against $branch",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                ),
+                color = chrome.secondaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReviewCommitRow(
+    commit: RemodexGitCommit,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = commit.title,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 14.sp,
+                lineHeight = 18.sp,
+            ),
+            fontWeight = FontWeight.SemiBold,
+            color = chrome.titleText,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = buildString {
+                append(commit.sha.take(8))
+                commit.author.trim().takeIf(String::isNotEmpty)?.let { author ->
+                    append("  ")
+                    append(author)
+                }
+            },
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+            ),
+            color = chrome.secondaryText,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -4967,15 +5155,21 @@ private fun AutocompleteSubmenuHeader(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                ),
                 fontWeight = FontWeight.SemiBold,
                 color = chrome.titleText,
             )
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                ),
                 color = chrome.secondaryText,
-                maxLines = 2,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -5032,7 +5226,9 @@ private fun isCommandEnabled(
     autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
 ): Boolean {
     return when (command) {
-        RemodexSlashCommand.CODE_REVIEW -> !autocomplete.hasComposerContentConflictingWithReview
+        RemodexSlashCommand.CODE_REVIEW -> {
+            !autocomplete.isThreadRunning && !autocomplete.hasComposerContentConflictingWithReview
+        }
         RemodexSlashCommand.FORK,
         RemodexSlashCommand.COMPACT,
         -> !autocomplete.isThreadRunning
@@ -5065,7 +5261,11 @@ private fun commandSubtitle(
     enabled: Boolean,
 ): String {
     if (
-        (command == RemodexSlashCommand.FORK || command == RemodexSlashCommand.COMPACT) &&
+        (
+            command == RemodexSlashCommand.CODE_REVIEW ||
+                command == RemodexSlashCommand.FORK ||
+                command == RemodexSlashCommand.COMPACT
+            ) &&
         autocomplete.isThreadRunning
     ) {
         return "Wait for the current response to finish first"
@@ -5094,6 +5294,8 @@ private fun reviewTargetSubtitle(
                 "Diff against $branch"
             } ?: "Pick a base branch first"
         }
+        RemodexComposerReviewTarget.COMMIT -> "Select a recent commit to review"
+        RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> "Write custom review instructions"
     }
 }
 

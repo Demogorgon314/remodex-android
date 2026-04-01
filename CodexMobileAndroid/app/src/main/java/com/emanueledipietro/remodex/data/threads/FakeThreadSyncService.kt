@@ -10,6 +10,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -18,6 +19,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
@@ -376,19 +378,32 @@ class FakeThreadSyncService(
 
     override suspend fun startCodeReview(
         threadId: String,
-        target: RemodexComposerReviewTarget,
-        baseBranch: String?,
+        request: RemodexCodeReviewRequest,
     ) {
         sendPrompt(
             threadId = threadId,
-            prompt = when (target) {
+            prompt = when (request.target) {
                 RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> "Review current changes"
                 RemodexComposerReviewTarget.BASE_BRANCH -> {
-                    val normalizedBaseBranch = baseBranch?.trim().orEmpty()
+                    val normalizedBaseBranch = request.baseBranch?.trim().orEmpty()
                     if (normalizedBaseBranch.isEmpty()) {
                         "Review against base branch"
                     } else {
                         "Review against base branch $normalizedBaseBranch"
+                    }
+                }
+                RemodexComposerReviewTarget.COMMIT -> {
+                    val normalizedSha = request.commitSha?.trim().orEmpty()
+                    val normalizedTitle = request.commitTitle?.trim().orEmpty()
+                    when {
+                        normalizedSha.isEmpty() -> "Review commit"
+                        normalizedTitle.isEmpty() -> "Review commit $normalizedSha"
+                        else -> "Review commit $normalizedSha: $normalizedTitle"
+                    }
+                }
+                RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> {
+                    request.customInstructions?.trim().orEmpty().ifEmpty {
+                        "Custom review instructions"
                     }
                 }
             },
@@ -549,6 +564,23 @@ class FakeThreadSyncService(
             }
         }.trim()
         return RemodexGitRepoDiff(patch = patch)
+    }
+
+    override suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> {
+        return listOf(
+            RemodexGitCommit(
+                sha = "9f1c2ab",
+                message = "Polish Android review composer flow",
+                author = "Remodex",
+                date = "2026-03-31T10:15:00Z",
+            ),
+            RemodexGitCommit(
+                sha = "4ab77de",
+                message = "Align review/start payload handling",
+                author = "Remodex",
+                date = "2026-03-30T08:10:00Z",
+            ),
+        )
     }
 
     override suspend fun checkoutGitBranch(

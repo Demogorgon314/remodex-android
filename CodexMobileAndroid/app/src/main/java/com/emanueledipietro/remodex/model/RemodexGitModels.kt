@@ -33,6 +33,16 @@ data class RemodexGitRepoDiff(
     val patch: String = "",
 )
 
+data class RemodexGitCommit(
+    val sha: String,
+    val message: String,
+    val author: String = "",
+    val date: String = "",
+) {
+    val title: String
+        get() = message.trim().ifEmpty { sha }
+}
+
 data class RemodexGitBranches(
     val branches: List<String> = emptyList(),
     val branchesCheckedOutElsewhere: Set<String> = emptySet(),

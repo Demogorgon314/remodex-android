@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState
@@ -39,6 +40,7 @@ import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGptVoiceStatus
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
@@ -410,6 +412,7 @@ class AppViewModel(
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
+    private var reviewAutocompleteJob: Job? = null
     private var autoReconnectJob: Job? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
@@ -1083,7 +1086,7 @@ class AppViewModel(
                 this[threadId] = value
             }
         }
-        if (value.trim().isNotEmpty() && composerReviewSelections.value[threadId]?.target != null) {
+        if (value.trim().isNotEmpty() && composerReviewSelections.value[threadId]?.request != null) {
             clearReviewSelection()
         }
         updateComposerAutocomplete(threadId = threadId, input = value)
@@ -1103,8 +1106,19 @@ class AppViewModel(
                 reviewSelection = composer.reviewSelection,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
-            val reviewSelection = composer.reviewSelection
-            if (reviewSelection?.target != null) {
+            if (
+                RemodexComposerCommandLogic.isStandaloneSlashCommand(
+                    text = composer.draftText,
+                    commandToken = RemodexSlashCommand.CODE_REVIEW.token,
+                )
+            ) {
+                if (selectedThread.isRunning) {
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = "Wait for the current run to finish before starting a code review.",
+                    )
+                    return@launch
+                }
                 if (composer.autocomplete.hasComposerContentConflictingWithReview) {
                     setComposerMessage(
                         threadId = threadId,
@@ -1112,27 +1126,36 @@ class AppViewModel(
                     )
                     return@launch
                 }
+                openReviewPresetSelection(threadId)
+                return@launch
+            }
+
+            val inlineCustomReviewRequest = resolveInlineCustomReviewRequest(composer)
+            val reviewRequest = composer.reviewSelection?.request ?: inlineCustomReviewRequest
+            if (reviewRequest != null) {
+                if (selectedThread.isRunning) {
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = "Wait for the current run to finish before starting a code review.",
+                    )
+                    return@launch
+                }
+                if (inlineCustomReviewRequest == null && composer.autocomplete.hasComposerContentConflictingWithReview) {
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = "Clear text, files, skills, and images before starting a code review.",
+                    )
+                    return@launch
+                }
                 bumpComposerSendDismissSignal(threadId)
+                bumpComposerSendAnchorSignal(threadId)
                 clearComposer(threadId)
                 try {
-                    val previousThreadIds = repository.session.value.threads
-                        .mapTo(mutableSetOf(), RemodexThreadSummary::id)
-                    repository.createThread(
-                        preferredProjectPath = selectedThread.projectPath.ifBlank { null },
-                        inheritRuntimeFromThreadId = threadId,
-                    )
-                    val reviewThreadId = resolveCreatedThreadId(previousThreadIds)
-                        ?: error("Could not create a review thread.")
-                    if (repository.session.value.selectedThread?.id != reviewThreadId) {
-                        repository.selectThread(reviewThreadId)
-                    }
                     repository.startCodeReview(
-                        threadId = reviewThreadId,
-                        target = reviewSelection.target,
-                        baseBranch = composer.selectedGitBaseBranch.ifBlank { null },
+                        threadId = threadId,
+                        request = reviewRequest,
                     )
-                    bumpComposerSendAnchorSignal(reviewThreadId)
-                    refreshGitState(reviewThreadId)
+                    refreshGitState(threadId)
                 } catch (error: Throwable) {
                     if (error is CancellationException) {
                         throw error
@@ -1582,6 +1605,10 @@ class AppViewModel(
                             ?: currentDraft
                     }
                 }
+                if (uiState.value.selectedThread?.isRunning == true) {
+                    clearComposerAutocomplete()
+                    return
+                }
                 if (uiState.value.composer.autocomplete.hasComposerContentConflictingWithReview) {
                     composerReviewSelections.update { selectionsByThread ->
                         selectionsByThread.toMutableMap().apply {
@@ -1591,14 +1618,7 @@ class AppViewModel(
                     clearComposerAutocomplete()
                     return
                 }
-                composerReviewSelections.update { selectionsByThread ->
-                    selectionsByThread.toMutableMap().apply {
-                        this[threadId] = RemodexComposerReviewSelection(target = null)
-                    }
-                }
-                autocompleteState.value = autocompleteState.value.copy(
-                    panel = RemodexComposerAutocompletePanel.REVIEW_TARGETS,
-                )
+                openReviewPresetSelection(threadId)
             }
 
             RemodexSlashCommand.FORK -> {
@@ -1626,9 +1646,129 @@ class AppViewModel(
                     ?: currentDraft
             }
         }
+        when (target) {
+            RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> {
+                composerReviewSelections.update { selectionsByThread ->
+                    selectionsByThread.toMutableMap().apply {
+                        this[threadId] = RemodexComposerReviewSelection(
+                            request = RemodexCodeReviewRequest(
+                                target = RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
+                            ),
+                        )
+                    }
+                }
+                clearComposerAutocomplete()
+            }
+
+            RemodexComposerReviewTarget.BASE_BRANCH -> {
+                composerReviewSelections.update { selectionsByThread ->
+                    selectionsByThread.toMutableMap().apply { remove(threadId) }
+                }
+                autocompleteState.value = autocompleteState.value.copy(
+                    panel = RemodexComposerAutocompletePanel.REVIEW_BRANCHES,
+                    reviewBranches = reviewBranchOptions(uiState.value.composer.gitState, threadId),
+                    reviewCommits = emptyList(),
+                    isReviewLoading = false,
+                )
+            }
+
+            RemodexComposerReviewTarget.COMMIT -> {
+                composerReviewSelections.update { selectionsByThread ->
+                    selectionsByThread.toMutableMap().apply { remove(threadId) }
+                }
+                reviewAutocompleteJob?.cancel()
+                autocompleteState.value = autocompleteState.value.copy(
+                    panel = RemodexComposerAutocompletePanel.REVIEW_COMMITS,
+                    reviewBranches = emptyList(),
+                    reviewCommits = emptyList(),
+                    isReviewLoading = true,
+                )
+                reviewAutocompleteJob = viewModelScope.launch {
+                    runCatching { repository.loadGitCommits(threadId) }
+                        .onSuccess { commits ->
+                            if (uiState.value.selectedThread?.id != threadId) {
+                                return@onSuccess
+                            }
+                            autocompleteState.value = autocompleteState.value.copy(
+                                panel = RemodexComposerAutocompletePanel.REVIEW_COMMITS,
+                                reviewCommits = commits,
+                                isReviewLoading = false,
+                            )
+                        }.onFailure { error ->
+                            if (error is CancellationException) {
+                                throw error
+                            }
+                            if (uiState.value.selectedThread?.id != threadId) {
+                                return@onFailure
+                            }
+                            clearComposerAutocomplete()
+                            setComposerMessage(
+                                threadId = threadId,
+                                message = error.message ?: "Could not load recent commits.",
+                            )
+                        }
+                }
+            }
+
+            RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> {
+                composerReviewSelections.update { selectionsByThread ->
+                    selectionsByThread.toMutableMap().apply { remove(threadId) }
+                }
+                composerDrafts.update { draftsByThread ->
+                    val currentDraft = draftsByThread[threadId].orEmpty()
+                    draftsByThread.toMutableMap().apply {
+                        this[threadId] = RemodexComposerCommandLogic.replaceTrailingSlashCommandToken(
+                            text = currentDraft,
+                            commandToken = RemodexSlashCommand.CODE_REVIEW.token,
+                        ) ?: RemodexSlashCommand.CODE_REVIEW.token + " "
+                    }
+                }
+                clearComposerAutocomplete()
+            }
+        }
+    }
+
+    fun selectCodeReviewBranch(branch: String) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val normalizedBranch = branch.trim()
+        if (normalizedBranch.isEmpty()) {
+            clearComposerAutocomplete()
+            return
+        }
         composerReviewSelections.update { selectionsByThread ->
             selectionsByThread.toMutableMap().apply {
-                this[threadId] = RemodexComposerReviewSelection(target = target)
+                this[threadId] = RemodexComposerReviewSelection(
+                    request = RemodexCodeReviewRequest(
+                        target = RemodexComposerReviewTarget.BASE_BRANCH,
+                        baseBranch = normalizedBranch,
+                    ),
+                )
+            }
+        }
+        selectedGitBaseBranchByThread.update { branchesByThread ->
+            branchesByThread.toMutableMap().apply {
+                this[threadId] = normalizedBranch
+            }
+        }
+        clearComposerAutocomplete()
+    }
+
+    fun selectCodeReviewCommit(commit: RemodexGitCommit) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val normalizedSha = commit.sha.trim()
+        if (normalizedSha.isEmpty()) {
+            clearComposerAutocomplete()
+            return
+        }
+        composerReviewSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply {
+                this[threadId] = RemodexComposerReviewSelection(
+                    request = RemodexCodeReviewRequest(
+                        target = RemodexComposerReviewTarget.COMMIT,
+                        commitSha = normalizedSha,
+                        commitTitle = commit.title,
+                    ),
+                )
             }
         }
         clearComposerAutocomplete()
@@ -2999,6 +3139,7 @@ class AppViewModel(
                 }
                 fileAutocompleteJob?.cancel()
                 skillAutocompleteJob?.cancel()
+                reviewAutocompleteJob?.cancel()
                 if (fileToken.query.length < MinAutocompleteQueryLength) {
                     clearComposerAutocomplete()
                     return
@@ -3041,6 +3182,7 @@ class AppViewModel(
             skillToken != null -> {
                 skillAutocompleteJob?.cancel()
                 fileAutocompleteJob?.cancel()
+                reviewAutocompleteJob?.cancel()
                 if (skillToken.query.length < MinAutocompleteQueryLength) {
                     clearComposerAutocomplete()
                     return
@@ -3087,6 +3229,7 @@ class AppViewModel(
             slashToken != null -> {
                 fileAutocompleteJob?.cancel()
                 skillAutocompleteJob?.cancel()
+                reviewAutocompleteJob?.cancel()
                 val availableCommands = availableSlashCommands(
                     composer = composer,
                     draftText = input,
@@ -3108,6 +3251,7 @@ class AppViewModel(
     private fun clearComposerAutocomplete() {
         fileAutocompleteJob?.cancel()
         skillAutocompleteJob?.cancel()
+        reviewAutocompleteJob?.cancel()
         autocompleteState.value = RemodexComposerAutocompleteState()
     }
 
@@ -3344,10 +3488,58 @@ class AppViewModel(
     }
 
     private fun clearReviewSelectionIfConfirmed(threadId: String) {
-        if (composerReviewSelections.value[threadId]?.target != null) {
+        if (composerReviewSelections.value[threadId]?.request != null) {
             composerReviewSelections.update { selectionsByThread ->
                 selectionsByThread.toMutableMap().apply { remove(threadId) }
             }
+        }
+    }
+
+    private fun openReviewPresetSelection(threadId: String) {
+        composerReviewSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply { remove(threadId) }
+        }
+        autocompleteState.value = autocompleteState.value.copy(
+            panel = RemodexComposerAutocompletePanel.REVIEW_TARGETS,
+            reviewBranches = reviewBranchOptions(uiState.value.composer.gitState, threadId),
+            reviewCommits = emptyList(),
+            isReviewLoading = false,
+        )
+    }
+
+    private fun reviewBranchOptions(
+        gitState: RemodexGitState,
+        threadId: String,
+    ): List<String> {
+        val preferredBranch = selectedGitBaseBranchByThread.value[threadId].orEmpty().trim()
+        val defaultBranch = gitState.branches.defaultBranch.orEmpty().trim()
+        val currentBranch = gitState.branches.currentBranch.orEmpty().trim()
+        return buildList {
+            listOf(preferredBranch, defaultBranch, currentBranch)
+                .filter(String::isNotEmpty)
+                .forEach(::add)
+            gitState.branches.branches
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+                .forEach(::add)
+        }.distinct()
+    }
+
+    private fun resolveInlineCustomReviewRequest(composer: ComposerUiState): RemodexCodeReviewRequest? {
+        val customInstructions = RemodexComposerCommandLogic.slashCommandArgs(
+            text = composer.draftText,
+            commandToken = RemodexSlashCommand.CODE_REVIEW.token,
+        ) ?: return null
+        val normalizedInstructions = buildPromptPayload(
+            draftText = customInstructions,
+            mentionedFiles = composer.mentionedFiles,
+            isSubagentsSelectionArmed = false,
+        ).trim()
+        return normalizedInstructions.takeIf(String::isNotEmpty)?.let { instructions ->
+            RemodexCodeReviewRequest(
+                target = RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS,
+                customInstructions = instructions,
+            )
         }
     }
 
@@ -3986,8 +4178,8 @@ class AppViewModel(
             return ComposerUiState()
         }
         val showsRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
-        val hasConfirmedReviewSelection = reviewSelection?.target != null
-        val hasPendingReviewSelection = reviewSelection != null && reviewSelection.target == null
+        val hasConfirmedReviewSelection = reviewSelection?.request != null
+        val hasPendingReviewSelection = false
         val canSend = !hasPendingReviewSelection && (
             draftText.isNotBlank() ||
                 attachments.isNotEmpty() ||
@@ -4237,14 +4429,12 @@ private fun RemodexComposerAutocompleteState.enriched(
                 else -> true
             }
         },
-        reviewTargets = if (gitState.hasContext) {
-            listOf(
-                RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
-                RemodexComposerReviewTarget.BASE_BRANCH,
-            )
-        } else {
-            listOf(RemodexComposerReviewTarget.UNCOMMITTED_CHANGES)
-        },
+        reviewTargets = listOf(
+            RemodexComposerReviewTarget.BASE_BRANCH,
+            RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
+            RemodexComposerReviewTarget.COMMIT,
+            RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS,
+        ),
         forkDestinations = availableForkDestinations,
         hasComposerContentConflictingWithReview = hasReviewConflict,
         isThreadRunning = selectedThread.isRunning,

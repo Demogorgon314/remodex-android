@@ -28,6 +28,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -35,6 +36,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
@@ -936,26 +938,42 @@ class BridgeThreadSyncService(
         }
     }
 
-    override suspend fun startCodeReview(
-        threadId: String,
-        target: RemodexComposerReviewTarget,
-        baseBranch: String?,
-    ) {
-        if (!isConnected()) {
-            return
-        }
-
-        val prompt = when (target) {
+    private fun reviewPromptText(request: RemodexCodeReviewRequest): String {
+        return when (request.target) {
             RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> "Review current changes"
             RemodexComposerReviewTarget.BASE_BRANCH -> {
-                val trimmedBaseBranch = baseBranch?.trim().orEmpty()
+                val trimmedBaseBranch = request.baseBranch?.trim().orEmpty()
                 if (trimmedBaseBranch.isEmpty()) {
                     "Review against base branch"
                 } else {
                     "Review against base branch $trimmedBaseBranch"
                 }
             }
+            RemodexComposerReviewTarget.COMMIT -> {
+                val trimmedSha = request.commitSha?.trim().orEmpty()
+                val trimmedTitle = request.commitTitle?.trim().orEmpty()
+                when {
+                    trimmedSha.isEmpty() -> "Review commit"
+                    trimmedTitle.isEmpty() -> "Review commit $trimmedSha"
+                    else -> "Review commit $trimmedSha: $trimmedTitle"
+                }
+            }
+            RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> {
+                request.customInstructions?.trim().takeUnless { it.isNullOrEmpty() }
+                    ?: "Custom review instructions"
+            }
         }
+    }
+
+    override suspend fun startCodeReview(
+        threadId: String,
+        request: RemodexCodeReviewRequest,
+    ) {
+        if (!isConnected()) {
+            return
+        }
+
+        val prompt = reviewPromptText(request)
         val runtimeConfig = backingThreads.value.firstOrNull { it.id == threadId }?.runtimeConfig
             ?: RemodexRuntimeConfig()
         val hadRunningState = threadHasKnownRunningState(threadId)
@@ -968,18 +986,31 @@ class BridgeThreadSyncService(
         if (!hadRunningState) {
             markThreadAsRunningFallback(threadId)
         }
-        val targetObject = when (target) {
+        val targetObject = when (request.target) {
             RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> buildJsonObject {
                 put("type", JsonPrimitive("uncommittedChanges"))
             }
 
             RemodexComposerReviewTarget.BASE_BRANCH -> buildJsonObject {
                 put("type", JsonPrimitive("baseBranch"))
-                baseBranch?.trim()?.takeIf(String::isNotEmpty)?.let { put("branch", JsonPrimitive(it)) }
+                request.baseBranch?.trim()?.takeIf(String::isNotEmpty)?.let { put("branch", JsonPrimitive(it)) }
+            }
+
+            RemodexComposerReviewTarget.COMMIT -> buildJsonObject {
+                put("type", JsonPrimitive("commit"))
+                request.commitSha?.trim()?.takeIf(String::isNotEmpty)?.let { put("sha", JsonPrimitive(it)) }
+                request.commitTitle?.trim()?.takeIf(String::isNotEmpty)?.let { put("title", JsonPrimitive(it)) }
+            }
+
+            RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> buildJsonObject {
+                put("type", JsonPrimitive("custom"))
+                request.customInstructions?.trim()?.takeIf(String::isNotEmpty)?.let {
+                    put("instructions", JsonPrimitive(it))
+                }
             }
         }
         emitReviewDebugLog(
-            "stage=reviewStartRequest threadId=$threadId target=${target.name} baseBranch=${baseBranch.orEmpty()} payload=${
+            "stage=reviewStartRequest threadId=$threadId target=${request.target.name} baseBranch=${request.baseBranch.orEmpty()} commitSha=${request.commitSha.orEmpty()} payload=${
                 sanitizeReviewDebugJson(
                     buildJsonObject {
                         put("threadId", JsonPrimitive(threadId))
@@ -1193,6 +1224,30 @@ class BridgeThreadSyncService(
         return RemodexGitRepoDiff(
             patch = resultObject.firstString("patch").orEmpty(),
         )
+    }
+
+    override suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> {
+        if (!isConnected()) {
+            return emptyList()
+        }
+        val commits = runGitRequest(threadId = threadId, method = "git/log")
+            .result
+            ?.jsonObjectOrNull
+            ?.firstArray("commits")
+            .orEmpty()
+        return commits.mapNotNull { value ->
+            val commitObject = value.jsonObjectOrNull ?: return@mapNotNull null
+            val sha = commitObject.firstString("hash", "sha").orEmpty().trim()
+            if (sha.isEmpty()) {
+                return@mapNotNull null
+            }
+            RemodexGitCommit(
+                sha = sha,
+                message = commitObject.firstString("message", "subject").orEmpty(),
+                author = commitObject.firstString("author").orEmpty(),
+                date = commitObject.firstString("date").orEmpty(),
+            )
+        }
     }
 
     override suspend fun checkoutGitBranch(

@@ -123,6 +123,29 @@ object RemodexComposerCommandLogic {
         return normalizedText == normalizedCommandToken
     }
 
+    fun slashCommandArgs(
+        text: String,
+        commandToken: String,
+    ): String? {
+        val normalizedCommandToken = commandToken.trim()
+        if (normalizedCommandToken.isEmpty() || text.isEmpty() || text.first().isWhitespace()) {
+            return null
+        }
+        if (!text.startsWith(normalizedCommandToken)) {
+            return null
+        }
+        if (text.length == normalizedCommandToken.length) {
+            return null
+        }
+        val nextCharacter = text[normalizedCommandToken.length]
+        if (!nextCharacter.isWhitespace()) {
+            return null
+        }
+        return text.substring(normalizedCommandToken.length)
+            .trim()
+            .takeIf(String::isNotEmpty)
+    }
+
     fun hasClosedConfirmedFileMentionPrefix(
         text: String,
         confirmedMentions: List<RemodexComposerMentionedFile>,

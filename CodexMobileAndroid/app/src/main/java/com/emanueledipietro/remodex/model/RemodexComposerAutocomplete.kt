@@ -38,17 +38,58 @@ data class RemodexComposerMentionedSkill(
 enum class RemodexComposerReviewTarget {
     UNCOMMITTED_CHANGES,
     BASE_BRANCH,
+    COMMIT,
+    CUSTOM_INSTRUCTIONS,
     ;
 
     val title: String
         get() = when (this) {
-            UNCOMMITTED_CHANGES -> "Uncommitted changes"
-            BASE_BRANCH -> "Base branch"
+            UNCOMMITTED_CHANGES -> "Review uncommitted changes"
+            BASE_BRANCH -> "Review against a base branch"
+            COMMIT -> "Review a commit"
+            CUSTOM_INSTRUCTIONS -> "Custom review instructions"
+        }
+}
+
+data class RemodexCodeReviewRequest(
+    val target: RemodexComposerReviewTarget,
+    val baseBranch: String? = null,
+    val commitSha: String? = null,
+    val commitTitle: String? = null,
+    val customInstructions: String? = null,
+) {
+    val displayTitle: String
+        get() = when (target) {
+            RemodexComposerReviewTarget.UNCOMMITTED_CHANGES -> "Uncommitted changes"
+            RemodexComposerReviewTarget.BASE_BRANCH -> {
+                val normalizedBranch = baseBranch?.trim().orEmpty()
+                if (normalizedBranch.isEmpty()) {
+                    "Base branch"
+                } else {
+                    "Base branch: $normalizedBranch"
+                }
+            }
+            RemodexComposerReviewTarget.COMMIT -> {
+                val normalizedTitle = commitTitle?.trim().orEmpty()
+                when {
+                    normalizedTitle.isNotEmpty() -> normalizedTitle
+                    !commitSha.isNullOrBlank() -> "Commit: ${commitSha.trim()}"
+                    else -> "Commit"
+                }
+            }
+            RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS -> {
+                val normalizedInstructions = customInstructions?.trim().orEmpty()
+                if (normalizedInstructions.isEmpty()) {
+                    "Custom instructions"
+                } else {
+                    normalizedInstructions
+                }
+            }
         }
 }
 
 data class RemodexComposerReviewSelection(
-    val target: RemodexComposerReviewTarget?,
+    val request: RemodexCodeReviewRequest?,
 )
 
 enum class RemodexComposerForkDestination {
@@ -159,6 +200,8 @@ enum class RemodexComposerAutocompletePanel {
     SKILLS,
     COMMANDS,
     REVIEW_TARGETS,
+    REVIEW_BRANCHES,
+    REVIEW_COMMITS,
     FORK_DESTINATIONS,
 }
 
@@ -174,6 +217,9 @@ data class RemodexComposerAutocompleteState(
     val slashCommands: List<RemodexSlashCommand> = emptyList(),
     val slashQuery: String = "",
     val reviewTargets: List<RemodexComposerReviewTarget> = emptyList(),
+    val reviewBranches: List<String> = emptyList(),
+    val reviewCommits: List<RemodexGitCommit> = emptyList(),
+    val isReviewLoading: Boolean = false,
     val forkDestinations: List<RemodexComposerForkDestination> = emptyList(),
     val hasComposerContentConflictingWithReview: Boolean = false,
     val isThreadRunning: Boolean = false,

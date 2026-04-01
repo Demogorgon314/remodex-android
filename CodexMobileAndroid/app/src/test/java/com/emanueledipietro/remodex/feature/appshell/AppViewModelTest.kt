@@ -18,6 +18,7 @@ import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -29,6 +30,7 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitBranches
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -1138,6 +1140,7 @@ class AppViewModelTest {
                 RemodexSlashCommand.FORK,
                 RemodexSlashCommand.STATUS,
                 RemodexSlashCommand.COMPACT,
+                RemodexSlashCommand.PLAN,
                 RemodexSlashCommand.SUBAGENTS,
             ),
             viewModel.uiState.value.composer.autocomplete.slashCommands,
@@ -1286,7 +1289,7 @@ class AppViewModelTest {
 
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(RemodexComposerAutocompletePanel.REVIEW_TARGETS, viewModel.uiState.value.composer.autocomplete.panel)
-        assertEquals(null, viewModel.uiState.value.composer.reviewSelection?.target)
+        assertEquals(null, viewModel.uiState.value.composer.reviewSelection?.request)
     }
 
     @Test
@@ -1338,18 +1341,117 @@ class AppViewModelTest {
 
         assertTrue(repository.sentPrompts.isEmpty())
         assertEquals(
-            listOf("/tmp/remodex-review" to "thread-1"),
-            repository.createThreadRequests,
-        )
-        assertEquals(
-            listOf(Triple("thread-created", RemodexComposerReviewTarget.UNCOMMITTED_CHANGES, null)),
+            listOf(
+                "thread-1" to RemodexCodeReviewRequest(
+                    target = RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
+                ),
+            ),
             repository.codeReviewRequests,
         )
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertNull(viewModel.uiState.value.composer.reviewSelection)
-        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
-        assertEquals(0L, viewModel.uiState.value.composerSendDismissSignal)
+        assertEquals("thread-1", viewModel.uiState.value.selectedThread?.id)
+        assertEquals(1L, viewModel.uiState.value.composerSendDismissSignal)
         assertEquals(1L, viewModel.uiState.value.composerSendAnchorSignal)
+    }
+
+    @Test
+    fun `review commit selection loads commits and sends commit request on current thread`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            gitCommitResults = listOf(
+                RemodexGitCommit(
+                    sha = "abc123def456",
+                    message = "Fix flaky /review behavior",
+                    author = "Kai",
+                ),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Review thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/review")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.CODE_REVIEW)
+        viewModel.selectCodeReviewTarget(RemodexComposerReviewTarget.COMMIT)
+        advanceUntilIdle()
+        viewModel.selectCodeReviewCommit(repository.gitCommitResults.first())
+        advanceUntilIdle()
+
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                "thread-1" to RemodexCodeReviewRequest(
+                    target = RemodexComposerReviewTarget.COMMIT,
+                    commitSha = "abc123def456",
+                    commitTitle = "Fix flaky /review behavior",
+                ),
+            ),
+            repository.codeReviewRequests,
+        )
+        assertTrue(repository.sentPrompts.isEmpty())
+    }
+
+    @Test
+    fun `inline review prompt sends custom instructions request`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Review thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/review please audit dependencies")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                "thread-1" to RemodexCodeReviewRequest(
+                    target = RemodexComposerReviewTarget.CUSTOM_INSTRUCTIONS,
+                    customInstructions = "please audit dependencies",
+                ),
+            ),
+            repository.codeReviewRequests,
+        )
+        assertTrue(repository.sentPrompts.isEmpty())
+    }
+
+    @Test
+    fun `review send is blocked while current thread is running`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Review thread",
+                        isRunning = true,
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/review something important")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertTrue(repository.codeReviewRequests.isEmpty())
+        assertEquals(
+            "Wait for the current run to finish before starting a code review.",
+            viewModel.uiState.value.composer.composerMessage,
+        )
     }
 
     @Test
@@ -2435,7 +2537,7 @@ class AppViewModelTest {
         val compactThreadRequests = mutableListOf<String>()
         val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
-        val codeReviewRequests = mutableListOf<Triple<String, RemodexComposerReviewTarget, String?>>()
+        val codeReviewRequests = mutableListOf<Pair<String, RemodexCodeReviewRequest>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitBranchRequests = mutableListOf<Pair<String, String>>()
@@ -2475,6 +2577,7 @@ class AppViewModelTest {
         var gitDiffDelayMs = 0L
         var gitDiffResult = RemodexGitRepoDiff()
         var gitStateResult = RemodexGitState()
+        var gitCommitResults: List<RemodexGitCommit> = emptyList()
         var gitStateError: Throwable? = null
         var checkoutGitBranchError: Throwable? = null
         var remoteUrlResult = RemodexGitRemoteUrl(
@@ -2728,11 +2831,12 @@ class AppViewModelTest {
 
         override suspend fun startCodeReview(
             threadId: String,
-            target: RemodexComposerReviewTarget,
-            baseBranch: String?,
+            request: RemodexCodeReviewRequest,
         ) {
-            codeReviewRequests += Triple(threadId, target, baseBranch)
+            codeReviewRequests += threadId to request
         }
+
+        override suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> = gitCommitResults
 
         override suspend fun forkThread(
             threadId: String,

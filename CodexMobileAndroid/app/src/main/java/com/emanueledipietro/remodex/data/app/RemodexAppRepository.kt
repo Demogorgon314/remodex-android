@@ -5,15 +5,16 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
-import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import kotlinx.coroutines.flow.StateFlow
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
@@ -171,8 +172,7 @@ interface RemodexAppRepository {
 
     suspend fun startCodeReview(
         threadId: String,
-        target: RemodexComposerReviewTarget,
-        baseBranch: String? = null,
+        request: RemodexCodeReviewRequest,
     )
 
     suspend fun forkThread(
@@ -189,6 +189,8 @@ interface RemodexAppRepository {
     suspend fun loadGitState(threadId: String): RemodexGitState
 
     suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()
+
+    suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> = emptyList()
 
     suspend fun checkoutGitBranch(
         threadId: String,

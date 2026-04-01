@@ -8,11 +8,12 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
-import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -114,8 +115,7 @@ interface ThreadCommandService {
 
     suspend fun startCodeReview(
         threadId: String,
-        target: RemodexComposerReviewTarget,
-        baseBranch: String? = null,
+        request: RemodexCodeReviewRequest,
     )
 
     suspend fun forkThread(
@@ -142,6 +142,8 @@ interface ThreadCommandService {
     suspend fun loadGitState(threadId: String): RemodexGitState
 
     suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()
+
+    suspend fun loadGitCommits(threadId: String): List<RemodexGitCommit> = emptyList()
 
     suspend fun checkoutGitBranch(
         threadId: String,

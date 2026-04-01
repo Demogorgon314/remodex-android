@@ -1005,6 +1005,8 @@ private fun MainPane(
                             onRemoveMentionedSkill = viewModel::removeMentionedSkill,
                             onSelectSlashCommand = viewModel::selectSlashCommand,
                             onSelectCodeReviewTarget = viewModel::selectCodeReviewTarget,
+                            onSelectCodeReviewBranch = viewModel::selectCodeReviewBranch,
+                            onSelectCodeReviewCommit = viewModel::selectCodeReviewCommit,
                             onClearReviewSelection = viewModel::clearReviewSelection,
                             onClearSubagentsSelection = viewModel::clearSubagentsSelection,
                             onCloseComposerAutocomplete = viewModel::closeComposerAutocomplete,

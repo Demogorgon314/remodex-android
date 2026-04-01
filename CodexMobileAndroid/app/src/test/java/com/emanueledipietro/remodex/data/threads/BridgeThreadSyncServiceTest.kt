@@ -1914,8 +1914,9 @@ class BridgeThreadSyncServiceTest {
 
             service.startCodeReview(
                 threadId = "thread-review-running",
-                target = com.emanueledipietro.remodex.model.RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
-                baseBranch = null,
+                request = com.emanueledipietro.remodex.model.RemodexCodeReviewRequest(
+                    target = com.emanueledipietro.remodex.model.RemodexComposerReviewTarget.UNCOMMITTED_CHANGES,
+                ),
             )
             advanceUntilIdle()
 
