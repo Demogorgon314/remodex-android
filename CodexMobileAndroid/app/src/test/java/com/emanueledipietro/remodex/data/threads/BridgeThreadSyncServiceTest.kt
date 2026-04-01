@@ -5880,9 +5880,17 @@ class BridgeThreadSyncServiceTest {
                 item.kind == ConversationItemKind.FILE_CHANGE
             }
 
-            assertEquals("Updated files.", fileChangeItem.text)
-            assertFalse(fileChangeItem.text.contains("Path:"))
-            assertNull(FileChangeRenderParser.renderState(fileChangeItem.text).summary)
+            assertEquals(
+                """
+                Status: completed
+
+                Path: app/src/Main.kt
+                Kind: update
+                """.trimIndent(),
+                fileChangeItem.text,
+            )
+            val summaryEntry = FileChangeRenderParser.renderState(fileChangeItem.text).summary?.entries?.single()
+            assertEquals("app/src/Main.kt", summaryEntry?.path)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

@@ -407,7 +407,13 @@ internal object FileChangeRenderParser {
         entry: FileChangeSummaryEntry,
         diffCode: String? = null,
     ): Boolean {
-        return entry.additions > 0 || entry.deletions > 0 || hasPatchBodyEvidence(diffCode)
+        return (
+            entry.path.isNotBlank() &&
+                !entry.path.equals("unknown", ignoreCase = true)
+            ) ||
+            entry.additions > 0 ||
+            entry.deletions > 0 ||
+            hasPatchBodyEvidence(diffCode)
     }
 
     private fun hasPatchBodyEvidence(diffCode: String?): Boolean {

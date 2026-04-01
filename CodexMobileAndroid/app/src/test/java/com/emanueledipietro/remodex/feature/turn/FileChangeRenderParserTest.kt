@@ -90,7 +90,7 @@ class FileChangeRenderParserTest {
     }
 
     @Test
-    fun renderState_discardsMetadataOnlyRenderedEntriesWithoutTotalsOrPatchEvidence() {
+    fun renderState_parsesMetadataOnlyRenderedEntriesWithoutTotalsOrPatchEvidence() {
         val rendered = """
             Status: completed
 
@@ -100,13 +100,17 @@ class FileChangeRenderParserTest {
 
         val renderState = FileChangeRenderParser.renderState(rendered)
         val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
+        val entry = renderState.summary?.entries?.single()
 
-        assertNull(renderState.summary)
+        assertEquals("src/Empty.kt", entry?.path)
+        assertEquals(FileChangeAction.EDITED, entry?.action)
+        assertEquals(0, entry?.additions)
+        assertEquals(0, entry?.deletions)
         assertTrue(chunks.isEmpty())
     }
 
     @Test
-    fun renderState_discardsZeroTotalsRenderedEntriesWithoutPatchEvidence() {
+    fun renderState_parsesZeroTotalsRenderedEntriesWithoutPatchEvidence() {
         val rendered = """
             Status: completed
 
@@ -117,8 +121,12 @@ class FileChangeRenderParserTest {
 
         val renderState = FileChangeRenderParser.renderState(rendered)
         val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
+        val entry = renderState.summary?.entries?.single()
 
-        assertNull(renderState.summary)
+        assertEquals("src/Zero.kt", entry?.path)
+        assertEquals(FileChangeAction.ADDED, entry?.action)
+        assertEquals(0, entry?.additions)
+        assertEquals(0, entry?.deletions)
         assertTrue(chunks.isEmpty())
     }
 

@@ -5403,11 +5403,10 @@ class BridgeThreadSyncService(
         val changes = decodeFileChangeEntries(
             rawChanges = extractFileChangeChanges(itemObject),
         )
-        val renderableChanges = changes.filter(::hasRenderableFileChangeEvidence)
-        if (renderableChanges.isNotEmpty()) {
+        if (changes.isNotEmpty()) {
             return renderFileChangeEntries(
                 status = status,
-                changes = renderableChanges,
+                changes = changes,
             )
         }
         val diff = extractUnifiedDiffText(itemObject)
@@ -5455,16 +5454,6 @@ class BridgeThreadSyncService(
                 append(renderedChanges.joinToString(separator = "\n\n---\n\n"))
             }
         }
-    }
-
-    private fun hasRenderableFileChangeEvidence(
-        entry: DecodedFileChangeEntry,
-    ): Boolean {
-        if (!entry.diff.isBlank() && RemodexUnifiedPatchParser.looksLikePatchText(entry.diff)) {
-            return true
-        }
-        val totals = entry.inlineTotals ?: return false
-        return totals.additions > 0 || totals.deletions > 0
     }
 
     private fun decodeStructuredLifecycleBody(
