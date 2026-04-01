@@ -622,6 +622,7 @@ internal const val GitCheckoutPickerTriggerTag = "git_checkout_picker_trigger"
 internal const val GitComparePickerTriggerTag = "git_compare_picker_trigger"
 internal const val GitBranchPickerDialogTag = "git_branch_picker_dialog"
 internal const val GitBranchPickerSearchFieldTag = "git_branch_picker_search_field"
+private const val FileChangeDetailSheetAutoExpandMaxLines = 160
 
 private data class ComposerAccessoryChipColors(
     val tint: Color,
@@ -844,6 +845,21 @@ internal fun buildRepositoryDiffSheetPresentation(rawPatch: String): FileChangeS
         renderState = renderState.copy(bodyText = normalizedPatch),
         diffChunks = diffChunks,
     )
+}
+
+internal fun initialExpandedFileChangeChunkIds(diffChunks: List<PerFileDiffChunk>): List<String> {
+    if (diffChunks.size != 1) {
+        return emptyList()
+    }
+    val chunk = diffChunks.single()
+    val lineCount = chunk.diffCode
+        .lineSequence()
+        .count()
+    return if (lineCount in 1..FileChangeDetailSheetAutoExpandMaxLines) {
+        listOf(chunk.id)
+    } else {
+        emptyList()
+    }
 }
 
 @Composable
@@ -7796,7 +7812,7 @@ internal fun FileChangeDetailSheet(
     }
 
     LaunchedEffect(messageId, diffChunks) {
-        expandedChunkIds = diffChunks.map(PerFileDiffChunk::id)
+        expandedChunkIds = initialExpandedFileChangeChunkIds(diffChunks)
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
