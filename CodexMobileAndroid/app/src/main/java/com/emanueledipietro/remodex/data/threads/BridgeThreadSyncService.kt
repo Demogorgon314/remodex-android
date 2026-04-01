@@ -199,7 +199,7 @@ class BridgeThreadSyncService(
     private val scope: CoroutineScope,
     private val appVersionName: String = "1.0",
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
-) : ThreadSyncService, ThreadCommandService, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService {
+) : ThreadSyncService, ThreadCommandService, ThreadHydrationService, ThreadResumeService, ThreadActiveContextService, ThreadLocalTimelineService {
     private data class DecodedHistoryItem(
         val timestampMs: Long,
         val sequence: Long,
@@ -271,6 +271,8 @@ class BridgeThreadSyncService(
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
     private val resumedThreadIds = mutableSetOf<String>()
     private val lifecycleCatchupJobByThread = mutableMapOf<String, Job>()
+    @Volatile
+    private var activeThreadIdHint: String? = null
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
     private var hasPresentedServiceTierBridgeUpdatePrompt = false
@@ -290,6 +292,10 @@ class BridgeThreadSyncService(
 
     override fun dismissBridgeUpdatePrompt() {
         backingBridgeUpdatePrompt.value = null
+    }
+
+    override fun setActiveThreadHint(threadId: String?) {
+        activeThreadIdHint = threadId?.trim()?.takeIf(String::isNotEmpty)
     }
 
     init {
@@ -6257,11 +6263,12 @@ class BridgeThreadSyncService(
         eventObject: JsonObject?,
         itemObject: JsonObject? = null,
     ): String? {
-        return itemObject?.firstString("id", "call_id", "callId")
-            ?: paramsObject?.firstString("itemId", "item_id", "call_id", "callId", "id")
+        return itemObject?.firstString("id", "call_id", "callId", "messageId", "message_id")
+            ?: paramsObject?.firstString("itemId", "item_id", "call_id", "callId", "messageId", "message_id")
             ?: paramsObject?.firstObject("item")?.firstString("id")
-            ?: eventObject?.firstString("itemId", "item_id", "call_id", "callId")
+            ?: eventObject?.firstString("itemId", "item_id", "call_id", "callId", "messageId", "message_id")
             ?: eventObject?.firstObject("item")?.firstString("id")
+            ?: paramsObject?.firstString("id")
     }
 
     private fun extractTextDelta(paramsObject: JsonObject): String {
@@ -6302,22 +6309,44 @@ class BridgeThreadSyncService(
         if (backingThreads.value.size == 1) {
             return backingThreads.value.first().id
         }
+        resolveActiveThreadHint()?.let { return it }
         return null
     }
 
     private fun extractThreadId(paramsObject: JsonObject): String? {
         val eventObject = envelopeEventObject(paramsObject)
-        return paramsObject.firstString("threadId", "thread_id")
+        return paramsObject.firstString("threadId", "thread_id", "conversationId", "conversation_id")
             ?: paramsObject.firstObject("thread")?.firstString("id", "threadId", "thread_id")
-            ?: paramsObject.firstObject("turn")?.firstString("threadId", "thread_id")
-            ?: paramsObject.firstObject("item")?.firstString("threadId", "thread_id")
-            ?: eventObject?.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("turn")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+            ?: paramsObject.firstObject("item")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+            ?: eventObject?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
             ?: eventObject?.firstObject("thread")?.firstString("id", "threadId", "thread_id")
-            ?: eventObject?.firstObject("turn")?.firstString("threadId", "thread_id")
-            ?: eventObject?.firstObject("item")?.firstString("threadId", "thread_id")
-            ?: paramsObject.firstObject("event")?.firstString("threadId", "thread_id")
+            ?: eventObject?.firstObject("turn")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+            ?: eventObject?.firstObject("item")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+            ?: paramsObject.firstObject("event")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
             ?: paramsObject.firstObject("event")?.firstObject("thread")?.firstString("id", "threadId", "thread_id")
-            ?: paramsObject.firstObject("event")?.firstObject("turn")?.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("event")?.firstObject("turn")?.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+    }
+
+    private fun resolveActiveThreadHint(): String? {
+        val hint = activeThreadIdHint ?: return null
+        if (activeTurnIdByThread.containsKey(hint)) {
+            return hint
+        }
+        if (runningThreadFallbackIds.contains(hint)) {
+            return hint
+        }
+        if (resumedThreadIds.contains(hint)) {
+            return hint
+        }
+        if (backingThreads.value.isEmpty()) {
+            return hint
+        }
+        val snapshot = backingThreads.value.firstOrNull { thread -> thread.id == hint } ?: return null
+        if (snapshot.isRunning || snapshot.isWaitingOnApproval) {
+            return hint
+        }
+        return hint.takeIf { hasStreamingMessage(hint) }
     }
 
     private fun resolveNotificationContext(paramsObject: JsonObject): NotificationContext? {

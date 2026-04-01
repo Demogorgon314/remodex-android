@@ -44,6 +44,8 @@ interface RemodexAppRepository {
 
     suspend fun hydrateThread(threadId: String) = Unit
 
+    suspend fun syncActiveThread(threadId: String) = Unit
+
     suspend fun selectThread(threadId: String)
 
     suspend fun setProjectGroupCollapsed(

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.emanueledipietro.remodex.data.app.RemodexAppRepository
+import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
@@ -414,6 +415,8 @@ class AppViewModel(
     private var skillAutocompleteJob: Job? = null
     private var reviewAutocompleteJob: Job? = null
     private var autoReconnectJob: Job? = null
+    private var activeThreadSyncJob: Job? = null
+    private var activeThreadSyncThreadId: String? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
     private var lastHydrationConnected = false
@@ -427,6 +430,8 @@ class AppViewModel(
     internal var autoReconnectAttemptLimitOverride: Int? = null
     internal var autoReconnectBackoffMillisOverride: List<Long>? = null
     internal var reconnectSleepChunkMillisOverride: Long? = null
+    internal var activeThreadSyncRunningIntervalMillisOverride: Long? = null
+    internal var activeThreadSyncIdleIntervalMillisOverride: Long? = null
 
     private val composerRenderStateA =
         combine(
@@ -834,6 +839,7 @@ class AppViewModel(
                         launchThreadHydration(selectedThreadId)
                     }
                 }
+                refreshActiveThreadSync(snapshot)
                 lastHydrationConnected = isConnected
                 detectThreadCompletionBanner(snapshot)
                 detectContextCompactionCompletion(snapshot)
@@ -871,8 +877,10 @@ class AppViewModel(
         )
         if (!isForeground) {
             invalidateVoiceCapture()
+            refreshActiveThreadSync(repository.session.value)
             return
         }
+        refreshActiveThreadSync(repository.session.value)
         maybeStartAutoReconnect(repository.session.value)
     }
 
@@ -986,6 +994,67 @@ class AppViewModel(
             withTrackedThreadHydration(threadId) {
                 repository.hydrateThread(threadId)
             }
+        }
+    }
+
+    private fun refreshActiveThreadSync(snapshot: RemodexSessionSnapshot) {
+        val selectedThreadId = snapshot.selectedThread?.id
+        if (!shouldRunActiveThreadSync(threadId = selectedThreadId, isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED)) {
+            stopActiveThreadSync()
+            return
+        }
+        startActiveThreadSync(selectedThreadId!!)
+    }
+
+    private fun shouldRunActiveThreadSync(
+        threadId: String?,
+        isConnected: Boolean,
+    ): Boolean {
+        return isAppForeground && isConnected && !threadId.isNullOrBlank()
+    }
+
+    private fun startActiveThreadSync(threadId: String) {
+        if (activeThreadSyncJob?.isActive == true && activeThreadSyncThreadId == threadId) {
+            return
+        }
+        activeThreadSyncJob?.cancel()
+        activeThreadSyncThreadId = threadId
+        activeThreadSyncJob = viewModelScope.launch {
+            try {
+                while (true) {
+                    val currentSnapshot = repository.session.value
+                    val currentThread = currentSnapshot.selectedThread
+                    val currentThreadId = currentThread?.id
+                    val isConnected = currentSnapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+                    if (!shouldRunActiveThreadSync(threadId = currentThreadId, isConnected = isConnected) || currentThreadId != threadId) {
+                        break
+                    }
+
+                    repository.syncActiveThread(currentThreadId)
+                    delay(resolveActiveThreadSyncIntervalMillis(currentThread))
+                }
+            } finally {
+                if (activeThreadSyncThreadId == threadId) {
+                    activeThreadSyncThreadId = null
+                }
+            }
+        }
+    }
+
+    private fun stopActiveThreadSync() {
+        activeThreadSyncJob?.cancel()
+        activeThreadSyncJob = null
+        activeThreadSyncThreadId = null
+    }
+
+    private fun resolveActiveThreadSyncIntervalMillis(thread: RemodexThreadSummary?): Long {
+        val needsFastCatchup = thread?.isRunning == true ||
+            thread?.isWaitingOnApproval == true ||
+            thread?.messages?.any { item -> item.isStreaming } == true
+        return if (needsFastCatchup) {
+            activeThreadSyncRunningIntervalMillisOverride ?: ActiveThreadSyncRunningIntervalMillis
+        } else {
+            activeThreadSyncIdleIntervalMillisOverride ?: ActiveThreadSyncIdleIntervalMillis
         }
     }
 
@@ -4221,6 +4290,8 @@ class AppViewModel(
     companion object {
         private const val logTag = "RemodexAutoReconnect"
         private const val defaultAutoReconnectAttemptLimit = 3
+        private const val ActiveThreadSyncRunningIntervalMillis = 1_500L
+        private const val ActiveThreadSyncIdleIntervalMillis = 5_000L
         const val MaxComposerImages = 4
         const val MaxAutocompleteItems = 6
         const val MinAutocompleteQueryLength = 2

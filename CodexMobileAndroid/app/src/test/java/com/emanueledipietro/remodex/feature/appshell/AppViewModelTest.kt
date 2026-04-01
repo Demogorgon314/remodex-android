@@ -480,6 +480,136 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `foreground connected selected running thread keeps syncing active thread`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Recovered thread",
+                        isRunning = true,
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+                selectedThreadSnapshot = threadSummary(
+                    id = "thread-1",
+                    title = "Recovered thread",
+                    isRunning = true,
+                ),
+            )
+        }
+
+        val viewModel = AppViewModel(repository).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+        repository.activeThreadSyncRequests.clear()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+
+        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
+
+        advanceTimeBy(50L)
+        runCurrent()
+
+        assertEquals(listOf("thread-1", "thread-1"), repository.activeThreadSyncRequests)
+
+        viewModel.onAppForegroundChanged(false)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun `active thread sync retargets to the newly selected foreground thread`() = runTest {
+        val firstThread = threadSummary(id = "thread-1", title = "First thread", isRunning = true)
+        val secondThread = threadSummary(id = "thread-2", title = "Second thread", isRunning = true)
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(firstThread, secondThread),
+                selectedThreadId = firstThread.id,
+                selectedThreadSnapshot = firstThread,
+            )
+        }
+
+        val viewModel = AppViewModel(repository).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+        repository.activeThreadSyncRequests.clear()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            selectedThreadId = secondThread.id,
+            selectedThreadSnapshot = secondThread,
+        )
+        runCurrent()
+
+        assertTrue(repository.activeThreadSyncRequests.contains("thread-2"))
+        val lastRequest = repository.activeThreadSyncRequests.lastOrNull()
+        assertEquals("thread-2", lastRequest)
+
+        viewModel.onAppForegroundChanged(false)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun `active thread sync stops when the app goes to background`() = runTest {
+        val runningThread = threadSummary(id = "thread-1", title = "Recovered thread", isRunning = true)
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(runningThread),
+                selectedThreadId = runningThread.id,
+                selectedThreadSnapshot = runningThread,
+            )
+        }
+
+        val viewModel = AppViewModel(repository).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+        repository.activeThreadSyncRequests.clear()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
+
+        viewModel.onAppForegroundChanged(false)
+        runCurrent()
+        repository.activeThreadSyncRequests.clear()
+
+        advanceTimeBy(500L)
+        runCurrent()
+
+        assertTrue(repository.activeThreadSyncRequests.isEmpty())
+
+        advanceUntilIdle()
+    }
+
+    @Test
     fun `attachment limit keeps only the allowed images and shows a limit message`() = runTest {
         val repository = TestRemodexAppRepository()
         val viewModel = AppViewModel(repository)
@@ -2529,6 +2659,7 @@ class AppViewModelTest {
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
         val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
         val hydrateRequests = mutableListOf<String>()
+        val activeThreadSyncRequests = mutableListOf<String>()
         val selectedThreadRequests = mutableListOf<String>()
         val refreshUsageStatusRequests = mutableListOf<String?>()
         val previewRequests = mutableListOf<Pair<String, String>>()
@@ -2561,6 +2692,7 @@ class AppViewModelTest {
         var onRetryConnection: (suspend TestRemodexAppRepository.() -> Unit)? = null
         var refreshDelayMs = 1_000L
         var hydrateDelayMs = 0L
+        var activeThreadSyncDelayMs = 0L
         var sendPromptDelayMs = 0L
         var continueOnMacDelayMs = 0L
         var createThreadDelayMs = 0L
@@ -2627,6 +2759,11 @@ class AppViewModelTest {
         override suspend fun hydrateThread(threadId: String) {
             hydrateRequests += threadId
             delay(hydrateDelayMs)
+        }
+
+        override suspend fun syncActiveThread(threadId: String) {
+            activeThreadSyncRequests += threadId
+            delay(activeThreadSyncDelayMs)
         }
 
         override suspend fun selectThread(threadId: String) {

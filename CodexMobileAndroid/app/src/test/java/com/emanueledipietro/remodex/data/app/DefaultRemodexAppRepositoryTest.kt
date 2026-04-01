@@ -125,6 +125,26 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `selected thread updates the active thread hint for live sync attribution`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals("thread-notifications", syncService.activeThreadHint)
+    }
+
+    @Test
     fun `project group collapse persists in preferences and session`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val repository = createRepository(
@@ -395,7 +415,7 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
-        assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
+        assertEquals(resumeCallsBeforeReconnect + 2, syncService.resumeCalls)
     }
 
     @Test
@@ -452,6 +472,98 @@ class DefaultRemodexAppRepositoryTest {
 
         assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
         assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `encrypted reconnect without a selected thread auto-selects a recent running thread and resumes it`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectAutoSelectRunningThreadSyncService()
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-auto-select-running-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        assertEquals(null, repository.session.value.selectedThreadId)
+        assertTrue(repository.session.value.threads.isEmpty())
+
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        advanceUntilIdle()
+
+        assertEquals("thread-recovered-running", repository.session.value.selectedThread?.id)
+        assertTrue(repository.session.value.selectedThread?.isRunning == true)
+        assertTrue(syncService.refreshCalls >= 1)
+        assertTrue(syncService.hydrateCalls >= 1)
+        assertEquals(2, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `reconnect recovery candidates include locally known running threads even when sync snapshots are empty`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = FakeThreadSyncService(initialThreads = emptyList())
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        invokePrivateMethod<Unit>(
+            repository,
+            "refreshThreadsLocally",
+            listOf(
+                RemodexThreadSummary(
+                    id = "thread-cached-running",
+                    title = "Cached running thread",
+                    preview = "Recovered from local cache.",
+                    projectPath = "/tmp/project-cached-running",
+                    lastUpdatedLabel = "Updated just now",
+                    isRunning = true,
+                    queuedDrafts = 0,
+                    runtimeLabel = "",
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    messages = emptyList(),
+                ),
+            ),
+            false,
+            null,
+        )
+        advanceUntilIdle()
+
+        assertEquals("thread-cached-running", repository.session.value.selectedThread?.id)
+        assertTrue(repository.session.value.selectedThread?.isRunning == true)
+        assertTrue(syncService.threads.value.isEmpty())
+        val candidateThreadIds = invokePrivateMethod<List<String>>(
+            repository,
+            "collectReconnectRecoveryCandidateThreadIds",
+            3,
+        )
+        assertTrue(candidateThreadIds.contains("thread-cached-running"))
     }
 
     @Test
@@ -523,6 +635,225 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `selecting a connected running thread resumes it to recover live output`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            isWaitingOnApproval = false,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(2, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `hydrating a connected running thread resumes it to recover live output`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            isWaitingOnApproval = false,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.hydrateThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(2, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `syncing an active running thread force resumes it to recover missed live output`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            isWaitingOnApproval = false,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.syncActiveThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `selecting a connected thread with streaming history resumes it to recover live output`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = false,
+                            isWaitingOnApproval = false,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-streaming-history",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "Streaming history that still needs live attach",
+                                        turnId = "turn-streaming-history",
+                                        itemId = "assistant-streaming-history",
+                                        isStreaming = true,
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `hydrating a connected thread with streaming history resumes it to recover live output`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = false,
+                            isWaitingOnApproval = false,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-streaming-history",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "Streaming history that still needs live attach",
+                                        turnId = "turn-streaming-history",
+                                        itemId = "assistant-streaming-history",
+                                        isStreaming = true,
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.hydrateThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `selecting a connected thread forces resume when local resumed state is stale`() = runTest {
+        val syncService = StaleLocalResumeRecoverySyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
     fun `encrypted reconnect keeps catching up selected streaming thread after initial hydrate`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectStreamingCatchupSyncService()
@@ -585,7 +916,7 @@ class DefaultRemodexAppRepositoryTest {
             )
         }
         assertTrue(syncService.hydrateCalls >= hydrateCallsBeforeReconnect + 2)
-        assertEquals(0, syncService.resumeCalls)
+        assertEquals(1, syncService.resumeCalls)
     }
 
     @Test
@@ -1435,7 +1766,7 @@ class DefaultRemodexAppRepositoryTest {
         val selectedThread = repository.session.value.selectedThread
         assertEquals("thread-notifications", selectedThread?.id)
         assertTrue(selectedThread?.isRunning == true)
-        assertEquals(1, syncService.resumeCalls)
+        assertEquals(2, syncService.resumeCalls)
         assertEquals(0, syncService.sendPromptCalls)
         assertEquals(1, selectedThread?.queuedDrafts)
         assertEquals(
@@ -1557,7 +1888,7 @@ class DefaultRemodexAppRepositoryTest {
         assertTrue(selectedThread?.id != "thread-notifications")
         assertEquals(selectedThread?.id, session.selectedThreadId)
         assertEquals(selectedThread?.id, syncService.lastSuccessfulSendThreadId)
-        assertEquals(1, syncService.resumeCalls)
+        assertEquals(2, syncService.resumeCalls)
         assertTrue(
             selectedThread?.messages.orEmpty().any { item ->
                 item.text.contains("Continued from archived thread `thread-notifications`")
@@ -1977,6 +2308,7 @@ class DefaultRemodexAppRepositoryTest {
         ): ThreadSyncSnapshot? {
             if (threadId == "thread-notifications") {
                 resumeCalls += 1
+                delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
                 delegate.updateThreads(
                     delegate.threads.value.map { snapshot ->
                         if (snapshot.id == threadId) {
@@ -2032,6 +2364,34 @@ class DefaultRemodexAppRepositoryTest {
         ): ThreadSyncSnapshot? {
             resumeCalls += 1
             return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+    }
+
+    private class StaleLocalResumeRecoverySyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        override suspend fun refreshThreads() = Unit
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return threadId == "thread-notifications" || delegate.isThreadResumedLocally(threadId)
         }
     }
 
@@ -2345,6 +2705,56 @@ class DefaultRemodexAppRepositoryTest {
                     },
                 )
             }
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+    }
+
+    private class ReconnectAutoSelectRunningThreadSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(initialThreads = emptyList()),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var refreshCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        override suspend fun refreshThreads() {
+            refreshCalls += 1
+            if (delegate.threads.value.isNotEmpty()) {
+                return
+            }
+            delegate.updateThreads(
+                listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-recovered-running",
+                        title = "Recovered running thread",
+                        preview = "Live output recovered after reconnect.",
+                        projectPath = "/tmp/project-recovered-running",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 10L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+        }
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
         }
 
         override suspend fun resumeThread(

@@ -233,6 +233,10 @@ interface ThreadResumeService {
     fun isThreadResumedLocally(threadId: String): Boolean = false
 }
 
+interface ThreadActiveContextService {
+    fun setActiveThreadHint(threadId: String?)
+}
+
 interface ThreadLocalTimelineService {
     suspend fun appendLocalSystemMessage(
         threadId: String,

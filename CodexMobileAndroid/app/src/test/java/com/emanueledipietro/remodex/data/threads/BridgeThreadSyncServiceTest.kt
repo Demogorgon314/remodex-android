@@ -984,6 +984,133 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `assistant delta accepts conversation id legacy envelopes like ios`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-legacy-envelope",
+                    title = "Legacy envelope thread",
+                    preview = "",
+                    projectPath = "/tmp/project-legacy-envelope",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("conversationId", JsonPrimitive("thread-legacy-envelope"))
+                put("id", JsonPrimitive("turn-legacy-envelope"))
+                put(
+                    "msg",
+                    buildJsonObject {
+                        put("type", JsonPrimitive("agent_message_content_delta"))
+                        put("message_id", JsonPrimitive("message-legacy-1"))
+                        put("delta", JsonPrimitive("Primo blocco"))
+                    },
+                )
+            },
+        )
+
+        val assistantMessages = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-legacy-envelope" }.timelineMutations,
+        ).filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals(1, assistantMessages.size)
+        assertEquals("turn-legacy-envelope", assistantMessages.single().turnId)
+        assertEquals("message-legacy-1", assistantMessages.single().itemId)
+        assertEquals("Primo blocco", assistantMessages.single().text)
+        assertTrue(assistantMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `assistant delta falls back to the active thread hint when payload omits thread context`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-active-hint",
+                    title = "Active hint thread",
+                    preview = "",
+                    projectPath = "/tmp/project-active-hint",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+                ThreadSyncSnapshot(
+                    id = "thread-other",
+                    title = "Other thread",
+                    preview = "",
+                    projectPath = "/tmp/project-other",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-active-hint",
+            "turn-active-hint",
+        )
+        service.setActiveThreadHint("thread-active-hint")
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("delta", JsonPrimitive("chunk-1"))
+            },
+        )
+
+        val assistantMessages = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-active-hint" }.timelineMutations,
+        ).filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals(1, assistantMessages.size)
+        assertEquals("turn-active-hint", assistantMessages.single().turnId)
+        assertEquals("chunk-1", assistantMessages.single().text)
+        assertTrue(assistantMessages.single().isStreaming)
+        assertTrue(
+            TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == "thread-other" }.timelineMutations,
+            ).none { item -> item.speaker == ConversationSpeaker.ASSISTANT },
+        )
+    }
+
+    @Test
     fun `incoming message text decoder matches ios content fallbacks`() {
         val itemObject = buildJsonObject {
             put(
@@ -1378,8 +1505,11 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
 
             assertEquals("thread-forked", forkedThread?.id)
-            assertEquals("thread-forked", service.threads.value.firstOrNull()?.id)
-            assertEquals("/tmp/project-forked", service.threads.value.firstOrNull()?.projectPath)
+            val hydratedForkedThread = service.threads.value.firstOrNull { snapshot ->
+                snapshot.id == "thread-forked"
+            }
+            assertNotNull(hydratedForkedThread)
+            assertEquals("/tmp/project-forked", hydratedForkedThread?.projectPath)
             assertEquals(2, forkedThreadReadCalls)
         } finally {
             coordinator.disconnect()

@@ -49,7 +49,7 @@ import java.util.UUID
 
 class FakeThreadSyncService(
     initialThreads: List<ThreadSyncSnapshot> = seededThreadSnapshots(),
-) : ThreadSyncService, ThreadCommandService, ThreadResumeService, ThreadLocalTimelineService {
+) : ThreadSyncService, ThreadCommandService, ThreadResumeService, ThreadActiveContextService, ThreadLocalTimelineService {
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
@@ -62,6 +62,8 @@ class FakeThreadSyncService(
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
     }.toMutableMap()
+    var activeThreadHint: String? = null
+        private set
 
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
@@ -169,6 +171,10 @@ class FakeThreadSyncService(
 
     override fun isThreadResumedLocally(threadId: String): Boolean {
         return threadId in resumedThreadIds
+    }
+
+    override fun setActiveThreadHint(threadId: String?) {
+        activeThreadHint = threadId?.trim()?.takeIf(String::isNotEmpty)
     }
 
     override suspend fun appendLocalSystemMessage(
