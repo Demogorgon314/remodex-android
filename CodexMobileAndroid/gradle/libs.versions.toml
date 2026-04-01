@@ -24,6 +24,7 @@ bouncycastle = "1.78.1"
 coil = "2.7.0"
 firebaseBom = "34.7.0"
 markwon = "4.6.2"
+prism4j = "2.0.0"
 photoView = "2.3.0"
 
 [libraries]
@@ -68,6 +69,9 @@ firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging
 markwon-core = { group = "io.noties.markwon", name = "core", version.ref = "markwon" }
 markwon-ext-strikethrough = { group = "io.noties.markwon", name = "ext-strikethrough", version.ref = "markwon" }
 markwon-ext-tables = { group = "io.noties.markwon", name = "ext-tables", version.ref = "markwon" }
+markwon-syntax-highlight = { group = "io.noties.markwon", name = "syntax-highlight", version.ref = "markwon" }
+prism4j = { group = "io.noties", name = "prism4j", version.ref = "prism4j" }
+prism4j-bundler = { group = "io.noties", name = "prism4j-bundler", version.ref = "prism4j" }
 photo-view = { group = "com.github.chrisbanes", name = "PhotoView", version.ref = "photoView" }
 
 [plugins]

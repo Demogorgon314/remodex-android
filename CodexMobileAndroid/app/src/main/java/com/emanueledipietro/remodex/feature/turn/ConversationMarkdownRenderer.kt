@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Typeface
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Handler
@@ -44,7 +45,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
@@ -83,9 +83,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -107,6 +108,11 @@ import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.core.MarkwonTheme
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
+import io.noties.markwon.syntax.Prism4jSyntaxHighlight
+import io.noties.markwon.syntax.Prism4jThemeDarkula
+import io.noties.markwon.syntax.Prism4jThemeDefault
+import io.noties.markwon.syntax.SyntaxHighlightPlugin
+import io.noties.prism4j.Prism4j
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -161,6 +167,15 @@ private data class ConversationMarkdownTextRenderToken(
     val textSizePx: Float?,
     val lineHeightExtra: Float,
     val enablesSelection: Boolean,
+)
+
+private data class ConversationMarkdownCodeBlockRenderToken(
+    val markdownToken: String,
+    val textColorArgb: Int,
+    val textSizePx: Float?,
+    val lineHeightExtra: Float,
+    val enablesSelection: Boolean,
+    val usesDarkSyntaxTheme: Boolean,
 )
 
 internal fun conversationMarkdownRenderToken(text: String): String {
@@ -350,6 +365,7 @@ internal fun ConversationRichMarkdownContent(
                     language = segment.language,
                     style = style,
                     enablesSelection = enablesSelection,
+                    saveController = saveController,
                     onLongPress = onLongPress,
                 )
 
@@ -571,6 +587,79 @@ private fun parseStandaloneMarkdownImage(line: String): ConversationMarkdownSegm
     )
 }
 
+internal fun normalizeConversationMarkdownCodeLanguage(language: String?): String? {
+    val normalized = language
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+        ?: return null
+
+    return when (normalized) {
+        "c#" -> "csharp"
+        "c++" -> "cpp"
+        "cs" -> "csharp"
+        "gradle", "groovy-gradle" -> "groovy"
+        "js", "jsx", "mjs", "cjs", "ts", "tsx" -> "javascript"
+        "json5", "jsonc" -> "json"
+        "kt", "kts", "kotlin-script" -> "kotlin"
+        "md", "mdx" -> "markdown"
+        "objc" -> "c"
+        "objective-c" -> "c"
+        "objective-c++" -> "cpp"
+        "py" -> "python"
+        "rb" -> null
+        "shell", "shell-session", "bash", "sh", "zsh", "console", "terminal" -> null
+        "text", "plaintext", "plain", "txt" -> null
+        "yml" -> "yaml"
+        else -> normalized
+    }
+}
+
+internal fun fencedCodeBlockMarkdown(
+    code: String,
+    language: String?,
+): String {
+    val normalizedLanguage = normalizeConversationMarkdownCodeLanguage(language)
+    return buildString(code.length + (normalizedLanguage?.length ?: 0) + 8) {
+        append("```")
+        if (normalizedLanguage != null) {
+            append(normalizedLanguage)
+        }
+        append('\n')
+        append(code)
+        if (!code.endsWith('\n')) {
+            append('\n')
+        }
+        append("```")
+    }
+}
+
+private fun adjustedCodeBlockTextStyle(style: TextStyle): TextStyle {
+    val adjustedFontSize = if (style.fontSize.isSpecified) {
+        (style.fontSize.value - 1f).coerceAtLeast(12f).sp
+    } else {
+        style.fontSize
+    }
+    val adjustedLineHeight = if (style.lineHeight.isSpecified) {
+        (style.lineHeight.value - 1f).coerceAtLeast(adjustedFontSize.value).sp
+    } else {
+        style.lineHeight
+    }
+
+    return style.copy(
+        fontFamily = FontFamily.Monospace,
+        fontSize = adjustedFontSize,
+        lineHeight = adjustedLineHeight,
+    )
+}
+
+private fun codeBlockHeaderLabel(language: String?): String {
+    return language
+        ?.trim()
+        ?.ifBlank { null }
+        ?: "code"
+}
+
 @Composable
 private fun ConversationMarkdownTextSegment(
     markdown: String,
@@ -751,72 +840,221 @@ private fun ConversationMarkdownCodeBlockSegment(
     language: String?,
     style: TextStyle,
     enablesSelection: Boolean,
+    saveController: ConversationMarkdownSaveController,
     onLongPress: ((IntOffset) -> Unit)?,
 ) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
     val chrome = remodexConversationChrome()
-    val textStyle = remember(style) {
-        style.copy(fontFamily = FontFamily.Monospace)
+    val isDark = isSystemInDarkTheme()
+    val selectionHighlightColor = remember(context) { platformSelectionHighlightColor(context) }
+    val lastTouchOffset = remember { intArrayOf(0, 0) }
+    val languageLabel = remember(language) { codeBlockHeaderLabel(language) }
+    var didCopy by remember(code, languageLabel) { mutableStateOf(false) }
+    val normalizedLanguage = remember(language) {
+        normalizeConversationMarkdownCodeLanguage(language)
     }
-    val contentModifier = if (!enablesSelection && onLongPress != null) {
-        Modifier
-            .fillMaxWidth()
-            .pointerInput(onLongPress) {
-                detectTapGestures(
-                    onLongPress = { offset ->
-                        onLongPress(
-                            IntOffset(
-                                x = offset.x.toInt(),
-                                y = offset.y.toInt(),
-                            ),
-                        )
-                    },
-                )
-            }
-            .semantics {
-                onLongClick {
-                    onLongPress(IntOffset.Zero)
-                    true
-                }
-            }
-    } else {
-        Modifier.fillMaxWidth()
+    val textStyle = remember(style) {
+        adjustedCodeBlockTextStyle(style)
+    }
+    val textSizePx = remember(textStyle.fontSize, density) {
+        if (textStyle.fontSize.isSpecified) {
+            with(density) { textStyle.fontSize.toPx() }
+        } else {
+            Float.NaN
+        }
+    }
+    val lineHeightExtra = remember(textStyle.lineHeight, textSizePx, density) {
+        if (textStyle.lineHeight.isSpecified && !textSizePx.isNaN()) {
+            (with(density) { textStyle.lineHeight.toPx() } - textSizePx).coerceAtLeast(0f)
+        } else {
+            0f
+        }
+    }
+    val renderToken = remember(
+        code,
+        language,
+        chrome.bodyText,
+        textSizePx,
+        lineHeightExtra,
+        enablesSelection,
+        isDark,
+    ) {
+        ConversationMarkdownCodeBlockRenderToken(
+            markdownToken = conversationMarkdownRenderToken(
+                fencedCodeBlockMarkdown(code = code, language = language),
+            ),
+            textColorArgb = chrome.bodyText.toArgb(),
+            textSizePx = textSizePx.takeUnless(Float::isNaN),
+            lineHeightExtra = lineHeightExtra,
+            enablesSelection = enablesSelection,
+            usesDarkSyntaxTheme = isDark,
+        )
+    }
+    val prism4j = remember { RemodexPrism4jFactory.create() }
+    val prism4jTheme = remember(isDark) {
+        if (isDark) {
+            Prism4jThemeDarkula.create(AndroidColor.TRANSPARENT)
+        } else {
+            Prism4jThemeDefault.create(AndroidColor.TRANSPARENT)
+        }
+    }
+    val syntaxHighlight = remember(prism4j, prism4jTheme) {
+        Prism4jSyntaxHighlight.create(prism4j, prism4jTheme)
+    }
+
+    LaunchedEffect(didCopy) {
+        if (didCopy) {
+            delay(1_500)
+            didCopy = false
+        }
     }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = chrome.nestedSurface,
+        color = Color.Transparent,
         shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
-        if (shouldRenderMarkdownCodeBlockAsDiff(language)) {
-            ConversationCleanDiffCodeBlock(
-                code = code,
-                modifier = Modifier.fillMaxWidth(),
-                style = textStyle,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 12.dp,
-                    vertical = 8.dp,
-                ),
-                enablesSelection = enablesSelection,
-                onLongPress = onLongPress,
-            )
-        } else if (enablesSelection) {
-            SelectionContainer {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 8.dp, top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 androidx.compose.material3.Text(
-                    text = code,
-                    modifier = contentModifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    text = languageLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.secondaryText,
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable {
+                            saveController.copyText(
+                                label = "$languageLabel code",
+                                text = code,
+                            )
+                            didCopy = true
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = if (didCopy) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                        contentDescription = if (didCopy) "Copied code" else "Copy code",
+                        tint = chrome.secondaryText,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    androidx.compose.material3.Text(
+                        text = if (didCopy) "Copied" else "Copy",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                }
+            }
+
+            if (shouldRenderMarkdownCodeBlockAsDiff(language)) {
+                ConversationCleanDiffCodeBlock(
+                    code = code,
+                    modifier = Modifier.fillMaxWidth(),
                     style = textStyle,
-                    color = chrome.bodyText,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 12.dp,
+                        vertical = 8.dp,
+                    ),
+                    enablesSelection = enablesSelection,
+                    onLongPress = onLongPress,
+                )
+            } else {
+                val highlightedCode = remember(code, normalizedLanguage, syntaxHighlight) {
+                    syntaxHighlight.highlight(normalizedLanguage, code)
+                }
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    factory = { viewContext ->
+                        TextView(viewContext).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                            )
+                            includeFontPadding = false
+                            setLineSpacing(0f, 1f)
+                            setPadding(0, 0, 0, 0)
+                            setBackgroundColor(AndroidColor.TRANSPARENT)
+                            background = null
+                            typeface = Typeface.MONOSPACE
+                            highlightColor = if (enablesSelection) {
+                                selectionHighlightColor
+                            } else {
+                                AndroidColor.TRANSPARENT
+                            }
+                            linksClickable = false
+                            isFocusable = false
+                            isClickable = false
+                            isLongClickable = enablesSelection || onLongPress != null
+                        }
+                    },
+                    update = { textView ->
+                        val previousToken = textView.tag as? ConversationMarkdownCodeBlockRenderToken
+                        textView.setOnTouchListener(
+                            if (!enablesSelection && onLongPress != null) {
+                                { _, event ->
+                                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                                        lastTouchOffset[0] = event.x.toInt()
+                                        lastTouchOffset[1] = event.y.toInt()
+                                    }
+                                    false
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                        textView.setOnLongClickListener(
+                            if (!enablesSelection && onLongPress != null) {
+                                {
+                                    onLongPress(
+                                        IntOffset(
+                                            x = lastTouchOffset[0],
+                                            y = lastTouchOffset[1],
+                                        ),
+                                    )
+                                    true
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                        textView.isLongClickable = enablesSelection || onLongPress != null
+                        textView.highlightColor = if (renderToken.enablesSelection) {
+                            selectionHighlightColor
+                        } else {
+                            AndroidColor.TRANSPARENT
+                        }
+                        if (previousToken != renderToken) {
+                            textView.typeface = Typeface.MONOSPACE
+                            textView.setTextColor(renderToken.textColorArgb)
+                            renderToken.textSizePx?.let { resolvedTextSizePx ->
+                                textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, resolvedTextSizePx)
+                            }
+                            textView.setLineSpacing(renderToken.lineHeightExtra, 1f)
+                            textView.setTextIsSelectable(renderToken.enablesSelection)
+                            textView.movementMethod = null
+                            textView.setBackgroundColor(AndroidColor.TRANSPARENT)
+                            textView.background = null
+                            textView.text = highlightedCode
+                            textView.tag = renderToken
+                        }
+                    },
                 )
             }
-        } else {
-            androidx.compose.material3.Text(
-                text = code,
-                modifier = contentModifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                style = textStyle,
-                color = chrome.bodyText,
-            )
         }
     }
 }

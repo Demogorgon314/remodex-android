@@ -140,6 +140,16 @@ dependencies {
     implementation(libs.markwon.core)
     implementation(libs.markwon.ext.strikethrough)
     implementation(libs.markwon.ext.tables)
+    implementation(libs.markwon.syntax.highlight) {
+        exclude(group = "org.jetbrains", module = "annotations-java5")
+    }
+    implementation(libs.prism4j) {
+        exclude(group = "org.jetbrains", module = "annotations-java5")
+    }
+    compileOnly(libs.prism4j.bundler) {
+        exclude(group = "org.jetbrains", module = "annotations-java5")
+    }
+    annotationProcessor(libs.prism4j.bundler)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

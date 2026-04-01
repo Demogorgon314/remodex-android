@@ -2,7 +2,7 @@ package com.emanueledipietro.remodex.feature.turn
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -105,6 +105,53 @@ class ConversationMarkdownRendererTest {
         val onlySegment = segments.single()
         assertTrue(onlySegment is ConversationMarkdownSegment.Markdown)
         assertEquals(markdown, (onlySegment as ConversationMarkdownSegment.Markdown).text)
+    }
+
+    @Test
+    fun `code language normalization maps common aliases to supported prism names`() {
+        assertEquals("kotlin", normalizeConversationMarkdownCodeLanguage("kt"))
+        assertEquals("javascript", normalizeConversationMarkdownCodeLanguage("tsx"))
+        assertEquals("cpp", normalizeConversationMarkdownCodeLanguage("c++"))
+        assertEquals("yaml", normalizeConversationMarkdownCodeLanguage("yml"))
+        assertEquals("markdown", normalizeConversationMarkdownCodeLanguage("md"))
+        assertEquals("csharp", normalizeConversationMarkdownCodeLanguage("c#"))
+    }
+
+    @Test
+    fun `code language normalization leaves unsupported shell aliases unhighlighted`() {
+        assertNull(normalizeConversationMarkdownCodeLanguage("bash"))
+        assertNull(normalizeConversationMarkdownCodeLanguage("shell"))
+        assertNull(normalizeConversationMarkdownCodeLanguage("plaintext"))
+    }
+
+    @Test
+    fun `fenced code block markdown omits language when unsupported`() {
+        assertEquals(
+            """
+            ```
+            echo hi
+            ```
+            """.trimIndent(),
+            fencedCodeBlockMarkdown(
+                code = "echo hi",
+                language = "bash",
+            ),
+        )
+    }
+
+    @Test
+    fun `fenced code block markdown normalizes supported aliases`() {
+        assertEquals(
+            """
+            ```kotlin
+            println("hi")
+            ```
+            """.trimIndent(),
+            fencedCodeBlockMarkdown(
+                code = """println("hi")""",
+                language = "kt",
+            ),
+        )
     }
 
 }
