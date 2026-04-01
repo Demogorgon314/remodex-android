@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.connection
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -9,6 +10,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.fail
 import org.junit.Test
@@ -64,6 +66,46 @@ class SecureConnectionRpcTransportTest {
             assertNotNull(response.result)
             assertEquals("thread/list", relayFactory.receivedRequests.single().method)
             assertEquals("thread-rpc", response.result?.jsonObjectOrNull?.firstArray("data")?.firstOrNull()?.jsonObjectOrNull?.firstString("id"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `relay disconnect during pending request cancels request without crashing`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-rpc-disconnect",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            closeAfterRequest = RelayWireEvent.Closed(4002, "relay dropped after request"),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            val request = async {
+                coordinator.sendRequest(method = "thread/list")
+            }
+
+            advanceUntilIdle()
+
+            assertTrue(request.isCancelled)
+            assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+            assertEquals("thread/list", relayFactory.receivedRequests.single().method)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

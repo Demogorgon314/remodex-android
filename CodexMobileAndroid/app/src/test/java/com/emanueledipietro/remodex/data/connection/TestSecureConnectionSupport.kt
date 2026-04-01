@@ -260,6 +260,7 @@ class ScriptedRpcRelayWebSocketFactory(
     private val macDeviceId: String,
     private val macIdentity: TestMacIdentity,
     private val requestHandlers: Map<String, (RpcMessage) -> JsonElement> = emptyMap(),
+    private val closeAfterRequest: RelayWireEvent.Closed? = null,
 ) : RelayWebSocketFactory {
     private val json = Json {
         encodeDefaults = true
@@ -394,6 +395,11 @@ class ScriptedRpcRelayWebSocketFactory(
         receivedRequests += message
 
         if (message.method == null || message.id == null) {
+            return
+        }
+
+        closeAfterRequest?.let { closed ->
+            events.trySend(closed)
             return
         }
 

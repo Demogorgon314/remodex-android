@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.connection
 
 import android.util.Log
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -60,7 +61,8 @@ class SecureConnectionCoordinator(
     private var currentAttempt = 0
     private var trustedReconnectFailureCount = 0
     private var autoReconnectAllowed = true
-    private val pendingRequests = LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>>()
+    private val pendingRequests = LinkedHashMap<String, CancellableContinuation<RpcMessage>>()
+    private val pendingRequestsLock = Any()
     private val outboundMutex = Mutex()
 
     private val connectionState = MutableStateFlow(initialSnapshot())
@@ -89,15 +91,15 @@ class SecureConnectionCoordinator(
 
         return withTimeout(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
-                pendingRequests[requestKey] = continuation
+                registerPendingRequest(requestKey, continuation)
                 continuation.invokeOnCancellation {
-                    pendingRequests.remove(requestKey)
+                    removePendingRequest(requestKey)
                 }
                 scope.launch {
                     try {
                         sendSecureApplicationRpc(request)
                     } catch (error: Exception) {
-                        val pending = pendingRequests.remove(requestKey)
+                        val pending = removePendingRequest(requestKey)
                         pending?.resumeWithException(error)
                     }
                 }
@@ -744,7 +746,7 @@ class SecureConnectionCoordinator(
             }
 
             requestKey != null -> {
-                val continuation = pendingRequests.remove(requestKey) ?: return
+                val continuation = removePendingRequest(requestKey) ?: return
                 if (rpcMessage.error != null) {
                     continuation.resumeWithException(rpcMessage.error)
                 } else {
@@ -1177,17 +1179,43 @@ class SecureConnectionCoordinator(
     }
 
     private fun failPendingRequests(error: Exception) {
-        if (pendingRequests.isEmpty()) {
+        val pending = drainPendingRequests()
+        if (pending.isEmpty()) {
             return
         }
-        val pending = pendingRequests.values.toList()
-        pendingRequests.clear()
         val cancellation = error as? CancellationException
             ?: CancellationException(error.message ?: "The secure Android connection ended.").also { cause ->
                 cause.initCause(error)
             }
         pending.forEach { continuation ->
             continuation.cancel(cancellation)
+        }
+    }
+
+    private fun registerPendingRequest(
+        requestKey: String,
+        continuation: CancellableContinuation<RpcMessage>,
+    ) {
+        synchronized(pendingRequestsLock) {
+            pendingRequests[requestKey] = continuation
+        }
+    }
+
+    private fun removePendingRequest(requestKey: String): CancellableContinuation<RpcMessage>? {
+        return synchronized(pendingRequestsLock) {
+            pendingRequests.remove(requestKey)
+        }
+    }
+
+    private fun drainPendingRequests(): List<CancellableContinuation<RpcMessage>> {
+        return synchronized(pendingRequestsLock) {
+            if (pendingRequests.isEmpty()) {
+                emptyList()
+            } else {
+                pendingRequests.values.toList().also {
+                    pendingRequests.clear()
+                }
+            }
         }
     }
 }
