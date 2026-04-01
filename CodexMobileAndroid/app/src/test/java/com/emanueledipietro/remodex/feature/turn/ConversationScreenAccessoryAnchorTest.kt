@@ -3,7 +3,10 @@ package com.emanueledipietro.remodex.feature.turn
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationScreenAccessoryAnchorTest {
@@ -79,6 +82,34 @@ class ConversationScreenAccessoryAnchorTest {
         )
 
         assertEquals(0, runningIndicatorIndex)
+    }
+
+    @Test
+    fun `running indicator stays visible for active thread even with stale completed state`() {
+        val showsRunningIndicator = shouldShowConversationBlockRunningIndicator(
+            blockTurnId = "turn-1",
+            activeTurnId = "turn-1",
+            isThreadRunning = true,
+            isLatestBlock = true,
+            latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+            stoppedTurnIds = emptySet(),
+        )
+
+        assertTrue(showsRunningIndicator)
+    }
+
+    @Test
+    fun `running indicator hides for latest stopped block even if thread still looks running`() {
+        val showsRunningIndicator = shouldShowConversationBlockRunningIndicator(
+            blockTurnId = "turn-1",
+            activeTurnId = "turn-1",
+            isThreadRunning = true,
+            isLatestBlock = true,
+            latestTurnTerminalState = RemodexTurnTerminalState.STOPPED,
+            stoppedTurnIds = emptySet(),
+        )
+
+        assertFalse(showsRunningIndicator)
     }
 
     private fun assistantItem(

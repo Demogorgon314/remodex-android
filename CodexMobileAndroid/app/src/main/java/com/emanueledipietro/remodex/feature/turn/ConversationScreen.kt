@@ -927,7 +927,7 @@ fun ConversationScreen(
         return
     }
     val autocompleteVisible = uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE
-    val showsThreadRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
+    val showsThreadRunningUi = thread.isRunning
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
@@ -3006,7 +3006,7 @@ private fun ComposerSecondaryBar(
     val isWorktreeProject = remember(thread.projectPath) {
         isCodexManagedWorktreeProject(thread.projectPath)
     }
-    val showsThreadRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
+    val showsThreadRunningUi = thread.isRunning
     val runtimeLabel = if (isWorktreeProject) "Worktree" else "Local"
     val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
     val showsGitBranchSelector = gitState.hasContext
@@ -8771,13 +8771,15 @@ private fun buildConversationBlockAccessories(
             .asReversed()
             .firstNotNullOfOrNull { item -> assistantRevertStatesByMessageId[item.id] }
 
-        val effectiveThreadRunning = isThreadRunning && latestTurnTerminalState == null
-        val showsRunningIndicator = when {
-            !effectiveThreadRunning -> false
-            blockTurnId != null && blockTurnId in stoppedTurnIds -> false
-            activeTurnId != null && blockTurnId != null -> activeTurnId == blockTurnId
-            else -> blockEnd == latestBlockEnd && blockEnd == items.lastIndex
-        }
+        val effectiveThreadRunning = isThreadRunning
+        val showsRunningIndicator = shouldShowConversationBlockRunningIndicator(
+            blockTurnId = blockTurnId,
+            activeTurnId = activeTurnId,
+            isThreadRunning = effectiveThreadRunning,
+            isLatestBlock = blockEnd == latestBlockEnd && blockEnd == items.lastIndex,
+            latestTurnTerminalState = latestTurnTerminalState,
+            stoppedTurnIds = stoppedTurnIds,
+        )
         val showsCopyButton = when {
             blockText == null -> false
             blockTurnId != null && blockTurnId in stoppedTurnIds -> false
@@ -8824,6 +8826,33 @@ private fun buildConversationBlockAccessories(
     }
 
     return accessories
+}
+
+internal fun shouldShowConversationBlockRunningIndicator(
+    blockTurnId: String?,
+    activeTurnId: String?,
+    isThreadRunning: Boolean,
+    isLatestBlock: Boolean,
+    latestTurnTerminalState: RemodexTurnTerminalState?,
+    stoppedTurnIds: Set<String>,
+): Boolean {
+    if (!isThreadRunning) {
+        return false
+    }
+
+    if (isLatestBlock && latestTurnTerminalState == RemodexTurnTerminalState.STOPPED) {
+        return false
+    }
+
+    if (blockTurnId != null && blockTurnId in stoppedTurnIds) {
+        return false
+    }
+
+    if (blockTurnId != null && activeTurnId != null) {
+        return activeTurnId == blockTurnId
+    }
+
+    return isLatestBlock
 }
 
 internal fun resolveConversationBlockAccessoryAnchorIndex(

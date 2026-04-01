@@ -420,6 +420,7 @@ class AppViewModel(
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
     private var lastHydrationConnected = false
+    private var lastLoggedActiveThreadState: String? = null
     private var voiceOperationGeneration = 0
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
     private var isAppForeground = false
@@ -839,6 +840,11 @@ class AppViewModel(
                         launchThreadHydration(selectedThreadId)
                     }
                 }
+                logActiveThreadUiState(
+                    event = "sessionSnapshot",
+                    snapshot = snapshot,
+                    dedupe = true,
+                )
                 refreshActiveThreadSync(snapshot)
                 lastHydrationConnected = isConnected
                 detectThreadCompletionBanner(snapshot)
@@ -922,9 +928,7 @@ class AppViewModel(
 
     fun selectThread(threadId: String) {
         viewModelScope.launch {
-            withTrackedThreadHydration(threadId) {
-                repository.selectThread(threadId)
-            }
+            selectThreadAndSyncImmediately(threadId)
             refreshGitState(threadId)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
@@ -999,11 +1003,54 @@ class AppViewModel(
 
     private fun refreshActiveThreadSync(snapshot: RemodexSessionSnapshot) {
         val selectedThreadId = snapshot.selectedThread?.id
-        if (!shouldRunActiveThreadSync(threadId = selectedThreadId, isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED)) {
+        val isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+        if (!shouldRunActiveThreadSync(threadId = selectedThreadId, isConnected = isConnected)) {
+            logActiveThreadUiState(
+                event = "refreshActiveThreadSync.stop",
+                snapshot = snapshot,
+                extra = "activeSyncThreadId=${activeThreadSyncThreadId.orEmpty()}",
+            )
             stopActiveThreadSync()
             return
         }
+        logActiveThreadUiState(
+            event = "refreshActiveThreadSync.start",
+            snapshot = snapshot,
+            extra = "activeSyncThreadId=${activeThreadSyncThreadId.orEmpty()}",
+        )
         startActiveThreadSync(selectedThreadId!!)
+    }
+
+    private suspend fun selectThreadAndSyncImmediately(threadId: String) {
+        withTrackedThreadHydration(threadId) {
+            repository.selectThread(threadId)
+            requestImmediateSelectedThreadSync(threadId)
+        }
+    }
+
+    private suspend fun requestImmediateSelectedThreadSync(threadId: String) {
+        val snapshot = repository.session.value
+        val selectedThreadId = snapshot.selectedThread?.id ?: snapshot.selectedThreadId
+        val isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+        if (!isConnected || selectedThreadId != threadId) {
+            logActiveThreadUiState(
+                event = "activeThreadSync.immediate.skip",
+                snapshot = snapshot,
+                extra = "requestedThreadId=$threadId selectedThreadId=${selectedThreadId.orEmpty()}",
+            )
+            return
+        }
+        logActiveThreadUiState(
+            event = "activeThreadSync.immediate.start",
+            snapshot = snapshot,
+            extra = "threadId=$threadId",
+        )
+        repository.syncActiveThread(threadId)
+        logActiveThreadUiState(
+            event = "activeThreadSync.immediate.after",
+            snapshot = repository.session.value,
+            extra = "threadId=$threadId",
+        )
     }
 
     private fun shouldRunActiveThreadSync(
@@ -1015,10 +1062,18 @@ class AppViewModel(
 
     private fun startActiveThreadSync(threadId: String) {
         if (activeThreadSyncJob?.isActive == true && activeThreadSyncThreadId == threadId) {
+            logActiveThreadUiState(
+                event = "activeThreadSync.alreadyRunning",
+                extra = "threadId=$threadId",
+            )
             return
         }
         activeThreadSyncJob?.cancel()
         activeThreadSyncThreadId = threadId
+        logActiveThreadUiState(
+            event = "activeThreadSync.launch",
+            extra = "threadId=$threadId",
+        )
         activeThreadSyncJob = viewModelScope.launch {
             try {
                 while (true) {
@@ -1027,21 +1082,46 @@ class AppViewModel(
                     val currentThreadId = currentThread?.id
                     val isConnected = currentSnapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
                     if (!shouldRunActiveThreadSync(threadId = currentThreadId, isConnected = isConnected) || currentThreadId != threadId) {
+                        logActiveThreadUiState(
+                            event = "activeThreadSync.break",
+                            snapshot = currentSnapshot,
+                            extra = "loopThreadId=$threadId currentThreadId=${currentThreadId.orEmpty()} activeSyncThreadId=${activeThreadSyncThreadId.orEmpty()}",
+                        )
                         break
                     }
 
+                    logActiveThreadUiState(
+                        event = "activeThreadSync.tick.before",
+                        snapshot = currentSnapshot,
+                        extra = "loopThreadId=$threadId intervalMs=${resolveActiveThreadSyncIntervalMillis(currentThread)}",
+                    )
                     repository.syncActiveThread(currentThreadId)
+                    logActiveThreadUiState(
+                        event = "activeThreadSync.tick.after",
+                        snapshot = repository.session.value,
+                        extra = "loopThreadId=$threadId",
+                    )
                     delay(resolveActiveThreadSyncIntervalMillis(currentThread))
                 }
             } finally {
                 if (activeThreadSyncThreadId == threadId) {
                     activeThreadSyncThreadId = null
                 }
+                logActiveThreadUiState(
+                    event = "activeThreadSync.finally",
+                    extra = "threadId=$threadId activeSyncThreadId=${activeThreadSyncThreadId.orEmpty()}",
+                )
             }
         }
     }
 
     private fun stopActiveThreadSync() {
+        if (activeThreadSyncJob != null || activeThreadSyncThreadId != null) {
+            logActiveThreadUiState(
+                event = "activeThreadSync.stop",
+                extra = "activeSyncThreadId=${activeThreadSyncThreadId.orEmpty()}",
+            )
+        }
         activeThreadSyncJob?.cancel()
         activeThreadSyncJob = null
         activeThreadSyncThreadId = null
@@ -3100,6 +3180,45 @@ class AppViewModel(
         }
     }
 
+    private fun logActiveThreadUiState(
+        event: String,
+        snapshot: RemodexSessionSnapshot = repository.session.value,
+        extra: String = "",
+        dedupe: Boolean = false,
+    ) {
+        val thread = snapshot.selectedThread
+        val summary = activeThreadSummary(thread)
+        val payload = buildString {
+            append("event=").append(event)
+            append(" isForeground=").append(isAppForeground)
+            append(" connectionPhase=").append(snapshot.connectionStatus.phase)
+            append(" secureState=").append(snapshot.secureConnection.secureState)
+            append(" activeSyncThreadId=").append(activeThreadSyncThreadId.orEmpty())
+            append(" selectedThread=").append(summary)
+            append(" canStop=").append(thread?.isRunning == true)
+            if (extra.isNotBlank()) {
+                append(' ').append(extra)
+            }
+        }
+        if (dedupe && payload == lastLoggedActiveThreadState) {
+            return
+        }
+        lastLoggedActiveThreadState = payload
+        runCatching {
+            Log.d(activeThreadLogTag, payload)
+        }
+    }
+
+    private fun activeThreadSummary(thread: RemodexThreadSummary?): String {
+        return if (thread == null) {
+            "null"
+        } else {
+            "id=${thread.id} isRunning=${thread.isRunning} waiting=${thread.isWaitingOnApproval} " +
+                "activeTurnId=${thread.activeTurnId.orEmpty()} terminal=${thread.latestTurnTerminalState?.name ?: "null"} " +
+                "messages=${thread.messages.size} streaming=${thread.messages.count { item -> item.isStreaming }}"
+        }
+    }
+
     private fun detectThreadCompletionBanner(snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot) {
         val completedThreads = snapshot.threads.filter { currentThread ->
             val previousThread = previousThreadsById[currentThread.id] ?: return@filter false
@@ -4246,7 +4365,7 @@ class AppViewModel(
         if (thread == null) {
             return ComposerUiState()
         }
-        val showsRunningUi = thread.isRunning && thread.latestTurnTerminalState == null
+        val showsRunningUi = thread.isRunning
         val hasConfirmedReviewSelection = reviewSelection?.request != null
         val hasPendingReviewSelection = false
         val canSend = !hasPendingReviewSelection && (
@@ -4289,6 +4408,7 @@ class AppViewModel(
 
     companion object {
         private const val logTag = "RemodexAutoReconnect"
+        private const val activeThreadLogTag = "RemodexActiveSync"
         private const val defaultAutoReconnectAttemptLimit = 3
         private const val ActiveThreadSyncRunningIntervalMillis = 1_500L
         private const val ActiveThreadSyncIdleIntervalMillis = 5_000L

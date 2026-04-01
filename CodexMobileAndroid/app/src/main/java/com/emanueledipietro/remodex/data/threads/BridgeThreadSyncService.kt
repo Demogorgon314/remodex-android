@@ -404,17 +404,27 @@ class BridgeThreadSyncService(
         }
 
         val existingSnapshot = currentThreadSnapshot(threadId)
+        logThreadRecovery(
+            "event=hydrateThread start threadId=$threadId existing=${threadSnapshotSummary(existingSnapshot)} resumedLocally=${threadId in resumedThreadIds}",
+        )
         val response = runCatching {
             retryAfterThreadMaterialization {
                 requestThreadRead(threadId)
             }
-        }.getOrNull() ?: return
+        }.getOrNull()
+        if (response == null) {
+            logThreadRecovery("event=hydrateThread skipped=noResponse threadId=$threadId")
+            return
+        }
         mergeThreadSnapshotResponse(
             threadId = threadId,
             response = response,
             existingSnapshot = existingSnapshot,
             syncState = currentSyncState(threadId),
             allowHistoryMergeWhileRunning = true,
+        )
+        logThreadRecovery(
+            "event=hydrateThread success threadId=$threadId snapshot=${threadSnapshotSummary(currentThreadSnapshot(threadId))}",
         )
     }
 
@@ -428,11 +438,21 @@ class BridgeThreadSyncService(
         }
 
         val existingSnapshot = currentThreadSnapshot(threadId)
+        logThreadRecovery(
+            "event=resumeThread start threadId=$threadId preferredProjectPath=${preferredProjectPath.orEmpty()} " +
+                "modelIdentifier=${modelIdentifier.orEmpty()} existing=${threadSnapshotSummary(existingSnapshot)} resumedLocally=${threadId in resumedThreadIds}",
+        )
         val response = runThreadResume(
             threadId = threadId,
             preferredProjectPath = preferredProjectPath,
             modelIdentifier = modelIdentifier,
-        ) ?: return existingSnapshot
+        )
+        if (response == null) {
+            logThreadRecovery(
+                "event=resumeThread completedWithoutResponse threadId=$threadId existing=${threadSnapshotSummary(existingSnapshot)}",
+            )
+            return existingSnapshot
+        }
         val refreshedSnapshot = mergeThreadSnapshotResponse(
             threadId = threadId,
             response = response,
@@ -448,6 +468,9 @@ class BridgeThreadSyncService(
             }
         } ?: currentThreadSnapshot(threadId)
         resumedThreadIds.add(threadId)
+        logThreadRecovery(
+            "event=resumeThread success threadId=$threadId snapshot=${threadSnapshotSummary(refreshedSnapshot)} resumedLocally=${threadId in resumedThreadIds}",
+        )
         return refreshedSnapshot
     }
 
@@ -500,9 +523,24 @@ class BridgeThreadSyncService(
     ): ThreadSyncSnapshot? {
         val resultObject = response.result?.jsonObjectOrNull ?: return null
         val threadObject = resultObject.firstObject("thread") ?: return null
+        val runningBeforeMerge = threadHasKnownRunningState(threadId)
         indexTurnIds(threadId = threadId, threadObject = threadObject)
         val turnReadState = resolveTurnReadState(threadObject)
         applyTurnReadState(threadId = threadId, turnReadState = turnReadState)
+        val activityState = decodeThreadActivityState(
+            threadObject.firstObject("status"),
+        )
+        if (activityState != null && !threadHasKnownRunningState(threadId)) {
+            markThreadAsRunningFallback(threadId)
+        }
+        val runningAfterStateResolution = threadHasKnownRunningState(threadId)
+        logThreadRecovery(
+            "event=mergeThreadSnapshotResponse stage=stateApplied threadId=$threadId syncState=${syncState.name} " +
+                "existing=${threadSnapshotSummary(existingSnapshot)} runningBefore=$runningBeforeMerge " +
+                "runningAfter=$runningAfterStateResolution turnRead=${turnReadStateSummary(turnReadState)} " +
+                "activity=${threadActivitySummary(activityState)} status=${threadStatusSummary(threadObject.firstObject("status"))} " +
+                "allowHistoryMergeWhileRunning=$allowHistoryMergeWhileRunning",
+        )
         val decodedHistoryItems by lazy(LazyThreadSafetyMode.NONE) {
             TurnTimelineReducer.reduce(
                 decodeHistoryItems(
@@ -548,11 +586,17 @@ class BridgeThreadSyncService(
             merged
         }
         if (refreshedSnapshot != null) {
+            logThreadRecovery(
+                "event=mergeThreadSnapshotResponse stage=updated threadId=$threadId snapshot=${threadSnapshotSummary(refreshedSnapshot)}",
+            )
             return refreshedSnapshot
         }
 
         val createdSnapshot = mergedSnapshot(currentThreadSnapshot(threadId) ?: existingSnapshot) ?: return null
         upsertThreadSnapshot(createdSnapshot)
+        logThreadRecovery(
+            "event=mergeThreadSnapshotResponse stage=created threadId=$threadId snapshot=${threadSnapshotSummary(createdSnapshot)}",
+        )
         return createdSnapshot
     }
 
@@ -2589,6 +2633,26 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun restoreRunningStateFromStreamingEvent(
+        threadId: String,
+        resolvedTurnId: String?,
+    ) {
+        val normalizedTurnId = resolvedTurnId?.trim()?.takeIf(String::isNotEmpty)
+        val hasKnownRunningState = threadHasKnownRunningState(threadId)
+        if (normalizedTurnId != null) {
+            if (activeTurnIdByThread[threadId] == normalizedTurnId) {
+                return
+            }
+            if (activeTurnIdByThread[threadId] == null || !hasKnownRunningState || latestTurnTerminalStateByThread[threadId] != null) {
+                setActiveTurnId(threadId = threadId, turnId = normalizedTurnId)
+            }
+            return
+        }
+        if (!hasKnownRunningState || latestTurnTerminalStateByThread[threadId] != null) {
+            markThreadAsRunningFallback(threadId)
+        }
+    }
+
     private fun appendAssistantDelta(paramsObject: JsonObject) {
         val delta = extractTextDelta(paramsObject)
         if (shouldIgnoreStreamingTextDelta(delta)) {
@@ -2601,6 +2665,10 @@ class BridgeThreadSyncService(
         if (resolvedTurnId.isNullOrBlank()) {
             return
         }
+        restoreRunningStateFromStreamingEvent(
+            threadId = threadId,
+            resolvedTurnId = resolvedTurnId,
+        )
         val itemId = extractItemId(
             paramsObject = paramsObject,
             eventObject = eventObject,
@@ -2669,6 +2737,10 @@ class BridgeThreadSyncService(
         val turnId = extractTurnId(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        restoreRunningStateFromStreamingEvent(
+            threadId = threadId,
+            resolvedTurnId = resolvedTurnId,
+        )
         if (resolvedTurnId != null) {
             threadIdByTurnId[resolvedTurnId] = threadId
         }
@@ -6469,6 +6541,9 @@ class BridgeThreadSyncService(
         val activityState = decodeThreadActivityState(
             threadObject.firstObject("status"),
         )
+        if (activityState != null && !threadHasKnownRunningState(id)) {
+            markThreadAsRunningFallback(id)
+        }
         return ThreadSyncSnapshot(
             id = id,
             title = title,
@@ -7608,15 +7683,26 @@ class BridgeThreadSyncService(
         threadId: String,
         isRunning: Boolean? = null,
     ) {
+        var previousSnapshot: ThreadSyncSnapshot? = null
+        var nextSnapshot: ThreadSyncSnapshot? = null
         backingThreads.value = backingThreads.value.map { snapshot ->
             if (snapshot.id == threadId) {
+                previousSnapshot = snapshot
                 snapshot.withResolvedLiveThreadState(
                     threadId = threadId,
                     isRunning = isRunning,
-                )
+                ).also { updatedSnapshot ->
+                    nextSnapshot = updatedSnapshot
+                }
             } else {
                 snapshot
             }
+        }
+        if (shouldLogLifecycleTransition(previousSnapshot, nextSnapshot)) {
+            logThreadRecovery(
+                "event=syncThreadLifecycleState threadId=$threadId previous=${threadSnapshotSummary(previousSnapshot)} " +
+                    "next=${threadSnapshotSummary(nextSnapshot)} fallbackRunning=${threadId in runningThreadFallbackIds}",
+            )
         }
     }
 
@@ -8031,6 +8117,62 @@ class BridgeThreadSyncService(
 
     private fun emitStreamingTraceLog(message: String) {
         runCatching { Log.d(logTag, message) }
+    }
+
+    private fun logThreadRecovery(message: String) {
+        runCatching { Log.d(logTag, message) }
+    }
+
+    private fun shouldLogLifecycleTransition(
+        previous: ThreadSyncSnapshot?,
+        next: ThreadSyncSnapshot?,
+    ): Boolean {
+        if (previous == null || next == null) {
+            return false
+        }
+        return previous.isRunning != next.isRunning ||
+            previous.isWaitingOnApproval != next.isWaitingOnApproval ||
+            previous.activeTurnId != next.activeTurnId ||
+            previous.latestTurnTerminalState != next.latestTurnTerminalState ||
+            previous.timelineMutations.size != next.timelineMutations.size
+    }
+
+    private fun threadSnapshotSummary(snapshot: ThreadSyncSnapshot?): String {
+        return if (snapshot == null) {
+            "null"
+        } else {
+            "id=${snapshot.id} isRunning=${snapshot.isRunning} waiting=${snapshot.isWaitingOnApproval} " +
+                "activeTurnId=${snapshot.activeTurnId.orEmpty()} terminal=${snapshot.latestTurnTerminalState?.name ?: "null"} " +
+                "timelineMutations=${snapshot.timelineMutations.size} syncState=${snapshot.syncState.name} projectPath=${snapshot.projectPath}"
+        }
+    }
+
+    private fun turnReadStateSummary(state: TurnReadState): String {
+        return "interruptibleTurnId=${state.interruptibleTurnId.orEmpty()} " +
+            "hasInterruptibleTurnWithoutId=${state.hasInterruptibleTurnWithoutId}"
+    }
+
+    private fun threadActivitySummary(activityState: ThreadActivityState?): String {
+        return if (activityState == null) {
+            "null"
+        } else {
+            "waitingOnApproval=${activityState.isWaitingOnApproval} waitingOnUserInput=${activityState.isWaitingOnUserInput}"
+        }
+    }
+
+    private fun threadStatusSummary(statusObject: JsonObject?): String {
+        if (statusObject == null) {
+            return "null"
+        }
+        val normalizedType = normalizeStatus(
+            statusObject.firstString("type", "statusType", "status_type").orEmpty(),
+        )
+        val flags = statusObject
+            .firstArray("activeFlags", "active_flags")
+            .orEmpty()
+            .mapNotNull { value -> value.jsonPrimitive.contentOrNull }
+            .joinToString(separator = ",")
+        return "type=$normalizedType flags=$flags"
     }
 
     private fun logReviewDebug(

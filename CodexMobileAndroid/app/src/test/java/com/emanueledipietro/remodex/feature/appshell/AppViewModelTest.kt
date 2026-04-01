@@ -610,6 +610,31 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `selecting a connected thread triggers an immediate active thread sync without waiting for the foreground loop`() = runTest {
+        val selectedThread = threadSummary(id = "thread-1", title = "Recovered thread", isRunning = true)
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(selectedThread),
+            )
+        }
+
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.selectThread(selectedThread.id)
+        advanceUntilIdle()
+
+        assertEquals(listOf(selectedThread.id), repository.selectedThreadRequests)
+        assertEquals(listOf(selectedThread.id), repository.activeThreadSyncRequests)
+    }
+
+    @Test
     fun `attachment limit keeps only the allowed images and shows a limit message`() = runTest {
         val repository = TestRemodexAppRepository()
         val viewModel = AppViewModel(repository)
@@ -791,7 +816,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun `composer clears running controls when selected thread already has terminal completion state`() = runTest {
+    fun `composer keeps running controls when selected thread still reports running despite stale completion state`() = runTest {
         val repository = TestRemodexAppRepository()
         repository.snapshot.value = repository.snapshot.value.copy(
             threads = listOf(
@@ -807,8 +832,8 @@ class AppViewModelTest {
         val viewModel = AppViewModel(repository)
         advanceUntilIdle()
 
-        assertEquals("Send", viewModel.uiState.value.composer.sendLabel)
-        assertFalse(viewModel.uiState.value.composer.canStop)
+        assertEquals("Queue follow-up", viewModel.uiState.value.composer.sendLabel)
+        assertTrue(viewModel.uiState.value.composer.canStop)
     }
 
     @Test

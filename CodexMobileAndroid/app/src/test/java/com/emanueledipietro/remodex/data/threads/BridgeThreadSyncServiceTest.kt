@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -562,7 +563,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `thread snapshot parses waitingOnApproval from active thread status`() = runTest {
+    fun `thread snapshot keeps active thread running when status reports waitingOnApproval`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),
             trustedSessionResolver = UnusedTrustedSessionResolver,
@@ -600,7 +601,7 @@ class BridgeThreadSyncServiceTest {
 
         assertNotNull(snapshot)
         assertTrue(snapshot?.isWaitingOnApproval == true)
-        assertFalse(snapshot?.isRunning == true)
+        assertTrue(snapshot?.isRunning == true)
     }
 
     @Test
@@ -849,6 +850,58 @@ class BridgeThreadSyncServiceTest {
         assertTrue(items.none { item ->
             item.speaker == ConversationSpeaker.ASSISTANT && item.isStreaming
         })
+    }
+
+    @Test
+    fun `assistant delta revives completed thread running state when turn started is missed`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-revive-running",
+                    title = "Revived thread",
+                    preview = "Previous answer",
+                    projectPath = "/tmp/project-revive-running",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    activeTurnId = null,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-revive-running"))
+                put("turnId", JsonPrimitive("turn-revive-running"))
+                put("delta", JsonPrimitive("Streaming answer resumed"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-revive-running" }
+        val assistantMessages = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertTrue(thread.isRunning)
+        assertEquals("turn-revive-running", thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+        assertEquals(listOf("Streaming answer resumed"), assistantMessages.map(RemodexConversationItem::text))
+        assertTrue(assistantMessages.single().isStreaming)
     }
 
     @Test
@@ -2274,6 +2327,115 @@ class BridgeThreadSyncServiceTest {
             service.hydrateThread("thread-running-clear")
             advanceUntilIdle()
             assertFalse(service.threads.value.first { it.id == "thread-running-clear" }.isRunning)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread keeps running when thread status remains active without interruptible turn id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-status-active",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-status-active"))
+                                        put("title", JsonPrimitive("Thread status active"))
+                                        put("cwd", JsonPrimitive("/tmp/project-thread-status-active"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_334))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-status-active"))
+                                put("title", JsonPrimitive("Thread status active"))
+                                put("cwd", JsonPrimitive("/tmp/project-thread-status-active"))
+                                put(
+                                    "status",
+                                    buildJsonObject {
+                                        put("type", JsonPrimitive("active"))
+                                    },
+                                )
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-completed"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-active-status"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Assistant text is still catching up."))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-status-active")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-status-active" }
+            assertTrue(thread.isRunning)
+            assertNull(thread.latestTurnTerminalState)
+            assertNull(thread.activeTurnId)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
