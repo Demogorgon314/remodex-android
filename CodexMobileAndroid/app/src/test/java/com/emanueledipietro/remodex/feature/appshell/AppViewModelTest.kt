@@ -480,7 +480,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun `foreground connected selected running thread keeps syncing active thread`() = runTest {
+    fun `foreground changes are forwarded to the repository active sync controller`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
                 connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
@@ -505,133 +505,15 @@ class AppViewModelTest {
             )
         }
 
-        val viewModel = AppViewModel(repository).apply {
-            activeThreadSyncRunningIntervalMillisOverride = 50L
-            activeThreadSyncIdleIntervalMillisOverride = 250L
-        }
-        advanceUntilIdle()
-        repository.activeThreadSyncRequests.clear()
-
-        viewModel.onAppForegroundChanged(true)
-        runCurrent()
-
-        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
-
-        advanceTimeBy(50L)
-        runCurrent()
-
-        assertEquals(listOf("thread-1", "thread-1"), repository.activeThreadSyncRequests)
-
-        viewModel.onAppForegroundChanged(false)
-        advanceUntilIdle()
-    }
-
-    @Test
-    fun `active thread sync retargets to the newly selected foreground thread`() = runTest {
-        val firstThread = threadSummary(id = "thread-1", title = "First thread", isRunning = true)
-        val secondThread = threadSummary(id = "thread-2", title = "Second thread", isRunning = true)
-        val repository = TestRemodexAppRepository().apply {
-            snapshot.value = snapshot.value.copy(
-                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
-                secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "Connected",
-                    secureState = SecureConnectionState.ENCRYPTED,
-                    attempt = 1,
-                ),
-                threads = listOf(firstThread, secondThread),
-                selectedThreadId = firstThread.id,
-                selectedThreadSnapshot = firstThread,
-            )
-        }
-
-        val viewModel = AppViewModel(repository).apply {
-            activeThreadSyncRunningIntervalMillisOverride = 50L
-            activeThreadSyncIdleIntervalMillisOverride = 250L
-        }
-        advanceUntilIdle()
-        repository.activeThreadSyncRequests.clear()
-
-        viewModel.onAppForegroundChanged(true)
-        runCurrent()
-        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
-
-        repository.snapshot.value = repository.snapshot.value.copy(
-            selectedThreadId = secondThread.id,
-            selectedThreadSnapshot = secondThread,
-        )
-        runCurrent()
-
-        assertTrue(repository.activeThreadSyncRequests.contains("thread-2"))
-        val lastRequest = repository.activeThreadSyncRequests.lastOrNull()
-        assertEquals("thread-2", lastRequest)
-
-        viewModel.onAppForegroundChanged(false)
-        advanceUntilIdle()
-    }
-
-    @Test
-    fun `active thread sync stops when the app goes to background`() = runTest {
-        val runningThread = threadSummary(id = "thread-1", title = "Recovered thread", isRunning = true)
-        val repository = TestRemodexAppRepository().apply {
-            snapshot.value = snapshot.value.copy(
-                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
-                secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "Connected",
-                    secureState = SecureConnectionState.ENCRYPTED,
-                    attempt = 1,
-                ),
-                threads = listOf(runningThread),
-                selectedThreadId = runningThread.id,
-                selectedThreadSnapshot = runningThread,
-            )
-        }
-
-        val viewModel = AppViewModel(repository).apply {
-            activeThreadSyncRunningIntervalMillisOverride = 50L
-            activeThreadSyncIdleIntervalMillisOverride = 250L
-        }
-        advanceUntilIdle()
-        repository.activeThreadSyncRequests.clear()
-
-        viewModel.onAppForegroundChanged(true)
-        runCurrent()
-        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
-
-        viewModel.onAppForegroundChanged(false)
-        runCurrent()
-        repository.activeThreadSyncRequests.clear()
-
-        advanceTimeBy(500L)
-        runCurrent()
-
-        assertTrue(repository.activeThreadSyncRequests.isEmpty())
-
-        advanceUntilIdle()
-    }
-
-    @Test
-    fun `selecting a connected thread triggers an immediate active thread sync without waiting for the foreground loop`() = runTest {
-        val selectedThread = threadSummary(id = "thread-1", title = "Recovered thread", isRunning = true)
-        val repository = TestRemodexAppRepository().apply {
-            snapshot.value = snapshot.value.copy(
-                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
-                secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "Connected",
-                    secureState = SecureConnectionState.ENCRYPTED,
-                    attempt = 1,
-                ),
-                threads = listOf(selectedThread),
-            )
-        }
-
         val viewModel = AppViewModel(repository)
         advanceUntilIdle()
 
-        viewModel.selectThread(selectedThread.id)
-        advanceUntilIdle()
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
 
-        assertEquals(listOf(selectedThread.id), repository.selectedThreadRequests)
-        assertEquals(listOf(selectedThread.id), repository.activeThreadSyncRequests)
+        viewModel.onAppForegroundChanged(false)
+        advanceUntilIdle()
+        assertEquals(listOf(true, false), repository.foregroundStates)
     }
 
     @Test
@@ -2683,6 +2565,7 @@ class AppViewModelTest {
         val gptAccountErrorMessageFlow = MutableStateFlow<String?>(null)
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
         val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
+        val foregroundStates = mutableListOf<Boolean>()
         val hydrateRequests = mutableListOf<String>()
         val activeThreadSyncRequests = mutableListOf<String>()
         val selectedThreadRequests = mutableListOf<String>()
@@ -2771,6 +2654,10 @@ class AppViewModelTest {
         override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageFlow
         override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusFlow
         override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusFlow
+
+        override fun setAppForeground(isForeground: Boolean) {
+            foregroundStates += isForeground
+        }
 
         override suspend fun completeOnboarding() {
             snapshot.value = snapshot.value.copy(onboardingCompleted = true)

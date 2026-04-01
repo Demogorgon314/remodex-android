@@ -38,6 +38,8 @@ interface RemodexAppRepository {
     val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus>
     val usageStatus: StateFlow<RemodexUsageStatus>
 
+    fun setAppForeground(isForeground: Boolean) = Unit
+
     suspend fun completeOnboarding()
 
     suspend fun refreshThreads()

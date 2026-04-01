@@ -49,6 +49,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -734,6 +735,131 @@ class DefaultRemodexAppRepositoryTest {
 
         assertEquals(1, syncService.hydrateCalls)
         assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `foreground connected selected running thread keeps syncing active thread at repository level`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                listOf(
+                    activeSyncThreadSnapshot(
+                        id = "thread-active-sync",
+                        title = "Repository active sync",
+                        isRunning = true,
+                    ),
+                ),
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        ).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+        syncService.clearRecordedCalls()
+
+        repository.setAppForeground(true)
+        runCurrent()
+        val initialHydrateCount = syncService.hydrateThreadIds.size
+        assertTrue(initialHydrateCount >= 1)
+        assertTrue(syncService.hydrateThreadIds.all { threadId -> threadId == "thread-active-sync" })
+
+        advanceTimeBy(50L)
+        runCurrent()
+
+        assertTrue(syncService.hydrateThreadIds.size > initialHydrateCount)
+    }
+
+    @Test
+    fun `repository active thread sync retargets to the newly selected foreground thread`() = runTest {
+        val firstThread = activeSyncThreadSnapshot(
+            id = "thread-active-sync-1",
+            title = "First foreground thread",
+            isRunning = true,
+            lastUpdatedEpochMs = 2L,
+        )
+        val secondThread = activeSyncThreadSnapshot(
+            id = "thread-active-sync-2",
+            title = "Second foreground thread",
+            isRunning = true,
+            lastUpdatedEpochMs = 1L,
+        )
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(listOf(firstThread, secondThread))
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        ).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+
+        repository.setAppForeground(true)
+        runCurrent()
+        assertEquals("thread-active-sync-1", syncService.hydrateThreadIds.lastOrNull())
+
+        syncService.clearRecordedCalls()
+        repository.selectThread("thread-active-sync-2")
+        advanceUntilIdle()
+
+        assertTrue(syncService.hydrateThreadIds.contains("thread-active-sync-2"))
+        assertEquals("thread-active-sync-2", syncService.hydrateThreadIds.lastOrNull())
+    }
+
+    @Test
+    fun `repository active thread sync stops when the app goes to background`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService().apply {
+            updateThreads(
+                listOf(
+                    activeSyncThreadSnapshot(
+                        id = "thread-active-sync",
+                        title = "Foreground only sync",
+                        isRunning = true,
+                    ),
+                ),
+            )
+        }
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        ).apply {
+            activeThreadSyncRunningIntervalMillisOverride = 50L
+            activeThreadSyncIdleIntervalMillisOverride = 250L
+        }
+        advanceUntilIdle()
+
+        repository.setAppForeground(true)
+        runCurrent()
+        assertTrue(syncService.hydrateThreadIds.isNotEmpty())
+        assertTrue(syncService.hydrateThreadIds.all { threadId -> threadId == "thread-active-sync" })
+
+        repository.setAppForeground(false)
+        advanceUntilIdle()
+        syncService.clearRecordedCalls()
+
+        advanceTimeBy(500L)
+        runCurrent()
+
+        assertTrue(syncService.hydrateThreadIds.isEmpty())
     }
 
     @Test
@@ -2167,6 +2293,26 @@ class DefaultRemodexAppRepositoryTest {
         )
     }
 
+    private fun activeSyncThreadSnapshot(
+        id: String,
+        title: String,
+        isRunning: Boolean,
+        lastUpdatedEpochMs: Long = 1L,
+    ): ThreadSyncSnapshot {
+        return ThreadSyncSnapshot(
+            id = id,
+            title = title,
+            preview = "$title preview",
+            projectPath = "/tmp/$id",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = lastUpdatedEpochMs,
+            isRunning = isRunning,
+            syncState = RemodexThreadSyncState.LIVE,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = emptyList(),
+        )
+    }
+
     private class BlockingThreadCacheStore : com.emanueledipietro.remodex.data.threads.ThreadCacheStore {
         private val backingThreads = MutableStateFlow<List<com.emanueledipietro.remodex.data.threads.CachedThreadRecord>>(emptyList())
         override val threads: Flow<List<com.emanueledipietro.remodex.data.threads.CachedThreadRecord>> = backingThreads
@@ -2344,9 +2490,18 @@ class DefaultRemodexAppRepositoryTest {
             private set
         var resumeCalls: Int = 0
             private set
+        val hydrateThreadIds = mutableListOf<String>()
+        val resumeThreadIds = mutableListOf<String>()
 
         fun updateThreads(threads: List<ThreadSyncSnapshot>) {
             delegate.updateThreads(threads)
+        }
+
+        fun clearRecordedCalls() {
+            hydrateCalls = 0
+            resumeCalls = 0
+            hydrateThreadIds.clear()
+            resumeThreadIds.clear()
         }
 
         override val threads = delegate.threads
@@ -2355,6 +2510,7 @@ class DefaultRemodexAppRepositoryTest {
 
         override suspend fun hydrateThread(threadId: String) {
             hydrateCalls += 1
+            hydrateThreadIds += threadId
         }
 
         override suspend fun resumeThread(
@@ -2363,6 +2519,7 @@ class DefaultRemodexAppRepositoryTest {
             modelIdentifier: String?,
         ): ThreadSyncSnapshot? {
             resumeCalls += 1
+            resumeThreadIds += threadId
             return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
         }
     }

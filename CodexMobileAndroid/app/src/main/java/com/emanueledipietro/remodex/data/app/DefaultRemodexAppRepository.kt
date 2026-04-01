@@ -130,7 +130,15 @@ class DefaultRemodexAppRepository(
             get() = isRunning || isWaitingOnApproval
     }
 
+    private data class ActiveThreadSyncInputs(
+        val selectedThreadId: String?,
+        val isConnected: Boolean,
+        val secureState: SecureConnectionState,
+        val isForeground: Boolean,
+    )
+
     private val repositoryScope = scope
+    private val isAppForegroundState = MutableStateFlow(false)
     private val timelineProjectionCacheLock = Any()
     private val timelineProjectionCacheByThread = mutableMapOf<String, ThreadTimelineProjectionCache>()
     private var threadCacheWriteJob: Job? = null
@@ -145,8 +153,14 @@ class DefaultRemodexAppRepository(
         .map(CachedThreadRecord::toBaseThreadSummary)
     private val threadListPublishGeneration = AtomicLong(0L)
     private val preferredSelectedThreadId = AtomicReference<String?>(initialBaseThreads.firstOrNull()?.id)
+    private var activeThreadSyncJob: Job? = null
+    private var activeThreadSyncThreadId: String? = null
+    private var activeThreadSyncRefreshSuppressionCount: Int = 0
+    private var lastActiveThreadSyncInputs: ActiveThreadSyncInputs? = null
     private val baseThreadsState = MutableStateFlow(initialBaseThreads)
     private val preferencesState = MutableStateFlow(AppPreferences())
+    internal var activeThreadSyncRunningIntervalMillisOverride: Long? = null
+    internal var activeThreadSyncIdleIntervalMillisOverride: Long? = null
 
     private val sessionState = MutableStateFlow(
         RemodexSessionSnapshot(
@@ -196,6 +210,23 @@ class DefaultRemodexAppRepository(
         appPreferencesRepository.setActiveBridgeProfileId(activeBridgeProfileId)
         threadCacheStore.setActiveProfileId(activeBridgeProfileId)
         syncActiveThreadHint(sessionState.value.selectedThreadId)
+
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            combine(sessionState, isAppForegroundState) { snapshot, isForeground ->
+                ActiveThreadSyncInputs(
+                    selectedThreadId = snapshot.selectedThread?.id ?: snapshot.selectedThreadId,
+                    isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED,
+                    secureState = snapshot.secureConnection.secureState,
+                    isForeground = isForeground,
+                )
+            }.collectLatest { inputs ->
+                if (inputs == lastActiveThreadSyncInputs) {
+                    return@collectLatest
+                }
+                lastActiveThreadSyncInputs = inputs
+                refreshActiveThreadSync()
+            }
+        }
 
         repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             secureConnectionCoordinator.bridgeProfiles.collectLatest { bridgeProfiles ->
@@ -350,39 +381,44 @@ class DefaultRemodexAppRepository(
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             secureConnectionCoordinator.state.collectLatest { secureConnection ->
                 if (secureConnection.secureState != SecureConnectionState.ENCRYPTED) {
+                    stopActiveThreadSync()
+                }
+                if (secureConnection.secureState != SecureConnectionState.ENCRYPTED) {
                     recoveredEncryptedAttempt = null
                     reconnectCatchupJobByThread.values.forEach(Job::cancel)
                     reconnectCatchupJobByThread.clear()
                     return@collectLatest
                 }
 
-                val currentAttempt = secureConnection.attempt
-                if (recoveredEncryptedAttempt == currentAttempt) {
-                    return@collectLatest
-                }
-                recoveredEncryptedAttempt = currentAttempt
+                withSuppressedActiveThreadSyncRefreshes {
+                    val currentAttempt = secureConnection.attempt
+                    if (recoveredEncryptedAttempt == currentAttempt) {
+                        return@withSuppressedActiveThreadSyncRefreshes
+                    }
+                    recoveredEncryptedAttempt = currentAttempt
 
-                val selectedThreadBeforeRecovery = sessionState.value.selectedThread
-                val selectedThreadIdBeforeRecovery =
-                    selectedThreadBeforeRecovery?.id ?: sessionState.value.selectedThreadId
+                    val selectedThreadBeforeRecovery = sessionState.value.selectedThread
+                    val selectedThreadIdBeforeRecovery =
+                        selectedThreadBeforeRecovery?.id ?: sessionState.value.selectedThreadId
 
-                if (selectedThreadIdBeforeRecovery != null) {
-                    hydrateThreadAndRecoverLiveSessionIfNeeded(
-                        threadId = selectedThreadIdBeforeRecovery,
-                        wasRunningBeforeHydrate = selectedThreadBeforeRecovery?.isRunning == true,
-                        preferResumeBeforeHydrate = true,
-                        forceResumeBeforeHydrate = true,
-                    )
-                    scheduleReconnectCatchup(threadId = selectedThreadIdBeforeRecovery)
-                    return@collectLatest
-                }
+                    if (selectedThreadIdBeforeRecovery != null) {
+                        hydrateThreadAndRecoverLiveSessionIfNeeded(
+                            threadId = selectedThreadIdBeforeRecovery,
+                            wasRunningBeforeHydrate = selectedThreadBeforeRecovery?.isRunning == true,
+                            preferResumeBeforeHydrate = true,
+                            forceResumeBeforeHydrate = true,
+                        )
+                        scheduleReconnectCatchup(threadId = selectedThreadIdBeforeRecovery)
+                        return@withSuppressedActiveThreadSyncRefreshes
+                    }
 
-                runHydrationSafely {
-                    hydrationService()?.refreshThreads()
+                    runHydrationSafely {
+                        hydrationService()?.refreshThreads()
+                    }
+                    val recoveredThreadId = recoverReconnectCandidateThreadId() ?: return@withSuppressedActiveThreadSyncRefreshes
+                    selectRecoveredThread(threadId = recoveredThreadId)
+                    scheduleReconnectCatchup(threadId = recoveredThreadId)
                 }
-                val recoveredThreadId = recoverReconnectCandidateThreadId() ?: return@collectLatest
-                selectRecoveredThread(threadId = recoveredThreadId)
-                scheduleReconnectCatchup(threadId = recoveredThreadId)
             }
         }
 
@@ -390,6 +426,88 @@ class DefaultRemodexAppRepository(
             scope.launch {
                 secureConnectionCoordinator.retryConnection()
             }
+        }
+    }
+
+    override fun setAppForeground(isForeground: Boolean) {
+        isAppForegroundState.value = isForeground
+    }
+
+    private suspend fun <T> withSuppressedActiveThreadSyncRefreshes(block: suspend () -> T): T {
+        activeThreadSyncRefreshSuppressionCount += 1
+        return try {
+            block()
+        } finally {
+            activeThreadSyncRefreshSuppressionCount -= 1
+            refreshActiveThreadSync()
+        }
+    }
+
+    private fun refreshActiveThreadSync() {
+        if (activeThreadSyncRefreshSuppressionCount > 0) {
+            return
+        }
+        val snapshot = sessionState.value
+        val selectedThread = snapshot.selectedThread
+        val selectedThreadId = selectedThread?.id ?: snapshot.selectedThreadId
+        val isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+        if (!shouldRunActiveThreadSync(threadId = selectedThreadId, isConnected = isConnected)) {
+            stopActiveThreadSync()
+            return
+        }
+        startActiveThreadSync(selectedThreadId!!)
+    }
+
+    private fun shouldRunActiveThreadSync(
+        threadId: String?,
+        isConnected: Boolean,
+    ): Boolean {
+        return isAppForegroundState.value && isConnected && !threadId.isNullOrBlank()
+    }
+
+    private fun startActiveThreadSync(threadId: String) {
+        if (activeThreadSyncJob?.isActive == true && activeThreadSyncThreadId == threadId) {
+            return
+        }
+        activeThreadSyncJob?.cancel()
+        activeThreadSyncThreadId = threadId
+        activeThreadSyncJob = repositoryScope.launch {
+            try {
+                while (true) {
+                    val currentSnapshot = sessionState.value
+                    val currentThread = currentSnapshot.selectedThread
+                    val currentThreadId = currentThread?.id ?: currentSnapshot.selectedThreadId
+                    val isConnected = currentSnapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+                    if (!shouldRunActiveThreadSync(threadId = currentThreadId, isConnected = isConnected) || currentThreadId != threadId) {
+                        break
+                    }
+                    val loopThreadId = currentThreadId ?: break
+
+                    syncActiveThread(loopThreadId)
+                    delay(resolveActiveThreadSyncIntervalMillis(currentThread))
+                }
+            } finally {
+                if (activeThreadSyncThreadId == threadId) {
+                    activeThreadSyncThreadId = null
+                }
+            }
+        }
+    }
+
+    private fun stopActiveThreadSync() {
+        activeThreadSyncJob?.cancel()
+        activeThreadSyncJob = null
+        activeThreadSyncThreadId = null
+    }
+
+    private fun resolveActiveThreadSyncIntervalMillis(thread: RemodexThreadSummary?): Long {
+        val needsFastCatchup = thread?.isRunning == true ||
+            thread?.isWaitingOnApproval == true ||
+            thread?.messages?.any(RemodexConversationItem::isStreaming) == true
+        return if (needsFastCatchup) {
+            activeThreadSyncRunningIntervalMillisOverride ?: ActiveThreadSyncRunningIntervalMillis
+        } else {
+            activeThreadSyncIdleIntervalMillisOverride ?: ActiveThreadSyncIdleIntervalMillis
         }
     }
 
@@ -413,11 +531,6 @@ class DefaultRemodexAppRepository(
         forceResumeBeforeHydrate: Boolean = false,
     ): RecoveredThreadContext? {
         val threadBeforeHydrate = resolveRecoveredThreadContext(threadId)
-        logRecovery(
-            "event=recoverThread stage=preHydrate threadId=$threadId before=${recoveredThreadSummary(threadBeforeHydrate)} " +
-                "wasRunningBeforeHydrate=$wasRunningBeforeHydrate preferResumeBeforeHydrate=$preferResumeBeforeHydrate " +
-                "forceResumeBeforeHydrate=$forceResumeBeforeHydrate hasStreamingTimeline=${threadHasStreamingTimeline(threadId)}",
-        )
         if (preferResumeBeforeHydrate && shouldPreemptivelyResumeThread(threadId, threadBeforeHydrate, wasRunningBeforeHydrate)) {
             resumeThreadIfNeeded(
                 threadId = threadId,
@@ -432,10 +545,6 @@ class DefaultRemodexAppRepository(
         }
         val recoveredThread = resolveRecoveredThreadContext(threadId) ?: threadBeforeHydrate ?: return null
         val hasStreamingTimeline = threadHasStreamingTimeline(threadId)
-        logRecovery(
-            "event=recoverThread stage=postHydrate threadId=$threadId recovered=${recoveredThreadSummary(recoveredThread)} " +
-                "wasRunningBeforeHydrate=$wasRunningBeforeHydrate hasStreamingTimeline=$hasStreamingTimeline",
-        )
         if (wasRunningBeforeHydrate || recoveredThread.requiresLiveResume || hasStreamingTimeline) {
             resumeRecoveredThreadIfNeeded(
                 recoveredThread = recoveredThread,
@@ -575,29 +684,21 @@ class DefaultRemodexAppRepository(
         force: Boolean = false,
     ) {
         if (!hasActiveSecureTransport()) {
-            logRecovery("event=resumeThread skipped=noSecureTransport threadId=$threadId force=$force")
             return
         }
         val resumeService = resumeService() ?: run {
-            logRecovery("event=resumeThread skipped=noResumeService threadId=$threadId force=$force")
             return
         }
         if (!force && resumeService.isThreadResumedLocally(threadId)) {
-            logRecovery("event=resumeThread skipped=alreadyResumed threadId=$threadId force=$force")
             return
         }
         if (
             skipIfPendingApprovalPromptVisible &&
             threadSyncService.pendingApprovalRequest.value?.threadId == threadId
         ) {
-            logRecovery("event=resumeThread skipped=pendingApprovalVisible threadId=$threadId force=$force")
             return
         }
         var didResume = false
-        logRecovery(
-            "event=resumeThread start threadId=$threadId force=$force preferredProjectPath=${preferredProjectPath.orEmpty()} " +
-                "modelIdentifier=${modelIdentifier.orEmpty()}",
-        )
         runHydrationSafely {
             resumeService.resumeThread(
                 threadId = threadId,
@@ -608,11 +709,10 @@ class DefaultRemodexAppRepository(
         }
         if (didResume) {
             refreshBaseThreadsFromSync()
-            logRecovery(
-                "event=resumeThread success threadId=$threadId snapshot=${threadSummary(threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId })}",
-            )
         } else {
-            logRecovery("event=resumeThread completedWithoutSnapshot threadId=$threadId force=$force")
+            runCatching {
+                Log.w(logTag, "event=resumeThread completedWithoutSnapshot threadId=$threadId force=$force")
+            }
         }
     }
 
@@ -858,29 +958,19 @@ class DefaultRemodexAppRepository(
 
     override suspend fun syncActiveThread(threadId: String) {
         if (!hasActiveSecureTransport()) {
-            logRecovery("event=syncActiveThread skipped=noSecureTransport threadId=$threadId")
             return
         }
         val normalizedThreadId = threadId.trim()
         if (normalizedThreadId.isEmpty() || isLocalOnlyEmptyThread(normalizedThreadId)) {
-            logRecovery("event=syncActiveThread skipped=emptyOrLocalOnly threadId=$threadId")
             return
         }
 
         val threadBeforeSync = resolveRecoveredThreadContext(normalizedThreadId)
         val hadStreamingTimeline = threadHasStreamingTimeline(normalizedThreadId)
-        logRecovery(
-            "event=syncActiveThread start threadId=$normalizedThreadId before=${recoveredThreadSummary(threadBeforeSync)} " +
-                "hadStreamingTimeline=$hadStreamingTimeline",
-        )
         runHydrationSafely {
             hydrationService()?.hydrateThread(normalizedThreadId)
         }
         val recoveredThread = resolveRecoveredThreadContext(normalizedThreadId) ?: threadBeforeSync ?: return
-        logRecovery(
-            "event=syncActiveThread postHydrate threadId=$normalizedThreadId recovered=${recoveredThreadSummary(recoveredThread)} " +
-                "hasStreamingTimeline=${threadHasStreamingTimeline(normalizedThreadId)}",
-        )
         if (recoveredThread.requiresLiveResume || hadStreamingTimeline || threadHasStreamingTimeline(normalizedThreadId)) {
             resumeRecoveredThreadIfNeeded(
                 recoveredThread = recoveredThread,
@@ -890,28 +980,26 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun selectThread(threadId: String) {
-        val threadExists = session.value.threads.any { it.id == threadId } ||
-            threadSyncService.threads.value.any { it.id == threadId }
-        logRecovery(
-            "event=selectThread requestedThreadId=$threadId exists=$threadExists sessionSelected=${session.value.selectedThreadId.orEmpty()} " +
-                "syncSnapshot=${threadSummary(threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId })}",
-        )
-        if (threadExists) {
-            persistSelectedThreadIdLocally(threadId)
-            val previousSelectedThread = sessionState.value.selectedThreadSnapshot
-            sessionState.update { snapshot ->
-                snapshot.copy(
-                    selectedThreadId = threadId,
-                    selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == threadId }
-                        ?: snapshot.selectedThreadSnapshot,
+        withSuppressedActiveThreadSyncRefreshes {
+            val threadExists = session.value.threads.any { it.id == threadId } ||
+                threadSyncService.threads.value.any { it.id == threadId }
+            if (threadExists) {
+                persistSelectedThreadIdLocally(threadId)
+                val previousSelectedThread = sessionState.value.selectedThreadSnapshot
+                sessionState.update { snapshot ->
+                    snapshot.copy(
+                        selectedThreadId = threadId,
+                        selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == threadId }
+                            ?: snapshot.selectedThreadSnapshot,
+                    )
+                }
+                logSelectedThreadState(
+                    source = "selectThread",
+                    previous = previousSelectedThread,
+                    next = sessionState.value.selectedThreadSnapshot,
                 )
+                hydrateThreadAndRecoverLiveSession(threadId)
             }
-            logSelectedThreadState(
-                source = "selectThread",
-                previous = previousSelectedThread,
-                next = sessionState.value.selectedThreadSnapshot,
-            )
-            hydrateThreadAndRecoverLiveSession(threadId)
         }
     }
 
@@ -2541,27 +2629,10 @@ class DefaultRemodexAppRepository(
         }
     }
 
-    private fun threadSummary(snapshot: ThreadSyncSnapshot?): String {
-        return if (snapshot == null) {
-            "null"
-        } else {
-            "id=${snapshot.id} isRunning=${snapshot.isRunning} waiting=${snapshot.isWaitingOnApproval} " +
-                "activeTurnId=${snapshot.activeTurnId.orEmpty()} terminal=${snapshot.latestTurnTerminalState?.name ?: "null"} " +
-                "timelineMutations=${snapshot.timelineMutations.size}"
-        }
-    }
-
-    private fun recoveredThreadSummary(context: RecoveredThreadContext?): String {
-        return if (context == null) {
-            "null"
-        } else {
-            "threadId=${context.threadId} isRunning=${context.isRunning} waiting=${context.isWaitingOnApproval} " +
-                "projectPath=${context.projectPath.orEmpty()} modelIdentifier=${context.modelIdentifier.orEmpty()}"
-        }
-    }
-
     companion object {
         private const val logTag = "RemodexAppRepo"
+        private const val ActiveThreadSyncRunningIntervalMillis = 1_500L
+        private const val ActiveThreadSyncIdleIntervalMillis = 5_000L
     }
 }
 
