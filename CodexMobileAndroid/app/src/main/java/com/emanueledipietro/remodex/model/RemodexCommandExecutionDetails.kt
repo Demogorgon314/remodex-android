@@ -14,6 +14,11 @@ enum class RemodexCommandExecutionSource {
     UNIFIED_EXEC_INTERACTION,
 }
 
+fun RemodexCommandExecutionDetails.isRunningBackgroundTerminal(): Boolean {
+    return liveStatus == RemodexCommandExecutionLiveStatus.RUNNING &&
+        source == RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP
+}
+
 data class RemodexCommandExecutionDetails(
     val fullCommand: String,
     val cwd: String? = null,

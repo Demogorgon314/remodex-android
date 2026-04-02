@@ -39,6 +39,7 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.model.androidUserMessageText
+import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.toConversationAttachment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -352,6 +353,31 @@ class FakeThreadSyncService(
                     )
                 }
             }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
+    }
+
+    override suspend fun cleanBackgroundTerminals(threadId: String) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val backgroundItemIds = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            .asSequence()
+            .filter { item -> item.kind == ConversationItemKind.COMMAND_EXECUTION }
+            .mapNotNull { item -> item.itemId?.takeIf(String::isNotBlank) }
+            .filter { itemId ->
+                backingCommandExecutionDetails.value[itemId]?.isRunningBackgroundTerminal() == true
+            }
+            .toSet()
+        if (backgroundItemIds.isEmpty()) {
+            return
+        }
+        backingCommandExecutionDetails.update { detailsByItemId ->
+            detailsByItemId.toMutableMap().apply {
+                backgroundItemIds.forEach { itemId ->
+                    val details = this[itemId] ?: return@forEach
+                    this[itemId] = details.copy(
+                        liveStatus = com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus.STOPPED,
+                    )
+                }
+            }
         }
     }
 

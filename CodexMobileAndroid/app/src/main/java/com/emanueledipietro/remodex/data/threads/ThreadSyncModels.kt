@@ -96,6 +96,8 @@ interface ThreadCommandService {
 
     suspend fun compactThread(threadId: String)
 
+    suspend fun cleanBackgroundTerminals(threadId: String)
+
     suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,

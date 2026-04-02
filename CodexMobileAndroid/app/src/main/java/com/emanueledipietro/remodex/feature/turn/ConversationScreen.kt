@@ -936,6 +936,7 @@ fun ConversationScreen(
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var backgroundTerminalSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var handledBackgroundTerminalSheetSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var dismissedPlanPromptRequestKeys by remember(thread.id) { mutableStateOf(emptySet<String>()) }
@@ -1100,9 +1101,15 @@ fun ConversationScreen(
     ) {
         { command ->
             onSelectSlashCommand(command)
-            if (command == RemodexSlashCommand.STATUS) {
-                statusSheetExpanded = true
-                onRefreshUsageStatus()
+            when (command) {
+                RemodexSlashCommand.STATUS -> {
+                    statusSheetExpanded = true
+                    onRefreshUsageStatus()
+                }
+                RemodexSlashCommand.PS -> {
+                    backgroundTerminalSheetExpanded = true
+                }
+                else -> Unit
             }
         }
     }
@@ -1174,6 +1181,15 @@ fun ConversationScreen(
         composerFocused = false
         composerSawImeWhileFocused = false
         onCloseComposerAutocomplete()
+    }
+
+    LaunchedEffect(thread.id, uiState.backgroundTerminalSheetSignal) {
+        val signal = uiState.backgroundTerminalSheetSignal
+        if (signal == 0L || signal == handledBackgroundTerminalSheetSignal) {
+            return@LaunchedEffect
+        }
+        handledBackgroundTerminalSheetSignal = signal
+        backgroundTerminalSheetExpanded = true
     }
 
     LaunchedEffect(thread.id, uiState.composerSendAnchorSignal) {
@@ -1424,13 +1440,6 @@ fun ConversationScreen(
                                 )
                             }
 
-                            if (backgroundTerminalSessions.isNotEmpty()) {
-                                BackgroundTerminalSummaryTray(
-                                    sessions = backgroundTerminalSessions,
-                                    onClick = { backgroundTerminalSheetExpanded = true },
-                                )
-                            }
-
                             if (uiState.composer.queuedDrafts.isNotEmpty()) {
                                 QueuedDraftsCard(
                                     queuedDrafts = uiState.composer.queuedDrafts,
@@ -1621,7 +1630,7 @@ fun ConversationScreen(
             )
         }
 
-        if (backgroundTerminalSheetExpanded && backgroundTerminalSessions.isNotEmpty()) {
+        if (backgroundTerminalSheetExpanded) {
             BackgroundTerminalSheet(
                 sessions = backgroundTerminalSessions,
                 onDismiss = { backgroundTerminalSheetExpanded = false },
@@ -5128,6 +5137,8 @@ private fun isCommandEnabled(
         RemodexSlashCommand.COMPACT,
         -> !autocomplete.isThreadRunning
         RemodexSlashCommand.STATUS,
+        RemodexSlashCommand.PS,
+        RemodexSlashCommand.STOP,
         RemodexSlashCommand.PLAN,
         RemodexSlashCommand.SUBAGENTS,
         -> true
@@ -5219,6 +5230,8 @@ private fun slashCommandIcon(command: RemodexSlashCommand): ImageVector {
         RemodexSlashCommand.CODE_REVIEW -> Icons.Outlined.BugReport
         RemodexSlashCommand.FORK -> Icons.AutoMirrored.Outlined.CallSplit
         RemodexSlashCommand.STATUS -> Icons.Outlined.Speed
+        RemodexSlashCommand.PS -> Icons.Outlined.Computer
+        RemodexSlashCommand.STOP -> Icons.Outlined.Close
         RemodexSlashCommand.COMPACT -> Icons.Outlined.Bolt
         RemodexSlashCommand.PLAN -> Icons.Outlined.Checklist
         RemodexSlashCommand.SUBAGENTS -> Icons.Outlined.AccountCircle
@@ -8412,6 +8425,13 @@ private fun BackgroundTerminalSheet(
                 style = MaterialTheme.typography.titleMedium,
                 color = chrome.bodyText,
             )
+            if (sessions.isEmpty()) {
+                Text(
+                    text = "No background terminals running.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.secondaryText,
+                )
+            }
             sessions.forEach { session ->
                 var outputExpanded by rememberSaveable(session.itemId) { mutableStateOf(false) }
                 Surface(

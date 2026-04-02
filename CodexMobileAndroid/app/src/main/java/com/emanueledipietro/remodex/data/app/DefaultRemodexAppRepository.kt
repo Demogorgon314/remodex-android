@@ -1348,6 +1348,31 @@ class DefaultRemodexAppRepository(
         refreshBaseThreadsFromSync()
     }
 
+    override suspend fun cleanBackgroundTerminals(threadId: String) {
+        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        val resumedThread = if (!thread.isRunning) {
+            try {
+                resumeThreadBeforeSend(thread = thread)
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (!shouldTreatAsThreadNotFoundValue(error)) {
+                    throw error
+                }
+                val continuationThreadId = continueMissingThread(thread)
+                val continuationThread = sessionState.value.threads.firstOrNull { candidate ->
+                    candidate.id == continuationThreadId
+                } ?: thread
+                resumeThreadBeforeSend(thread = continuationThread)
+            }
+        } else {
+            thread
+        }
+        threadCommandService.cleanBackgroundTerminals(resumedThread.id)
+        refreshBaseThreadsFromSync()
+    }
+
     override suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,

@@ -76,6 +76,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.model.androidUserMessageText
 import com.emanueledipietro.remodex.model.fallbackConversationImageDisplayName
+import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.isInlineImageDataUrl
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.toConversationAttachment
@@ -839,6 +840,20 @@ class BridgeThreadSyncService(
             }
             throw error
         }
+    }
+
+    override suspend fun cleanBackgroundTerminals(threadId: String) {
+        if (!isConnected()) {
+            return
+        }
+
+        secureConnectionCoordinator.sendRequest(
+            method = "thread/backgroundTerminals/clean",
+            params = buildJsonObject {
+                put("threadId", JsonPrimitive(threadId))
+            },
+        )
+        markBackgroundTerminalsStoppedLocally(threadId)
     }
 
     override suspend fun respondToStructuredUserInput(
@@ -7966,6 +7981,27 @@ class BridgeThreadSyncService(
                     is TimelineMutation.Complete -> null
                 }
             }.maxOrNull() ?: -1L) + 1L
+    }
+
+    private fun markBackgroundTerminalsStoppedLocally(threadId: String) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val backgroundItemIds = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            .asSequence()
+            .filter { item -> item.kind == ConversationItemKind.COMMAND_EXECUTION }
+            .mapNotNull { item -> item.itemId?.takeIf(String::isNotBlank) }
+            .filter { itemId ->
+                backingCommandExecutionDetails.value[itemId]?.isRunningBackgroundTerminal() == true
+            }
+            .toSet()
+        if (backgroundItemIds.isEmpty()) {
+            return
+        }
+        backingCommandExecutionDetails.value = backingCommandExecutionDetails.value.toMutableMap().apply {
+            backgroundItemIds.forEach { itemId ->
+                val details = this[itemId] ?: return@forEach
+                this[itemId] = details.copy(liveStatus = RemodexCommandExecutionLiveStatus.STOPPED)
+            }
+        }
     }
 
     private fun extractTurnId(value: JsonElement?): String? {

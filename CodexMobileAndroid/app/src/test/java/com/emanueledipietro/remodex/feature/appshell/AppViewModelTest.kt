@@ -22,6 +22,8 @@ import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -1177,6 +1179,8 @@ class AppViewModelTest {
                 RemodexSlashCommand.CODE_REVIEW,
                 RemodexSlashCommand.FORK,
                 RemodexSlashCommand.STATUS,
+                RemodexSlashCommand.PS,
+                RemodexSlashCommand.STOP,
                 RemodexSlashCommand.COMPACT,
                 RemodexSlashCommand.PLAN,
                 RemodexSlashCommand.SUBAGENTS,
@@ -1191,6 +1195,113 @@ class AppViewModelTest {
 
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `selecting ps opens the background terminal sheet signal and clears the composer token`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Commands thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/ps")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.PS)
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+        assertEquals(1L, viewModel.uiState.value.backgroundTerminalSheetSignal)
+    }
+
+    @Test
+    fun `send prompt routes standalone ps command to the background terminal sheet`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Commands thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/ps")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(1L, viewModel.uiState.value.backgroundTerminalSheetSignal)
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+    }
+
+    @Test
+    fun `send prompt routes standalone stop command through clean background terminals api`() = runTest {
+        val backgroundItemId = "command-bg"
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Commands thread",
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = backgroundItemId,
+                                itemId = backgroundItemId,
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running bash -lc \"sleep 30\"",
+                                orderIndex = 1,
+                            ),
+                        ),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+            commandDetails.value = mapOf(
+                backgroundItemId to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/stop")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.cleanBackgroundTerminalsRequests)
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+    }
+
+    @Test
+    fun `send prompt stop still cleans background terminals when local thread snapshot is stale`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Commands thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/stop")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.cleanBackgroundTerminalsRequests)
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("", viewModel.uiState.value.composer.draftText)
     }
 
     @Test
@@ -2675,6 +2786,7 @@ class AppViewModelTest {
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
         val sentQueuedDrafts = mutableListOf<Pair<String, String>>()
         val compactThreadRequests = mutableListOf<String>()
+        val cleanBackgroundTerminalsRequests = mutableListOf<String>()
         val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
         val codeReviewRequests = mutableListOf<Pair<String, RemodexCodeReviewRequest>>()
@@ -2864,6 +2976,10 @@ class AppViewModelTest {
         override suspend fun compactThread(threadId: String) {
             compactThreadError?.let { throw it }
             compactThreadRequests += threadId
+        }
+
+        override suspend fun cleanBackgroundTerminals(threadId: String) {
+            cleanBackgroundTerminalsRequests += threadId
         }
 
         override suspend fun respondToStructuredUserInput(

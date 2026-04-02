@@ -1206,12 +1206,13 @@ class ConversationScreenTest {
     }
 
     @Test
-    fun backgroundTerminalTrayOpensSheetForRunningSessions() {
+    fun psSignalOpensBackgroundTerminalSheetForRunningSessions() {
         composeRule.setContent {
             RemodexTheme {
                 ConversationScreen(
                     uiState = conversationUiState(
                         autocompleteState = RemodexComposerAutocompleteState(),
+                        backgroundTerminalSheetSignal = 1L,
                         messages = listOf(
                             RemodexConversationItem(
                                 id = "command-1",
@@ -1274,11 +1275,6 @@ class ConversationScreenTest {
             }
         }
 
-        composeRule.onNodeWithTag(BackgroundTerminalTrayTag).assertIsDisplayed()
-        composeRule.onNodeWithText("1 background terminal running").assertIsDisplayed()
-
-        composeRule.onNodeWithTag(BackgroundTerminalTrayTag).performClick()
-
         composeRule.onNodeWithTag(BackgroundTerminalSheetTag).assertIsDisplayed()
         composeRule.onNodeWithText("Background terminals").assertIsDisplayed()
         composeRule.onNodeWithText("sleep 30", substring = true).assertIsDisplayed()
@@ -1286,7 +1282,63 @@ class ConversationScreenTest {
     }
 
     @Test
-    fun foregroundRunningCommandDoesNotShowBackgroundTerminalTray() {
+    fun psSignalShowsEmptyStateWhenNoBackgroundTerminalsAreRunning() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        backgroundTerminalSheetSignal = 1L,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(BackgroundTerminalSheetTag).assertIsDisplayed()
+        composeRule.onNodeWithText("No background terminals running.").assertIsDisplayed()
+    }
+
+    @Test
+    fun foregroundRunningCommandDoesNotShowBackgroundTerminalEntryByDefault() {
         composeRule.setContent {
             RemodexTheme {
                 ConversationScreen(
@@ -1441,6 +1493,7 @@ class ConversationScreenTest {
         messages: List<RemodexConversationItem> = emptyList(),
         voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
         commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
+        backgroundTerminalSheetSignal: Long = 0L,
     ): AppUiState {
         val thread = RemodexThreadSummary(
             id = "thread-1",
@@ -1464,6 +1517,7 @@ class ConversationScreenTest {
                 autocomplete = autocompleteState,
             ),
             commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+            backgroundTerminalSheetSignal = backgroundTerminalSheetSignal,
         )
     }
 

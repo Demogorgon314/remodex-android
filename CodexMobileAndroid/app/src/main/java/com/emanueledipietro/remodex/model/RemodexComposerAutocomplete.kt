@@ -138,6 +138,16 @@ enum class RemodexSlashCommand(
         subtitle = "Show context usage and rate limits",
         token = "/status",
     ),
+    PS(
+        title = "Background Terminals",
+        subtitle = "List running background terminals",
+        token = "/ps",
+    ),
+    STOP(
+        title = "Stop Background Terminals",
+        subtitle = "Stop all running background terminals",
+        token = "/stop",
+    ),
     COMPACT(
         title = "Compact",
         subtitle = "Compress the current thread context window",
@@ -161,6 +171,8 @@ enum class RemodexSlashCommand(
             CODE_REVIEW -> "ladybug"
             FORK -> "arrow.triangle.branch"
             STATUS -> "speedometer"
+            PS -> "terminal"
+            STOP -> "stop.circle"
             COMPACT -> "arrow.down.left.and.arrow.up.right"
             PLAN -> "checklist"
             SUBAGENTS -> "person.crop.circle"
@@ -171,6 +183,8 @@ enum class RemodexSlashCommand(
             CODE_REVIEW,
             FORK,
             STATUS,
+            PS,
+            STOP,
             COMPACT,
             PLAN,
             SUBAGENTS,
