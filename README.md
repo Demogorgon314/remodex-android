@@ -133,6 +133,8 @@ This repo contains the local bridge, the Android app project, the iOS app target
 
 <sub>Install from npm with `@latest` so you get the newest bridge fixes.</sub>
 
+If you plan to use the macOS menu bar companion, `remodex` must be installed globally and available in your login-shell `PATH`.
+
 ```sh
 npm install -g remodex@latest
 ```
