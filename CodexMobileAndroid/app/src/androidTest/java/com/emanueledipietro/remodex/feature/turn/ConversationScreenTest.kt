@@ -29,6 +29,8 @@ import com.emanueledipietro.remodex.feature.appshell.ComposerUiState
 import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceUiState
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
@@ -84,6 +86,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {
@@ -147,6 +151,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {
@@ -206,6 +212,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -256,6 +264,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -306,6 +316,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -356,6 +368,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -417,6 +431,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -473,6 +489,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -534,6 +552,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -598,6 +618,8 @@ class ConversationScreenTest {
                         autocompleteState = RemodexComposerAutocompleteState()
                     },
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {
@@ -671,6 +693,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -745,6 +769,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -825,6 +851,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -881,6 +909,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -944,6 +974,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -1007,6 +1039,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -1072,6 +1106,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -1137,6 +1173,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -1164,6 +1202,85 @@ class ConversationScreenTest {
 
         composeRule.onAllNodesWithText("Select Text").assertCountEquals(1)
         composeRule.onAllNodesWithText("Copy").assertCountEquals(1)
+    }
+
+    @Test
+    fun backgroundTerminalTrayOpensSheetForRunningSessions() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "command-1",
+                                itemId = "command-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running bash -lc \"sleep 30\"",
+                                orderIndex = 1,
+                            ),
+                        ),
+                        commandExecutionDetailsByItemId = mapOf(
+                            "command-1" to RemodexCommandExecutionDetails(
+                                fullCommand = "bash -lc \"sleep 30\"",
+                                outputTail = "tick 1\ntick 2\ntick 3",
+                                liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(BackgroundTerminalTrayTag).assertIsDisplayed()
+        composeRule.onNodeWithText("1 background terminal running").assertIsDisplayed()
+
+        composeRule.onNodeWithTag(BackgroundTerminalTrayTag).performClick()
+
+        composeRule.onNodeWithTag(BackgroundTerminalSheetTag).assertIsDisplayed()
+        composeRule.onNodeWithText("Background terminals").assertIsDisplayed()
+        composeRule.onNodeWithText("sleep 30", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Recent output").assertIsDisplayed()
     }
 
     @Test
@@ -1202,6 +1319,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},
@@ -1248,6 +1367,7 @@ class ConversationScreenTest {
         isSelectedThreadHydrating: Boolean = false,
         messages: List<RemodexConversationItem> = emptyList(),
         voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
+        commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
     ): AppUiState {
         val thread = RemodexThreadSummary(
             id = "thread-1",
@@ -1270,6 +1390,7 @@ class ConversationScreenTest {
                 voice = voice,
                 autocomplete = autocompleteState,
             ),
+            commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
         )
     }
 
@@ -1322,6 +1443,8 @@ class ConversationScreenTest {
                     onRemoveMentionedSkill = {},
                     onSelectSlashCommand = {},
                     onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
                     onClearReviewSelection = {},
                     onClearSubagentsSelection = {},
                     onCloseComposerAutocomplete = {},

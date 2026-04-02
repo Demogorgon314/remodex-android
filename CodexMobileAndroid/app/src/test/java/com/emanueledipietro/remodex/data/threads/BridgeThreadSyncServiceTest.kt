@@ -25,6 +25,7 @@ import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
@@ -34,6 +35,7 @@ import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -4812,6 +4814,112 @@ class BridgeThreadSyncServiceTest {
             assertEquals(0, details?.exitCode)
             assertEquals(1450, details?.durationMs)
             assertEquals("M app/src/Main.kt", details?.outputTail)
+            assertEquals(RemodexCommandExecutionLiveStatus.COMPLETED, details?.liveStatus)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread preserves running command execution details when history status is in progress`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-command-details-running",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-command-running"))
+                                            put("title", JsonPrimitive("Running command thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-command-running"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_223))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-command-running"))
+                                put("title", JsonPrimitive("Running command thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-command-running"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-command-running"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("command-item-running"))
+                                                                put("type", JsonPrimitive("command_execution"))
+                                                                put("status", JsonPrimitive("in_progress"))
+                                                                put("command", JsonPrimitive("bash -lc \"sleep 30\""))
+                                                                put("cwd", JsonPrimitive("/tmp/project-command-running"))
+                                                                put("output", JsonPrimitive("tick 1\ntick 2"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+            service.hydrateThread("thread-command-running")
+            advanceUntilIdle()
+
+            val details = service.commandExecutionDetails.value["command-item-running"]
+            assertNotNull(details)
+            assertEquals("bash -lc \"sleep 30\"", details?.fullCommand)
+            assertEquals("tick 1\ntick 2", details?.outputTail)
+            assertEquals(RemodexCommandExecutionLiveStatus.RUNNING, details?.liveStatus)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
@@ -5028,6 +5136,82 @@ class BridgeThreadSyncServiceTest {
             "completed git status --short",
             projected.last().text,
         )
+    }
+
+    @Test
+    fun `terminal interaction keeps background command running details even after row completed`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-background-terminal",
+                    title = "Background terminal thread",
+                    preview = "completed sleep 30",
+                    projectPath = "/tmp/project-background-terminal",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "command-item",
+                                itemId = "command-item",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "completed sleep 30",
+                                turnId = "turn-background-terminal",
+                                isStreaming = false,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        setCommandExecutionDetails(
+            service = service,
+            detailsByItemId = mapOf(
+                "command-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    cwd = "/tmp/project-background-terminal",
+                    exitCode = 0,
+                    outputTail = "done",
+                    liveStatus = RemodexCommandExecutionLiveStatus.COMPLETED,
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-background-terminal"))
+                put("turnId", JsonPrimitive("turn-background-terminal"))
+                put("itemId", JsonPrimitive("command-item"))
+                put("status", JsonPrimitive("running"))
+                put("command", JsonPrimitive("bash -lc \"sleep 30\""))
+                put("cwd", JsonPrimitive("/tmp/project-background-terminal"))
+            },
+        )
+
+        val details = service.commandExecutionDetails.value["command-item"]
+        val thread = service.threads.value.first { it.id == "thread-background-terminal" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(RemodexCommandExecutionLiveStatus.RUNNING, details?.liveStatus)
+        assertEquals("completed sleep 30", projected.single().text)
+        assertFalse(projected.single().isStreaming)
     }
 
     @Test
@@ -7800,6 +7984,18 @@ class BridgeThreadSyncServiceTest {
         field.isAccessible = true
         val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<List<ThreadSyncSnapshot>>
         state.value = snapshots
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setCommandExecutionDetails(
+        service: BridgeThreadSyncService,
+        detailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    ) {
+        val field = service.javaClass.getDeclaredField("backingCommandExecutionDetails")
+        field.isAccessible = true
+        val state =
+            field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>
+        state.value = detailsByItemId
     }
 
     @Suppress("UNCHECKED_CAST")

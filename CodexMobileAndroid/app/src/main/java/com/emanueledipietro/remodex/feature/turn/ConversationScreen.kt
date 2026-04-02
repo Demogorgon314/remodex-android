@@ -212,6 +212,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -612,6 +613,8 @@ internal const val ConversationRunningIndicatorTag = "conversation_running_indic
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
 internal const val ConversationStatusSheetTag = "conversation_status_sheet"
+internal const val BackgroundTerminalTrayTag = "background_terminal_tray"
+internal const val BackgroundTerminalSheetTag = "background_terminal_sheet"
 internal const val ConversationWelcomeStateTag = "conversation_welcome_state"
 internal const val ConversationWelcomeLoadingTag = "conversation_welcome_loading"
 internal const val GitSheetTag = "git_sheet"
@@ -931,6 +934,7 @@ fun ConversationScreen(
     var selectedPlanSheetItemId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
+    var backgroundTerminalSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var dismissedPlanPromptRequestKeys by remember(thread.id) { mutableStateOf(emptySet<String>()) }
@@ -1082,6 +1086,12 @@ fun ConversationScreen(
             ?.filter(String::isNotEmpty)
             ?.map(::parseCommandExecutionStatus)
             ?.firstOrNull { status -> status != null }
+    }
+    val backgroundTerminalSessions = remember(thread.messages, uiState.commandExecutionDetailsByItemId) {
+        resolveBackgroundTerminalPresentations(
+            messages = thread.messages,
+            detailsByItemId = uiState.commandExecutionDetailsByItemId,
+        )
     }
     val handleSelectSlashCommand: (RemodexSlashCommand) -> Unit = remember(
         onSelectSlashCommand,
@@ -1413,6 +1423,13 @@ fun ConversationScreen(
                                 )
                             }
 
+                            if (backgroundTerminalSessions.isNotEmpty()) {
+                                BackgroundTerminalSummaryTray(
+                                    sessions = backgroundTerminalSessions,
+                                    onClick = { backgroundTerminalSheetExpanded = true },
+                                )
+                            }
+
                             if (uiState.composer.queuedDrafts.isNotEmpty()) {
                                 QueuedDraftsCard(
                                     queuedDrafts = uiState.composer.queuedDrafts,
@@ -1600,6 +1617,13 @@ fun ConversationScreen(
                 isRefreshingUsage = uiState.isRefreshingUsage,
                 onRefreshUsageStatus = onRefreshUsageStatus,
                 onDismiss = { statusSheetExpanded = false },
+            )
+        }
+
+        if (backgroundTerminalSheetExpanded && backgroundTerminalSessions.isNotEmpty()) {
+            BackgroundTerminalSheet(
+                sessions = backgroundTerminalSessions,
+                onDismiss = { backgroundTerminalSheetExpanded = false },
             )
         }
 
@@ -8187,6 +8211,13 @@ internal data class HumanizedCommandInfo(
     val target: String,
 )
 
+internal data class BackgroundTerminalPresentation(
+    val itemId: String,
+    val commandPreview: String,
+    val fullCommand: String,
+    val recentOutputLines: List<String>,
+)
+
 @Composable
 private fun CommandExecutionStatusCard(
     status: CommandExecutionStatusPresentation,
@@ -8272,6 +8303,204 @@ private fun CommandExecutionCardBody(
                     .size(10.dp)
                     .graphicsLayer { rotationZ = -90f },
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BackgroundTerminalSummaryTray(
+    sessions: List<BackgroundTerminalPresentation>,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val count = sessions.size
+    val summaryText = if (count == 1) {
+        "1 background terminal running"
+    } else {
+        "$count background terminals running"
+    }
+    val preview = sessions.firstOrNull()?.commandPreview.orEmpty()
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(BackgroundTerminalTrayTag)
+            .clickable(onClick = onClick),
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = chrome.canvas,
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Text(
+                    text = ">_",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = chrome.secondaryText,
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.bodyText,
+                )
+                if (preview.isNotBlank()) {
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = chrome.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = chrome.tertiaryText,
+                modifier = Modifier
+                    .size(16.dp)
+                    .graphicsLayer { rotationZ = -90f },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BackgroundTerminalSheet(
+    sessions: List<BackgroundTerminalPresentation>,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(BackgroundTerminalSheetTag),
+    ) {
+        Column(
+            modifier = Modifier
+                .testTag(BackgroundTerminalSheetTag)
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Background terminals",
+                style = MaterialTheme.typography.titleMedium,
+                color = chrome.bodyText,
+            )
+            sessions.forEach { session ->
+                var outputExpanded by rememberSaveable(session.itemId) { mutableStateOf(false) }
+                Surface(
+                    color = chrome.mutedSurface,
+                    shape = RemodexConversationShapes.card,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text(
+                                text = "running",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = chrome.accent,
+                            )
+                            Text(
+                                text = session.commandPreview,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                                color = chrome.bodyText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        SelectionContainer {
+                            Text(
+                                text = session.fullCommand,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                                color = chrome.secondaryText,
+                            )
+                        }
+                        if (session.recentOutputLines.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { outputExpanded = !outputExpanded },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.ExpandMore,
+                                        contentDescription = null,
+                                        tint = chrome.secondaryText,
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .graphicsLayer { rotationZ = if (outputExpanded) 0f else -90f },
+                                    )
+                                    Text(
+                                        text = "Recent output",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                                        color = chrome.secondaryText,
+                                    )
+                                }
+                                if (outputExpanded) {
+                                    Surface(
+                                        color = chrome.canvas,
+                                        shape = RemodexConversationShapes.card,
+                                        border = BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.72f)),
+                                        shadowElevation = 0.dp,
+                                        tonalElevation = 0.dp,
+                                    ) {
+                                        SelectionContainer {
+                                            Text(
+                                                text = session.recentOutputLines.joinToString(separator = "\n"),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(12.dp),
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                                                color = chrome.bodyText,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -8804,6 +9033,10 @@ internal fun resolveCommandExecutionStatusPresentation(
     details: RemodexCommandExecutionDetails?,
 ): CommandExecutionStatusPresentation {
     val resolvedAccent = when {
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.RUNNING -> CommandExecutionStatusAccent.RUNNING
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.STOPPED -> CommandExecutionStatusAccent.FAILED
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.FAILED -> CommandExecutionStatusAccent.FAILED
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.COMPLETED -> CommandExecutionStatusAccent.COMPLETED
         details?.exitCode?.let { it != 0 } == true -> CommandExecutionStatusAccent.FAILED
         details?.exitCode == 0 -> CommandExecutionStatusAccent.COMPLETED
         !item.isStreaming && status.accent == CommandExecutionStatusAccent.RUNNING -> CommandExecutionStatusAccent.COMPLETED
@@ -8832,6 +9065,10 @@ private fun fallbackCommandExecutionStatusPresentation(
         return null
     }
     val accent = when {
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.RUNNING -> CommandExecutionStatusAccent.RUNNING
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.STOPPED -> CommandExecutionStatusAccent.FAILED
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.FAILED -> CommandExecutionStatusAccent.FAILED
+        details?.liveStatus == RemodexCommandExecutionLiveStatus.COMPLETED -> CommandExecutionStatusAccent.COMPLETED
         details?.exitCode?.let { it != 0 } == true -> CommandExecutionStatusAccent.FAILED
         !item.isStreaming || details?.exitCode == 0 || details?.durationMs != null -> CommandExecutionStatusAccent.COMPLETED
         else -> CommandExecutionStatusAccent.RUNNING
@@ -8845,6 +9082,51 @@ private fun fallbackCommandExecutionStatusPresentation(
         },
         accent = accent,
     )
+}
+
+internal fun resolveBackgroundTerminalPresentations(
+    messages: List<RemodexConversationItem>,
+    detailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+): List<BackgroundTerminalPresentation> {
+    val sessionsByItemId = linkedMapOf<String, BackgroundTerminalPresentation>()
+    messages.forEach { item ->
+        if (item.kind != ConversationItemKind.COMMAND_EXECUTION) {
+            return@forEach
+        }
+        val itemId = item.itemId?.trim()?.takeIf(String::isNotEmpty) ?: return@forEach
+        val details = detailsByItemId[itemId] ?: return@forEach
+        if (details.liveStatus != RemodexCommandExecutionLiveStatus.RUNNING) {
+            return@forEach
+        }
+        val fullCommand = details.fullCommand.trim().ifEmpty { "command" }
+        sessionsByItemId[itemId] = BackgroundTerminalPresentation(
+            itemId = itemId,
+            commandPreview = backgroundTerminalCommandPreview(fullCommand),
+            fullCommand = fullCommand,
+            recentOutputLines = details.outputTail
+                .lineSequence()
+                .map(String::trimEnd)
+                .filter(String::isNotEmpty)
+                .toList()
+                .takeLast(3),
+        )
+    }
+    return sessionsByItemId.values.toList()
+}
+
+private fun backgroundTerminalCommandPreview(
+    raw: String,
+    maxLength: Int = 92,
+): String {
+    val normalized = unwrapShellCommand(raw)
+        .trim()
+        .replace(Regex("\\s+"), " ")
+        .ifBlank { "command" }
+    return if (normalized.length <= maxLength) {
+        normalized
+    } else {
+        normalized.take(maxLength - 3) + "..."
+    }
 }
 
 internal fun humanizeCommand(

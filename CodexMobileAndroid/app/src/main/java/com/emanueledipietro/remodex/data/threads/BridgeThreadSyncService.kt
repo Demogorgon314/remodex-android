@@ -31,6 +31,7 @@ import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -3097,22 +3098,23 @@ class BridgeThreadSyncService(
             paramsObject = paramsObject,
             isCompleted = false,
         )
-        if (existingItem != null && !existingItem.isStreaming && state.phase == CommandExecutionRunPhase.RUNNING) {
-            return
-        }
+        val suppressTimelineUpdate =
+            existingItem != null && !existingItem.isStreaming && state.phase == CommandExecutionRunPhase.RUNNING
         upsertCommandExecutionDetails(
             context = context,
             payloadObject = context.payloadObject,
             isCompleted = state.phase != CommandExecutionRunPhase.RUNNING,
             paramsObject = paramsObject,
         )
-        publishCommandExecutionStatus(
-            context = context,
-            payloadObject = context.payloadObject,
-            isCompleted = state.phase != CommandExecutionRunPhase.RUNNING,
-            onlyIfMissing = false,
-            paramsObject = paramsObject,
-        )
+        if (!suppressTimelineUpdate) {
+            publishCommandExecutionStatus(
+                context = context,
+                payloadObject = context.payloadObject,
+                isCompleted = state.phase != CommandExecutionRunPhase.RUNNING,
+                onlyIfMissing = false,
+                paramsObject = paramsObject,
+            )
+        }
     }
 
     private fun handleItemLifecycle(
@@ -6102,6 +6104,46 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun liveStatusForCommandExecutionPhase(
+        phase: CommandExecutionRunPhase,
+    ): RemodexCommandExecutionLiveStatus {
+        return when (phase) {
+            CommandExecutionRunPhase.RUNNING -> RemodexCommandExecutionLiveStatus.RUNNING
+            CommandExecutionRunPhase.COMPLETED -> RemodexCommandExecutionLiveStatus.COMPLETED
+            CommandExecutionRunPhase.FAILED -> RemodexCommandExecutionLiveStatus.FAILED
+            CommandExecutionRunPhase.STOPPED -> RemodexCommandExecutionLiveStatus.STOPPED
+        }
+    }
+
+    private fun decodeCommandExecutionHistoryCompletion(
+        itemObject: JsonObject,
+    ): Boolean {
+        val rawStatus = normalizeStatus(
+            itemObject.firstString("status")
+                ?: itemObject.firstObject("status")?.firstString("type", "statusType", "status_type")
+                ?: itemObject.firstObject("result")?.firstString("status")
+                ?: itemObject.firstObject("output")?.firstString("status")
+                ?: "",
+        )
+        if (
+            rawStatus.contains("running")
+            || rawStatus.contains("progress")
+            || rawStatus.contains("pending")
+            || rawStatus.contains("wait")
+        ) {
+            return false
+        }
+        if (
+            itemObject.firstInt("exitCode", "exit_code") != null
+            || itemObject.firstObject("result")?.firstInt("exitCode", "exit_code") != null
+            || itemObject.firstInt("durationMs", "duration_ms") != null
+            || itemObject.firstObject("result")?.firstInt("durationMs", "duration_ms") != null
+        ) {
+            return true
+        }
+        return rawStatus.isBlank() || rawStatus.contains("done") || rawStatus.contains("complete") || rawStatus.contains("finish")
+    }
+
     private fun commandExecutionStatusText(state: CommandExecutionRunState): String {
         return "${state.phase.label} ${state.shortCommand}"
     }
@@ -6213,6 +6255,7 @@ class BridgeThreadSyncService(
                     exitCode = state.exitCode,
                     durationMs = state.durationMs,
                     outputTail = "",
+                    liveStatus = liveStatusForCommandExecutionPhase(state.phase),
                 )
             } else {
                 existing.copy(
@@ -6224,6 +6267,7 @@ class BridgeThreadSyncService(
                     cwd = existing.cwd ?: state.cwd,
                     exitCode = state.exitCode ?: existing.exitCode,
                     durationMs = state.durationMs ?: existing.durationMs,
+                    liveStatus = liveStatusForCommandExecutionPhase(state.phase),
                 )
             }
         }
@@ -6596,11 +6640,17 @@ class BridgeThreadSyncService(
 
                     else -> ConversationSpeaker.SYSTEM
                 }
+                val commandExecutionHistoryCompleted =
+                    itemType == "commandexecution" && decodeCommandExecutionHistoryCompletion(itemObject)
                 val presentation = if (speaker == ConversationSpeaker.SYSTEM) {
                     decodeStructuredTimelinePresentation(
                         itemObject = itemObject,
                         itemType = itemType,
-                        isCompleted = true,
+                        isCompleted = if (itemType == "commandexecution") {
+                            commandExecutionHistoryCompleted
+                        } else {
+                            true
+                        },
                     )
                 } else {
                     StructuredTimelinePresentation(
@@ -6659,7 +6709,7 @@ class BridgeThreadSyncService(
                             payloadObject = itemObject,
                         ),
                         payloadObject = itemObject,
-                        isCompleted = true,
+                        isCompleted = commandExecutionHistoryCompleted,
                     )
                     decodeStringParts(itemObject.firstValue("output")).joinToString(separator = "\n")
                         .takeIf(String::isNotBlank)

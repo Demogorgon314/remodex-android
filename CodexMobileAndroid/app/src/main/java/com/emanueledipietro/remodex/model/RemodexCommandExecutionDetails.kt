@@ -1,11 +1,19 @@
 package com.emanueledipietro.remodex.model
 
+enum class RemodexCommandExecutionLiveStatus {
+    RUNNING,
+    COMPLETED,
+    FAILED,
+    STOPPED,
+}
+
 data class RemodexCommandExecutionDetails(
     val fullCommand: String,
     val cwd: String? = null,
     val exitCode: Int? = null,
     val durationMs: Int? = null,
     val outputTail: String = "",
+    val liveStatus: RemodexCommandExecutionLiveStatus? = null,
 ) {
     fun appendedOutput(chunk: String): RemodexCommandExecutionDetails {
         if (chunk.isEmpty()) {
