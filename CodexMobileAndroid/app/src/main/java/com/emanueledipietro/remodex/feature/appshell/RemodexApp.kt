@@ -51,7 +51,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Computer
-import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
@@ -84,6 +83,10 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -425,7 +428,11 @@ fun RemodexApp(
             )
         ) {
             ShellBackAction.DISMISS_SCANNER -> isScannerPresented = false
-            ShellBackAction.CLOSE_SIDEBAR -> isSidebarOpen = false
+            ShellBackAction.CLOSE_SIDEBAR -> setSidebarOpen(
+                currentOpen = isSidebarOpen,
+                nextOpen = false,
+                view = view,
+            ) { isSidebarOpen = it }
             ShellBackAction.NAVIGATE_TO_SETTINGS -> shellRoute = ShellRoute.SETTINGS
             ShellBackAction.NAVIGATE_TO_CONTENT -> shellRoute = ShellRoute.CONTENT
             null -> Unit
@@ -443,7 +450,13 @@ fun RemodexApp(
         onShellRouteChange = { shellRoute = it },
         onShellBack = handleShellBack,
         isSidebarOpen = isSidebarOpen,
-        onSidebarOpenChange = { isSidebarOpen = it },
+        onSidebarOpenChange = { nextOpen ->
+            setSidebarOpen(
+                currentOpen = isSidebarOpen,
+                nextOpen = nextOpen,
+                view = view,
+            ) { isSidebarOpen = it }
+        },
         isSidebarSearchActive = isSidebarSearchActive,
         onSidebarSearchActiveChange = { isSidebarSearchActive = it },
         notificationPermissionUiState = notificationPermissionUiState,
@@ -618,6 +631,27 @@ private fun performRunCompletionHaptic(
     if (!didContextClick) {
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
     }
+}
+
+private fun performLightImpactHaptic(view: View) {
+    val didTap = view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    if (!didTap) {
+        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    }
+}
+
+private inline fun setSidebarOpen(
+    currentOpen: Boolean,
+    nextOpen: Boolean,
+    view: View,
+    updateState: (Boolean) -> Unit,
+) {
+    if (currentOpen == nextOpen) {
+        return
+    }
+
+    performLightImpactHaptic(view)
+    updateState(nextOpen)
 }
 
 private fun completionVibrator(context: Context): Vibrator? {
@@ -1477,11 +1511,7 @@ private fun ShellTopBar(
                     onClick = onMenu,
                     contentDescription = "Menu",
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Menu,
-                        contentDescription = null,
-                        tint = chrome.titleText,
-                    )
+                    ShellTopBarMenuGlyph(color = chrome.titleText)
                 }
             }
 
@@ -1573,6 +1603,10 @@ private fun ShellTopBarButton(
     Surface(
         modifier = Modifier
             .size(40.dp)
+            .semantics {
+                this.role = Role.Button
+                this.contentDescription = contentDescription
+            }
             .clickable(onClick = onClick),
         color = chrome.mutedSurface,
         shape = CircleShape,
@@ -1583,6 +1617,38 @@ private fun ShellTopBarButton(
             contentAlignment = Alignment.Center,
         ) {
             content()
+        }
+    }
+}
+
+@Composable
+private fun ShellTopBarMenuGlyph(
+    color: Color,
+) {
+    Box(
+        modifier = Modifier.size(width = 20.dp, height = 14.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 20.dp, height = 1.5.dp)
+                    .background(
+                        color = color,
+                        shape = RoundedCornerShape(1.dp),
+                    ),
+            )
+            Box(
+                modifier = Modifier
+                    .size(width = 10.dp, height = 1.5.dp)
+                    .background(
+                        color = color,
+                        shape = RoundedCornerShape(1.dp),
+                    ),
+            )
         }
     }
 }
