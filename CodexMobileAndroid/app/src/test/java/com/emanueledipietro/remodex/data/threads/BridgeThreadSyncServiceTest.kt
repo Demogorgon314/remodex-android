@@ -5495,7 +5495,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `thread status idle completes local streaming state before catchup`() = runTest {
+    fun `thread status idle preserves local streaming state until catchup confirms completion`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         val coordinator = SecureConnectionCoordinator(
@@ -5557,8 +5557,106 @@ class BridgeThreadSyncServiceTest {
         val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
             .first { item -> item.id == "assistant-item-idle-retry" }
         assertEquals("Recovered final response", assistant.text)
-        assertFalse(assistant.isStreaming)
-        assertFalse(thread.isRunning)
+        assertTrue(assistant.isStreaming)
+        assertTrue(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+    }
+
+    @Test
+    fun `thread status idle keeps active turn visible until completion is confirmed`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-idle-active-turn",
+                    title = "Idle active turn thread",
+                    preview = "Still running",
+                    projectPath = "/tmp/project-idle-active-turn",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-idle-active-turn",
+            "turn-idle-active-turn",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleThreadStatusChangedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-idle-active-turn"))
+                put("status", JsonPrimitive("idle"))
+            },
+        )
+        advanceUntilIdle()
+
+        val thread = service.threads.value.first { it.id == "thread-idle-active-turn" }
+        assertTrue(thread.isRunning)
+        assertEquals("turn-idle-active-turn", thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+    }
+
+    @Test
+    fun `stop turn keeps running state until follow-up sync confirms completion`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            seedThreads(
+                service = connected.service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-stop-visible",
+                        title = "Stop visible thread",
+                        preview = "Stopping soon",
+                        projectPath = "/tmp/project-stop-visible",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                connected.service,
+                "setActiveTurnId",
+                "thread-stop-visible",
+                "turn-stop-visible",
+            )
+
+            connected.service.stopTurn("thread-stop-visible")
+            advanceUntilIdle()
+
+            val thread = connected.service.threads.value.first { it.id == "thread-stop-visible" }
+            assertTrue(thread.isRunning)
+            assertEquals("turn-stop-visible", thread.activeTurnId)
+            assertTrue(
+                connected.relayFactory.receivedRequests.any { request ->
+                    request.method == "turn/interrupt"
+                },
+            )
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
     }
 
     @Test

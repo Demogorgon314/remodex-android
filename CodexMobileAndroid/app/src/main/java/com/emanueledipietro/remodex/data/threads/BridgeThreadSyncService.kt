@@ -1463,17 +1463,6 @@ class BridgeThreadSyncService(
             method = "turn/interrupt",
             params = params,
         )
-        clearThreadRunningState(threadId)
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id == threadId) {
-                snapshot.withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = false,
-                )
-            } else {
-                snapshot
-            }
-        }
         refreshThreads()
         hydrateThread(threadId)
     }
@@ -2517,30 +2506,26 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "stopped"
                 || normalizedStatus == "systemerror" -> {
                 val activeTurnIdForThread = activeTurnIdByThread[threadId]
-                val shouldCatchUpLifecycle = (
-                    activeTurnIdForThread != null ||
-                    runningThreadFallbackIds.contains(threadId) ||
-                    hasStreamingMessage(threadId)
-                )
-                terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
-                    setLatestTurnTerminalState(
-                        threadId = threadId,
-                        state = state,
-                        turnId = activeTurnIdForThread,
-                    )
-                }
-                completeStreamingItemsForThread(
-                    threadId = threadId,
-                    turnId = activeTurnIdForThread,
-                )
-                clearThreadRunningState(threadId)
-                touchThread(threadId = threadId, isRunning = false)
-                if (shouldCatchUpLifecycle) {
+                if (shouldPreserveRunningStateForThreadStatus(threadId)) {
                     scheduleLifecycleCatchup(
                         threadId = threadId,
                         turnId = activeTurnIdForThread,
                         forceDelayedRetries = true,
                     )
+                } else {
+                    terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
+                        setLatestTurnTerminalState(
+                            threadId = threadId,
+                            state = state,
+                            turnId = activeTurnIdForThread,
+                        )
+                    }
+                    completeStreamingItemsForThread(
+                        threadId = threadId,
+                        turnId = activeTurnIdForThread,
+                    )
+                    clearThreadRunningState(threadId)
+                    touchThread(threadId = threadId, isRunning = false)
                 }
             }
         }
@@ -7297,6 +7282,12 @@ class BridgeThreadSyncService(
 
     private fun threadHasKnownRunningState(threadId: String): Boolean {
         return activeTurnIdByThread.containsKey(threadId) || runningThreadFallbackIds.contains(threadId)
+    }
+
+    private fun shouldPreserveRunningStateForThreadStatus(threadId: String): Boolean {
+        return activeTurnIdByThread[threadId] != null ||
+            runningThreadFallbackIds.contains(threadId) ||
+            hasStreamingMessage(threadId)
     }
 
     private fun decodeThreadActivityState(statusObject: JsonObject?): ThreadActivityState? {
