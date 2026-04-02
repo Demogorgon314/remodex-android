@@ -183,11 +183,11 @@ enum class RemodexSlashCommand(
             CODE_REVIEW,
             FORK,
             STATUS,
-            PS,
-            STOP,
             COMPACT,
             PLAN,
             SUBAGENTS,
+            PS,
+            STOP,
         )
 
         fun filtered(query: String): List<RemodexSlashCommand> {

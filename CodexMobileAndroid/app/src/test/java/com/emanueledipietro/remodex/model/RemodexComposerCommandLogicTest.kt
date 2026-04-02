@@ -7,6 +7,23 @@ import org.junit.Test
 
 class RemodexComposerCommandLogicTest {
     @Test
+    fun filteredSlashCommands_keepPsAndStopAtTheBottomByDefault() {
+        assertEquals(
+            listOf(
+                RemodexSlashCommand.CODE_REVIEW,
+                RemodexSlashCommand.FORK,
+                RemodexSlashCommand.STATUS,
+                RemodexSlashCommand.COMPACT,
+                RemodexSlashCommand.PLAN,
+                RemodexSlashCommand.SUBAGENTS,
+                RemodexSlashCommand.PS,
+                RemodexSlashCommand.STOP,
+            ),
+            RemodexSlashCommand.filtered(""),
+        )
+    }
+
+    @Test
     fun trailingSlashCommandToken_acceptsBareSlash() {
         val token = RemodexComposerCommandLogic.trailingSlashCommandToken("/")
 

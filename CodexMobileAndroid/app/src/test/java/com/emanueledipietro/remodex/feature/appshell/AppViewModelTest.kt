@@ -1179,11 +1179,11 @@ class AppViewModelTest {
                 RemodexSlashCommand.CODE_REVIEW,
                 RemodexSlashCommand.FORK,
                 RemodexSlashCommand.STATUS,
-                RemodexSlashCommand.PS,
-                RemodexSlashCommand.STOP,
                 RemodexSlashCommand.COMPACT,
                 RemodexSlashCommand.PLAN,
                 RemodexSlashCommand.SUBAGENTS,
+                RemodexSlashCommand.PS,
+                RemodexSlashCommand.STOP,
             ),
             viewModel.uiState.value.composer.autocomplete.slashCommands,
         )
