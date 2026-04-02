@@ -211,6 +211,11 @@ class BridgeThreadSyncService(
         val timestampMs: Long,
     )
 
+    private data class AssistantCompletionPresentation(
+        val text: String,
+        val isStreaming: Boolean,
+    )
+
     private data class DecodedFileChangeInlineTotals(
         val additions: Int,
         val deletions: Int,
@@ -3225,6 +3230,11 @@ class BridgeThreadSyncService(
             text = text,
             preferredMessageId = preferredMessageId,
         )
+        val completionPresentation = resolveAssistantCompletionPresentation(
+            threadId = threadId,
+            existingItem = existingItem,
+            completionText = text,
+        )
         val effectiveTurnId = resolvedTurnId ?: existingItem?.turnId
         val effectiveItemId = itemId ?: existingItem?.itemId
         val messageId = existingItem?.id ?: preferredMessageId
@@ -3233,11 +3243,11 @@ class BridgeThreadSyncService(
             item = timelineItem(
                 id = messageId,
                 speaker = ConversationSpeaker.ASSISTANT,
-                text = text,
+                text = completionPresentation.text,
                 kind = ConversationItemKind.CHAT,
                 turnId = effectiveTurnId,
                 itemId = effectiveItemId,
-                isStreaming = false,
+                isStreaming = completionPresentation.isStreaming,
                 orderIndex = resolveAssistantOrderIndex(
                     threadId = threadId,
                     existingItem = existingItem,
@@ -3329,6 +3339,11 @@ class BridgeThreadSyncService(
                 text = body,
                 preferredMessageId = resolvedMessageId,
             )
+            val completionPresentation = resolveAssistantCompletionPresentation(
+                threadId = threadId,
+                existingItem = completionItem ?: existingItem,
+                completionText = body,
+            )
             val effectiveTurnId = resolvedTurnId ?: completionItem?.turnId
             val effectiveItemId = itemId ?: completionItem?.itemId
             val completionMessageId = completionItem?.id ?: resolvedMessageId
@@ -3337,11 +3352,11 @@ class BridgeThreadSyncService(
                 item = timelineItem(
                     id = completionMessageId,
                     speaker = ConversationSpeaker.ASSISTANT,
-                    text = body,
+                    text = completionPresentation.text,
                     kind = ConversationItemKind.CHAT,
                     turnId = effectiveTurnId,
                     itemId = effectiveItemId,
-                    isStreaming = false,
+                    isStreaming = completionPresentation.isStreaming,
                     orderIndex = resolveAssistantOrderIndex(
                         threadId = threadId,
                         existingItem = completionItem ?: existingItem,
@@ -4754,6 +4769,40 @@ class BridgeThreadSyncService(
             ),
             isRunning = true,
         )
+    }
+
+    private fun resolveAssistantCompletionPresentation(
+        threadId: String,
+        existingItem: com.emanueledipietro.remodex.model.RemodexConversationItem?,
+        completionText: String,
+    ): AssistantCompletionPresentation {
+        val existingText = existingItem?.text?.takeIf(String::isNotBlank)
+            ?: return AssistantCompletionPresentation(
+                text = completionText,
+                isStreaming = false,
+            )
+        if (!existingItem.isStreaming || !shouldPreserveRunningStateForThreadStatus(threadId)) {
+            return AssistantCompletionPresentation(
+                text = completionText,
+                isStreaming = false,
+            )
+        }
+        val mergedText = ThreadHistoryReconciler.mergeStreamingSnapshotText(
+            existingText = existingText,
+            incomingText = completionText,
+        )
+        val preservesLocalStreamingText = mergedText == existingText && completionText != existingText
+        return if (preservesLocalStreamingText) {
+            AssistantCompletionPresentation(
+                text = existingText,
+                isStreaming = true,
+            )
+        } else {
+            AssistantCompletionPresentation(
+                text = mergedText,
+                isStreaming = false,
+            )
+        }
     }
 
     private fun shouldSuppressAssistantCompletion(

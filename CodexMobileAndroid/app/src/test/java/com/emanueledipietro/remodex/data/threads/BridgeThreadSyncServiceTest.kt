@@ -905,6 +905,150 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `assistant completion does not shrink local streaming text while turn is still running`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-completion-no-shrink",
+                    title = "Completion no shrink thread",
+                    preview = "Recovered partial prefix plus newer local tail",
+                    projectPath = "/tmp/project-completion-no-shrink",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-completion-no-shrink",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Recovered partial prefix plus newer local tail",
+                                turnId = "turn-completion-no-shrink",
+                                itemId = "assistant-item-completion-no-shrink",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-completion-no-shrink",
+            "turn-completion-no-shrink",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleAssistantLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-completion-no-shrink"))
+                put("turnId", JsonPrimitive("turn-completion-no-shrink"))
+            },
+            buildJsonObject {
+                put("id", JsonPrimitive("assistant-item-completion-no-shrink"))
+                put("type", JsonPrimitive("agent_message"))
+                put("text", JsonPrimitive("Recovered partial prefix"))
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-completion-no-shrink" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .first { item -> item.id == "assistant-completion-no-shrink" }
+
+        assertTrue(thread.isRunning)
+        assertEquals("turn-completion-no-shrink", thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+        assertEquals("Recovered partial prefix plus newer local tail", assistant.text)
+        assertTrue(assistant.isStreaming)
+    }
+
+    @Test
+    fun `assistant completion fallback does not shrink local streaming text while turn is still running`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-completion-fallback-no-shrink",
+                    title = "Completion fallback no shrink thread",
+                    preview = "Recovered partial prefix plus newer local tail",
+                    projectPath = "/tmp/project-completion-fallback-no-shrink",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-completion-fallback-no-shrink",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Recovered partial prefix plus newer local tail",
+                                turnId = "turn-completion-fallback-no-shrink",
+                                itemId = "assistant-item-completion-fallback-no-shrink",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-completion-fallback-no-shrink",
+            "turn-completion-fallback-no-shrink",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-completion-fallback-no-shrink"))
+                put("turnId", JsonPrimitive("turn-completion-fallback-no-shrink"))
+                put("message", JsonPrimitive("Recovered partial prefix"))
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-completion-fallback-no-shrink" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .first { item -> item.id == "assistant-completion-fallback-no-shrink" }
+
+        assertTrue(thread.isRunning)
+        assertEquals("turn-completion-fallback-no-shrink", thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+        assertEquals("Recovered partial prefix plus newer local tail", assistant.text)
+        assertTrue(assistant.isStreaming)
+    }
+
+    @Test
     fun `approval policy fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithApprovalPolicyFallbackValue(

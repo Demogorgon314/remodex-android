@@ -79,11 +79,14 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -113,6 +116,7 @@ import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.remodexApprovalRequestMessage
 import com.emanueledipietro.remodex.platform.media.ComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.canLaunchComposerCameraCapture
@@ -1419,10 +1423,10 @@ private fun ShellTopBar(
         ShellRoute.ABOUT_REMODEX -> shellRoute.title
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
     }
-    val subtitle = when (shellRoute) {
+    val subtitleProjectPath = when (shellRoute) {
         ShellRoute.CONTENT -> {
             if (hasSelectedThread) {
-                condensedProjectPath(selectedThreadProjectPath)
+                selectedThreadProjectPath
             } else {
                 null
             }
@@ -1487,33 +1491,64 @@ private fun ShellTopBar(
             }
         }
 
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 10.dp),
-            horizontalAlignment = titleAlignment,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+                .widthIn(min = 0.dp),
         ) {
-            Text(
-                text = title,
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = chrome.titleText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = titleTextAlign,
-            )
-            subtitle?.let { path ->
+            val subtitleStyle = MaterialTheme.typography.labelSmall
+            val textMeasurer = rememberTextMeasurer()
+            val density = LocalDensity.current
+            val subtitle = remember(
+                subtitleProjectPath,
+                maxWidth,
+                subtitleStyle,
+                density,
+            ) {
+                val horizontalPadding = 20.dp
+                val availableWidthPx = with(density) {
+                    (maxWidth - horizontalPadding).coerceAtLeast(0.dp).toPx()
+                }
+                fitProjectPathForWidth(
+                    projectPath = subtitleProjectPath,
+                    maxWidthPx = availableWidthPx,
+                ) { candidate ->
+                    textMeasurer.measure(
+                        text = AnnotatedString(candidate),
+                        style = subtitleStyle,
+                        maxLines = 1,
+                    ).size.width.toFloat()
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
+                horizontalAlignment = titleAlignment,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(
-                    text = path,
+                    text = title,
                     modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = chrome.secondaryText,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = titleTextAlign,
                 )
+                subtitle?.let { path ->
+                    Text(
+                        text = path,
+                        modifier = Modifier.fillMaxWidth(),
+                        style = subtitleStyle,
+                        color = chrome.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = titleTextAlign,
+                    )
+                }
             }
         }
 
@@ -1604,19 +1639,80 @@ private fun ShellTopBarDiffTotalsButton(
     }
 }
 
-private fun condensedProjectPath(projectPath: String?): String? {
-    val normalized = projectPath
-        ?.trim()
-        ?.replace('\\', '/')
-        ?.takeIf(String::isNotBlank)
-        ?: return null
-    val segments = normalized.split('/').filter(String::isNotBlank)
-    if (segments.size <= 4) {
-        return normalized
+internal fun fitProjectPathForWidth(
+    projectPath: String?,
+    maxWidthPx: Float,
+    measureTextWidth: (String) -> Float,
+): String? {
+    val candidates = projectPathDisplayCandidates(projectPath)
+    if (candidates.isEmpty()) {
+        return null
     }
-    val head = segments.take(2).joinToString("/")
-    val tail = segments.takeLast(2).joinToString("/")
-    return "/$head/.../$tail"
+    if (maxWidthPx <= 0f) {
+        return candidates.last()
+    }
+    return candidates.firstOrNull { candidate ->
+        measureTextWidth(candidate) <= maxWidthPx
+    } ?: candidates.last()
+}
+
+internal fun projectPathDisplayCandidates(projectPath: String?): List<String> {
+    val normalized = normalizeRemodexFilesystemProjectPath(projectPath)
+        ?.replace('\\', '/')
+        ?: return emptyList()
+    val segments = normalized
+        .trim('/')
+        .split('/')
+        .filter(String::isNotBlank)
+    if (segments.size <= 4) {
+        return listOf(normalized)
+    }
+
+    val prefix = projectPathPrefix(normalized)
+    val candidateHeads = listOf(2, 1, 0)
+    val candidateTails = listOf(2, 1)
+    val candidates = linkedSetOf(normalized)
+
+    candidateTails.forEach { tailCount ->
+        candidateHeads.forEach { headCount ->
+            if (headCount + tailCount >= segments.size) {
+                return@forEach
+            }
+            candidates += buildCondensedProjectPathCandidate(
+                prefix = prefix,
+                head = segments.take(headCount),
+                tail = segments.takeLast(tailCount),
+            )
+        }
+    }
+
+    return candidates.toList()
+}
+
+private fun projectPathPrefix(path: String): String {
+    return when {
+        path.startsWith("~/") -> "~/"
+        path.startsWith("//") -> "//"
+        path.startsWith("/") -> "/"
+        path.length >= 3 &&
+            path[0].isLetter() &&
+            path[1] == ':' &&
+            path[2] == '/' -> path.take(3)
+        else -> ""
+    }
+}
+
+private fun buildCondensedProjectPathCandidate(
+    prefix: String,
+    head: List<String>,
+    tail: List<String>,
+): String {
+    val body = buildList {
+        addAll(head)
+        add("...")
+        addAll(tail)
+    }.joinToString("/")
+    return prefix + body
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
