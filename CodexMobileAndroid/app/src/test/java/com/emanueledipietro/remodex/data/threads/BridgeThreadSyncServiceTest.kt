@@ -36,6 +36,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -4768,6 +4769,7 @@ class BridgeThreadSyncServiceTest {
                                                                 put("type", JsonPrimitive("command_execution"))
                                                                 put("command", JsonPrimitive("git status --short"))
                                                                 put("cwd", JsonPrimitive("/tmp/project-command"))
+                                                                put("source", JsonPrimitive("userShell"))
                                                                 put("exitCode", JsonPrimitive(0))
                                                                 put("durationMs", JsonPrimitive(1450))
                                                                 put("output", JsonPrimitive("M app/src/Main.kt"))
@@ -4815,6 +4817,7 @@ class BridgeThreadSyncServiceTest {
             assertEquals(1450, details?.durationMs)
             assertEquals("M app/src/Main.kt", details?.outputTail)
             assertEquals(RemodexCommandExecutionLiveStatus.COMPLETED, details?.liveStatus)
+            assertEquals(RemodexCommandExecutionSource.USER_SHELL, details?.source)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
@@ -4878,6 +4881,7 @@ class BridgeThreadSyncServiceTest {
                                                                 put("status", JsonPrimitive("in_progress"))
                                                                 put("command", JsonPrimitive("bash -lc \"sleep 30\""))
                                                                 put("cwd", JsonPrimitive("/tmp/project-command-running"))
+                                                                put("source", JsonPrimitive("unifiedExecStartup"))
                                                                 put("output", JsonPrimitive("tick 1\ntick 2"))
                                                             },
                                                         )
@@ -4920,6 +4924,7 @@ class BridgeThreadSyncServiceTest {
             assertEquals("bash -lc \"sleep 30\"", details?.fullCommand)
             assertEquals("tick 1\ntick 2", details?.outputTail)
             assertEquals(RemodexCommandExecutionLiveStatus.RUNNING, details?.liveStatus)
+            assertEquals(RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP, details?.source)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
@@ -5188,6 +5193,7 @@ class BridgeThreadSyncServiceTest {
                     exitCode = 0,
                     outputTail = "done",
                     liveStatus = RemodexCommandExecutionLiveStatus.COMPLETED,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
                 ),
             ),
         )

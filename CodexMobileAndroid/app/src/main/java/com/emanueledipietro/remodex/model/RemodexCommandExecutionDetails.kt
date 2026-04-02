@@ -7,6 +7,13 @@ enum class RemodexCommandExecutionLiveStatus {
     STOPPED,
 }
 
+enum class RemodexCommandExecutionSource {
+    AGENT,
+    USER_SHELL,
+    UNIFIED_EXEC_STARTUP,
+    UNIFIED_EXEC_INTERACTION,
+}
+
 data class RemodexCommandExecutionDetails(
     val fullCommand: String,
     val cwd: String? = null,
@@ -14,6 +21,7 @@ data class RemodexCommandExecutionDetails(
     val durationMs: Int? = null,
     val outputTail: String = "",
     val liveStatus: RemodexCommandExecutionLiveStatus? = null,
+    val source: RemodexCommandExecutionSource? = null,
 ) {
     fun appendedOutput(chunk: String): RemodexCommandExecutionDetails {
         if (chunk.isEmpty()) {

@@ -32,6 +32,7 @@ import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -6093,6 +6094,10 @@ class BridgeThreadSyncService(
             ?: payloadObject.firstObject("result")?.firstInt("exitCode", "exit_code")
         val durationMs = payloadObject.firstInt("durationMs", "duration_ms")
             ?: payloadObject.firstObject("result")?.firstInt("durationMs", "duration_ms")
+        val source = decodeCommandExecutionSource(
+            payloadObject.firstString("source")
+                ?: paramsObject?.firstString("source"),
+        )
         return CommandExecutionRunState(
             itemId = itemId,
             phase = phase,
@@ -6101,6 +6106,7 @@ class BridgeThreadSyncService(
             cwd = cwd,
             exitCode = exitCode,
             durationMs = durationMs,
+            source = source,
         )
     }
 
@@ -6112,6 +6118,24 @@ class BridgeThreadSyncService(
             CommandExecutionRunPhase.COMPLETED -> RemodexCommandExecutionLiveStatus.COMPLETED
             CommandExecutionRunPhase.FAILED -> RemodexCommandExecutionLiveStatus.FAILED
             CommandExecutionRunPhase.STOPPED -> RemodexCommandExecutionLiveStatus.STOPPED
+        }
+    }
+
+    private fun decodeCommandExecutionSource(
+        rawSource: String?,
+    ): RemodexCommandExecutionSource? {
+        val normalized = rawSource
+            ?.trim()
+            ?.replace("_", "")
+            ?.replace("-", "")
+            ?.lowercase(Locale.ROOT)
+            ?: return null
+        return when (normalized) {
+            "agent" -> RemodexCommandExecutionSource.AGENT
+            "usershell" -> RemodexCommandExecutionSource.USER_SHELL
+            "unifiedexecstartup" -> RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP
+            "unifiedexecinteraction" -> RemodexCommandExecutionSource.UNIFIED_EXEC_INTERACTION
+            else -> null
         }
     }
 
@@ -6256,6 +6280,7 @@ class BridgeThreadSyncService(
                     durationMs = state.durationMs,
                     outputTail = "",
                     liveStatus = liveStatusForCommandExecutionPhase(state.phase),
+                    source = state.source,
                 )
             } else {
                 existing.copy(
@@ -6268,6 +6293,7 @@ class BridgeThreadSyncService(
                     exitCode = state.exitCode ?: existing.exitCode,
                     durationMs = state.durationMs ?: existing.durationMs,
                     liveStatus = liveStatusForCommandExecutionPhase(state.phase),
+                    source = existing.source ?: state.source,
                 )
             }
         }
@@ -6509,6 +6535,7 @@ class BridgeThreadSyncService(
         val cwd: String?,
         val exitCode: Int?,
         val durationMs: Int?,
+        val source: RemodexCommandExecutionSource?,
     )
 
     private enum class CommandExecutionRunPhase(

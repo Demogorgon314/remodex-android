@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -92,26 +93,41 @@ class CommandExecutionStatusPresentationTest {
             text = "running sleep 30",
             orderIndex = 1L,
         )
+        val foregroundItem = RemodexConversationItem(
+            id = "message-foreground",
+            itemId = "command-foreground",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+            text = "running pwd",
+            orderIndex = 2L,
+        )
         val completedItem = RemodexConversationItem(
             id = "message-completed",
             itemId = "command-completed",
             speaker = ConversationSpeaker.SYSTEM,
             kind = ConversationItemKind.COMMAND_EXECUTION,
             text = "completed pwd",
-            orderIndex = 2L,
+            orderIndex = 3L,
         )
 
         val sessions = resolveBackgroundTerminalPresentations(
-            messages = listOf(runningItem, completedItem),
+            messages = listOf(runningItem, foregroundItem, completedItem),
             detailsByItemId = mapOf(
                 "command-running" to RemodexCommandExecutionDetails(
                     fullCommand = "bash -lc \"sleep 30\"",
                     outputTail = "tick 1\ntick 2\ntick 3\ntick 4",
                     liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                ),
+                "command-foreground" to RemodexCommandExecutionDetails(
+                    fullCommand = "pwd",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.USER_SHELL,
                 ),
                 "command-completed" to RemodexCommandExecutionDetails(
                     fullCommand = "pwd",
                     liveStatus = RemodexCommandExecutionLiveStatus.COMPLETED,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
                 ),
             ),
         )

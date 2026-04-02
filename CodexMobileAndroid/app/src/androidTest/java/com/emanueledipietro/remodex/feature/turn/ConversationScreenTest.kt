@@ -31,6 +31,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
@@ -1226,6 +1227,7 @@ class ConversationScreenTest {
                                 fullCommand = "bash -lc \"sleep 30\"",
                                 outputTail = "tick 1\ntick 2\ntick 3",
                                 liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                                source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
                             ),
                         ),
                     ),
@@ -1281,6 +1283,77 @@ class ConversationScreenTest {
         composeRule.onNodeWithText("Background terminals").assertIsDisplayed()
         composeRule.onNodeWithText("sleep 30", substring = true).assertIsDisplayed()
         composeRule.onNodeWithText("Recent output").assertIsDisplayed()
+    }
+
+    @Test
+    fun foregroundRunningCommandDoesNotShowBackgroundTerminalTray() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "command-foreground",
+                                itemId = "command-foreground",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running pwd",
+                                orderIndex = 1,
+                            ),
+                        ),
+                        commandExecutionDetailsByItemId = mapOf(
+                            "command-foreground" to RemodexCommandExecutionDetails(
+                                fullCommand = "pwd",
+                                liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                                source = RemodexCommandExecutionSource.USER_SHELL,
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithTag(BackgroundTerminalTrayTag).assertCountEquals(0)
     }
 
     @Test

@@ -213,6 +213,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -9095,7 +9096,10 @@ internal fun resolveBackgroundTerminalPresentations(
         }
         val itemId = item.itemId?.trim()?.takeIf(String::isNotEmpty) ?: return@forEach
         val details = detailsByItemId[itemId] ?: return@forEach
-        if (details.liveStatus != RemodexCommandExecutionLiveStatus.RUNNING) {
+        if (
+            details.liveStatus != RemodexCommandExecutionLiveStatus.RUNNING
+            || details.source != RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP
+        ) {
             return@forEach
         }
         val fullCommand = details.fullCommand.trim().ifEmpty { "command" }
