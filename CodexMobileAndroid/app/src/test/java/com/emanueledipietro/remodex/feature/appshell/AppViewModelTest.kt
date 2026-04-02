@@ -38,6 +38,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -1848,6 +1849,105 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `thread completion auto sends the next queued draft`() = runTest {
+        val queuedDraft = RemodexQueuedDraft(
+            id = "draft-1",
+            text = "Queued follow-up",
+            createdAtEpochMs = 1L,
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Queued thread",
+                        isRunning = true,
+                        queuedDraftItems = listOf(queuedDraft),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+                selectedThreadSnapshot = threadSummary(
+                    id = "thread-1",
+                    title = "Queued thread",
+                    isRunning = true,
+                    queuedDraftItems = listOf(queuedDraft),
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(
+                    id = "thread-1",
+                    title = "Queued thread",
+                    isRunning = false,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    queuedDraftItems = listOf(queuedDraft),
+                ),
+            ),
+            selectedThreadSnapshot = threadSummary(
+                id = "thread-1",
+                title = "Queued thread",
+                isRunning = false,
+                latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                queuedDraftItems = listOf(queuedDraft),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1" to "draft-1"), repository.sentQueuedDrafts)
+    }
+
+    @Test
+    fun `restoring latest queued draft overwrites composer and keeps plan mode`() = runTest {
+        val earlierDraft = RemodexQueuedDraft(
+            id = "draft-1",
+            text = "Earlier queued",
+            createdAtEpochMs = 1L,
+        )
+        val latestDraft = RemodexQueuedDraft(
+            id = "draft-2",
+            text = "Latest queued",
+            createdAtEpochMs = 2L,
+            attachments = listOf(
+                RemodexComposerAttachment(
+                    id = "attachment-1",
+                    uriString = "content://queued/image",
+                    displayName = "queued.jpg",
+                ),
+            ),
+            planningMode = RemodexPlanningMode.PLAN,
+        )
+        val thread = threadSummary(
+            id = "thread-1",
+            title = "Queued thread",
+            queuedDraftItems = listOf(earlierDraft, latestDraft),
+            runtimeConfig = RemodexRuntimeConfig(planningMode = RemodexPlanningMode.AUTO),
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(thread),
+                selectedThreadId = thread.id,
+                selectedThreadSnapshot = thread,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("stale draft")
+        advanceUntilIdle()
+        viewModel.restoreLatestQueuedDraftToComposer()
+        advanceUntilIdle()
+
+        assertEquals("Latest queued", viewModel.uiState.value.composer.draftText)
+        assertEquals(latestDraft.attachments, viewModel.uiState.value.composer.attachments)
+        assertEquals(listOf("thread-1" to RemodexPlanningMode.PLAN), repository.setPlanningModeRequests)
+        assertEquals(listOf("draft-1"), repository.snapshot.value.selectedThread?.queuedDraftItems?.map(RemodexQueuedDraft::id))
+    }
+
+    @Test
     fun `load repository diff exposes loading state and returns patch to caller`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -2573,6 +2673,7 @@ class AppViewModelTest {
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
+        val sentQueuedDrafts = mutableListOf<Pair<String, String>>()
         val compactThreadRequests = mutableListOf<String>()
         val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
@@ -2796,7 +2897,35 @@ class AppViewModelTest {
 
         override suspend fun stopTurn(threadId: String) = Unit
 
-        override suspend fun sendQueuedDraft(threadId: String, draftId: String) = Unit
+        override suspend fun sendQueuedDraft(threadId: String, draftId: String) {
+            sentQueuedDrafts += threadId to draftId
+        }
+
+        override suspend fun popLatestQueuedDraft(threadId: String): RemodexQueuedDraft? {
+            val selectedThread = snapshot.value.threads.firstOrNull { thread -> thread.id == threadId } ?: return null
+            val latestDraft = selectedThread.queuedDraftItems.lastOrNull() ?: return null
+            val updatedThread = selectedThread.copy(
+                queuedDrafts = (selectedThread.queuedDrafts - 1).coerceAtLeast(0),
+                queuedDraftItems = selectedThread.queuedDraftItems.dropLast(1),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = snapshot.value.threads.map { thread ->
+                    if (thread.id == threadId) {
+                        updatedThread
+                    } else {
+                        thread
+                    }
+                },
+                selectedThreadSnapshot = snapshot.value.selectedThreadSnapshot?.let { thread ->
+                    if (thread.id == threadId) {
+                        updatedThread
+                    } else {
+                        thread
+                    }
+                },
+            )
+            return latestDraft
+        }
 
         override suspend fun setPlanningMode(
             threadId: String,
@@ -3052,6 +3181,7 @@ class AppViewModelTest {
         isRunning: Boolean = false,
         isWaitingOnApproval: Boolean = false,
         latestTurnTerminalState: RemodexTurnTerminalState? = null,
+        queuedDraftItems: List<RemodexQueuedDraft> = emptyList(),
         runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
         messages: List<RemodexConversationItem> = emptyList(),
     ): com.emanueledipietro.remodex.model.RemodexThreadSummary {
@@ -3064,7 +3194,8 @@ class AppViewModelTest {
             isRunning = isRunning,
             isWaitingOnApproval = isWaitingOnApproval,
             latestTurnTerminalState = latestTurnTerminalState,
-            queuedDrafts = 0,
+            queuedDrafts = queuedDraftItems.size,
+            queuedDraftItems = queuedDraftItems,
             runtimeLabel = "Auto, medium reasoning",
             runtimeConfig = runtimeConfig,
             messages = messages,

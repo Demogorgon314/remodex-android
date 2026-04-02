@@ -2553,6 +2553,125 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `hydrate thread preserves local streaming assistant text when thread read loses running turn midstream`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-hydrate-streaming-preserve",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-hydrate-streaming-preserve"))
+                                put("title", JsonPrimitive("Streaming preserve thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-hydrate-streaming-preserve"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-hydrate-streaming-preserve"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-streaming-preserve"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Recovered partial prefix"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-hydrate-streaming-preserve",
+                    title = "Streaming preserve thread",
+                    preview = "Recovered partial prefix plus newer local tail",
+                    projectPath = "/tmp/project-hydrate-streaming-preserve",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-item-streaming-preserve",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Recovered partial prefix plus newer local tail",
+                                turnId = "turn-hydrate-streaming-preserve",
+                                itemId = "assistant-item-streaming-preserve",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-hydrate-streaming-preserve",
+            "turn-hydrate-streaming-preserve",
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.hydrateThread("thread-hydrate-streaming-preserve")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-hydrate-streaming-preserve" }
+            val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+                .first { item -> item.id == "assistant-item-streaming-preserve" }
+            assertTrue(thread.isRunning)
+            assertEquals("turn-hydrate-streaming-preserve", thread.activeTurnId)
+            assertNull(thread.latestTurnTerminalState)
+            assertEquals("Recovered partial prefix plus newer local tail", assistant.text)
+            assertTrue(assistant.isStreaming)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `rename thread keeps optimistic title when rename rpc fails`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

@@ -497,7 +497,11 @@ class BridgeThreadSyncService(
         val threadObject = resultObject.firstObject("thread") ?: return null
         indexTurnIds(threadId = threadId, threadObject = threadObject)
         val turnReadState = resolveTurnReadState(threadObject)
-        applyTurnReadState(threadId = threadId, turnReadState = turnReadState)
+        applyTurnReadState(
+            threadId = threadId,
+            turnReadState = turnReadState,
+            preserveLocalStreamingState = true,
+        )
         val activityState = decodeThreadActivityState(
             threadObject.firstObject("status"),
         )
@@ -7264,6 +7268,7 @@ class BridgeThreadSyncService(
     private fun applyTurnReadState(
         threadId: String,
         turnReadState: TurnReadState,
+        preserveLocalStreamingState: Boolean = false,
     ) {
         when {
             turnReadState.interruptibleTurnId != null -> {
@@ -7273,6 +7278,10 @@ class BridgeThreadSyncService(
             turnReadState.hasInterruptibleTurnWithoutId -> {
                 markThreadAsRunningFallback(threadId)
             }
+
+            // thread/read can momentarily miss the active turn while local streaming deltas
+            // are still arriving; keep the local running state until completion is confirmed.
+            preserveLocalStreamingState && hasStreamingMessage(threadId) -> Unit
 
             else -> {
                 clearThreadRunningState(threadId)

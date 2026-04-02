@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -1856,6 +1857,40 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         assertEquals(RemodexPlanningMode.AUTO, syncService.lastSendPlanningMode)
+    }
+
+    @Test
+    fun `pop latest queued draft removes only the newest queued follow up`() = runTest {
+        val repository = createRepository(
+            scope = backgroundScope,
+        )
+        repository.selectThread("thread-android-client")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-android-client",
+            prompt = "First queued",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+        repository.sendPrompt(
+            threadId = "thread-android-client",
+            prompt = "Latest queued",
+            attachments = emptyList(),
+            planningModeOverride = RemodexPlanningMode.PLAN,
+        )
+        advanceUntilIdle()
+
+        val restoredDraft = repository.popLatestQueuedDraft("thread-android-client")
+        advanceUntilIdle()
+
+        assertEquals("Latest queued", restoredDraft?.text)
+        assertEquals(RemodexPlanningMode.PLAN, restoredDraft?.planningMode)
+        assertEquals(
+            listOf("First queued"),
+            repository.session.value.selectedThread?.queuedDraftItems?.map(RemodexQueuedDraft::text),
+        )
+        assertEquals(1, repository.session.value.selectedThread?.queuedDrafts)
     }
 
     @Test

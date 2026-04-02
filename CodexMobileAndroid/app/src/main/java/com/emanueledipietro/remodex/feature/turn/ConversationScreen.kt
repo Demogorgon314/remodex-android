@@ -873,7 +873,7 @@ fun ConversationScreen(
     onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit = { _, _ -> },
     onDismissPlanComposerSession: () -> Unit = {},
     onStopTurn: () -> Unit,
-    onSendQueuedDraft: (String) -> Unit,
+    onRestoreLatestQueuedDraft: () -> Unit = {},
     onSelectModel: (String?) -> Unit,
     onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
     onSelectReasoningEffort: (String) -> Unit,
@@ -1420,8 +1420,7 @@ fun ConversationScreen(
                             if (uiState.composer.queuedDrafts.isNotEmpty()) {
                                 QueuedDraftsCard(
                                     queuedDrafts = uiState.composer.queuedDrafts,
-                                    canSendQueuedDrafts = !showsThreadRunningUi,
-                                    onSendQueuedDraft = onSendQueuedDraft,
+                                    onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
                                 )
                             }
 
@@ -2750,10 +2749,10 @@ private fun PlanDetailStepRow(step: com.emanueledipietro.remodex.model.RemodexPl
 @Composable
 private fun QueuedDraftsCard(
     queuedDrafts: List<RemodexQueuedDraft>,
-    canSendQueuedDrafts: Boolean,
-    onSendQueuedDraft: (String) -> Unit,
+    onRestoreLatestQueuedDraft: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val latestDraftId = queuedDrafts.lastOrNull()?.id
     Surface(
         color = chrome.panelSurface,
         shape = RemodexConversationShapes.card,
@@ -2768,6 +2767,7 @@ private fun QueuedDraftsCard(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             queuedDrafts.forEach { draft ->
+                val canEditDraft = draft.id == latestDraftId
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2805,13 +2805,10 @@ private fun QueuedDraftsCard(
                             )
                         }
                     }
-                    if (canSendQueuedDrafts) {
-                        SecondaryBarAction(label = "Send", onClick = { onSendQueuedDraft(draft.id) })
-                    } else {
-                        Text(
-                            text = "Queued",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = chrome.secondaryText,
+                    if (canEditDraft) {
+                        SecondaryBarAction(
+                            label = "Edit",
+                            onClick = onRestoreLatestQueuedDraft,
                         )
                     }
                 }

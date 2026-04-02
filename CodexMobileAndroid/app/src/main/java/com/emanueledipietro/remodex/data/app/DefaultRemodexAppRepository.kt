@@ -1379,29 +1379,36 @@ class DefaultRemodexAppRepository(
         }
         val draft = thread.queuedDraftItems.firstOrNull { it.id == draftId } ?: return
         val remainingDrafts = thread.queuedDraftItems.filterNot { it.id == draftId }
-        appPreferencesRepository.setQueuedDrafts(threadId, remainingDrafts)
-        applyPreferencesLocally(
-            preferencesState.value.copy(
-                queuedDraftsByThread = preferencesState.value.queuedDraftsByThread
-                    .toMutableMap()
-                    .apply {
-                        if (remainingDrafts.isEmpty()) {
-                            remove(threadId)
-                        } else {
-                            this[threadId] = remainingDrafts
-                        }
-                    },
-            ),
-        )
-        threadCommandService.sendPrompt(
-            threadId = threadId,
-            prompt = draft.text,
-            runtimeConfig = thread.runtimeConfig.copy(
-                planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
-            ),
-            attachments = draft.attachments,
-        )
+        persistQueuedDrafts(threadId = threadId, drafts = remainingDrafts)
+        try {
+            sendPromptWithLocalOptimistic(
+                threadId = threadId,
+                prompt = draft.text,
+                runtimeConfig = thread.runtimeConfig.copy(
+                    planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
+                ),
+                attachments = draft.attachments,
+            )
+        } catch (error: Throwable) {
+            persistQueuedDrafts(
+                threadId = threadId,
+                drafts = thread.queuedDraftItems,
+            )
+            throw error
+        }
         refreshBaseThreadsFromSync()
+    }
+
+    override suspend fun popLatestQueuedDraft(
+        threadId: String,
+    ): RemodexQueuedDraft? {
+        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val latestDraft = thread.queuedDraftItems.lastOrNull() ?: return null
+        persistQueuedDrafts(
+            threadId = threadId,
+            drafts = thread.queuedDraftItems.dropLast(1),
+        )
+        return latestDraft
     }
 
     override suspend fun setPlanningMode(
@@ -2310,6 +2317,26 @@ class DefaultRemodexAppRepository(
         planningModeOverride: RemodexPlanningMode?,
     ): RemodexRuntimeConfig {
         return planningModeOverride?.let { runtimeConfig.copy(planningMode = it) } ?: runtimeConfig
+    }
+
+    private suspend fun persistQueuedDrafts(
+        threadId: String,
+        drafts: List<RemodexQueuedDraft>,
+    ) {
+        appPreferencesRepository.setQueuedDrafts(threadId, drafts)
+        applyPreferencesLocally(
+            preferencesState.value.copy(
+                queuedDraftsByThread = preferencesState.value.queuedDraftsByThread
+                    .toMutableMap()
+                    .apply {
+                        if (drafts.isEmpty()) {
+                            remove(threadId)
+                        } else {
+                            this[threadId] = drafts
+                        }
+                    },
+            ),
+        )
     }
 
     private fun markLocalOptimisticUserMessageFailed(

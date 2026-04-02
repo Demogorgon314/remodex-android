@@ -979,7 +979,7 @@ private fun MainPane(
                             onSubmitPlanFollowUp = viewModel::sendPlanFollowUp,
                             onDismissPlanComposerSession = viewModel::dismissPlanComposerSession,
                             onStopTurn = viewModel::stopTurn,
-                            onSendQueuedDraft = viewModel::sendQueuedDraft,
+                            onRestoreLatestQueuedDraft = viewModel::restoreLatestQueuedDraftToComposer,
                             onSelectModel = viewModel::selectModel,
                             onSelectPlanningMode = viewModel::selectPlanningMode,
                             onSelectReasoningEffort = viewModel::selectReasoningEffort,

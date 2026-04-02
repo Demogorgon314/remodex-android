@@ -8,6 +8,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
@@ -105,6 +106,10 @@ interface RemodexAppRepository {
         threadId: String,
         draftId: String,
     )
+
+    suspend fun popLatestQueuedDraft(
+        threadId: String,
+    ): RemodexQueuedDraft?
 
     suspend fun setPlanningMode(
         threadId: String,

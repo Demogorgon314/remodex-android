@@ -836,6 +836,7 @@ class AppViewModel(
                     }
                 }
                 lastHydrationConnected = isConnected
+                maybeAutoSendQueuedDraft(snapshot)
                 detectThreadCompletionBanner(snapshot)
                 detectContextCompactionCompletion(snapshot)
                 handleAutoReconnectSnapshot(snapshot)
@@ -1290,10 +1291,14 @@ class AppViewModel(
         }
     }
 
-    fun sendQueuedDraft(draftId: String) {
+    fun restoreLatestQueuedDraftToComposer() {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
-            repository.sendQueuedDraft(threadId, draftId)
+            val draft = repository.popLatestQueuedDraft(threadId) ?: return@launch
+            restoreQueuedDraftToComposer(
+                threadId = threadId,
+                draft = draft,
+            )
         }
     }
 
@@ -3056,6 +3061,32 @@ class AppViewModel(
         }
     }
 
+    private suspend fun maybeAutoSendQueuedDraft(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ) {
+        snapshot.threads.forEach { currentThread ->
+            val previousThread = previousThreadsById[currentThread.id] ?: return@forEach
+            val didCompleteTurn =
+                previousThread.isRunning &&
+                    !currentThread.isRunning &&
+                    currentThread.latestTurnTerminalState == RemodexTurnTerminalState.COMPLETED
+            if (!didCompleteTurn) {
+                return@forEach
+            }
+            val nextDraftId = currentThread.queuedDraftItems.firstOrNull()?.id ?: return@forEach
+            runCatching {
+                repository.sendQueuedDraft(currentThread.id, nextDraftId)
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (snapshot.selectedThread?.id == currentThread.id) {
+                    presentTransientBanner(error.message ?: "Could not send the next queued message.")
+                }
+            }
+        }
+    }
+
     private fun detectContextCompactionCompletion(
         snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     ) {
@@ -3382,6 +3413,47 @@ class AppViewModel(
         planComposerSessions.update { sessionsByThread ->
             sessionsByThread.toMutableMap().apply { remove(threadId) }
         }
+    }
+
+    private suspend fun restoreQueuedDraftToComposer(
+        threadId: String,
+        draft: RemodexQueuedDraft,
+    ) {
+        composerDrafts.update { draftsByThread ->
+            draftsByThread.toMutableMap().apply {
+                this[threadId] = draft.text
+            }
+        }
+        composerAttachments.update { attachmentsByThread ->
+            attachmentsByThread.toMutableMap().apply {
+                this[threadId] = draft.attachments
+            }
+        }
+        composerMentionedFiles.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply { remove(threadId) }
+        }
+        composerMentionedSkills.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply { remove(threadId) }
+        }
+        composerReviewSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply { remove(threadId) }
+        }
+        composerSubagentsSelections.update { selectionsByThread ->
+            selectionsByThread.toMutableMap().apply { this[threadId] = false }
+        }
+        attachmentMessages.update { messagesByThread ->
+            messagesByThread.toMutableMap().apply { remove(threadId) }
+        }
+        composerMessages.update { messagesByThread ->
+            messagesByThread.toMutableMap().apply { remove(threadId) }
+        }
+        composerVoiceRecoveryReasons.update { reasonsByThread ->
+            reasonsByThread.toMutableMap().apply { remove(threadId) }
+        }
+        draft.planningMode?.let { planningMode ->
+            repository.setPlanningMode(threadId, planningMode)
+        }
+        clearComposerAutocomplete()
     }
 
     private fun restoreComposer(
