@@ -476,6 +476,52 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `encrypted reconnect only hydrates selected idle thread without resuming live recovery`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-idle-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydrateCallsBeforeReconnect = syncService.hydrateCalls
+        val resumeCallsBeforeReconnect = syncService.resumeCalls
+        val refreshCallsBeforeReconnect = syncService.refreshCalls
+
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        advanceUntilIdle()
+
+        assertEquals(hydrateCallsBeforeReconnect + 1, syncService.hydrateCalls)
+        assertEquals(resumeCallsBeforeReconnect, syncService.resumeCalls)
+        assertEquals(refreshCallsBeforeReconnect, syncService.refreshCalls)
+    }
+
+    @Test
     fun `encrypted reconnect without a selected thread auto-selects a recent running thread and resumes it`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectAutoSelectRunningThreadSyncService()
