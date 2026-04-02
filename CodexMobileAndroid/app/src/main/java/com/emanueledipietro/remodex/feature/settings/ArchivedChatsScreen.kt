@@ -45,6 +45,7 @@ fun ArchivedChatsScreen(
                     text = "No archived chats",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     text = "Archived conversations will show up here once you move them out of the live sidebar.",
@@ -59,6 +60,7 @@ fun ArchivedChatsScreen(
                         text = thread.displayTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         text = thread.lastUpdatedLabel,
@@ -93,6 +95,7 @@ private fun ArchivedChatsCard(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(20.dp),
         border = BorderStroke(
             width = 1.dp,

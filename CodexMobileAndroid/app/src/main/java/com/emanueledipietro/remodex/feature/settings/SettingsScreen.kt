@@ -348,7 +348,7 @@ fun SettingsScreen(
                 title = "Installed on Mac",
                 value = uiState.bridgeVersionStatus.installedVersion ?: "Unknown",
                 valueColor = if (uiState.bridgeVersionStatus.shouldHighlightInstalledVersion) {
-                    Color(0xFFF29D38)
+                    MaterialTheme.colorScheme.tertiary
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
@@ -363,7 +363,7 @@ fun SettingsScreen(
                 text = uiState.bridgeVersionStatus.guidanceText,
                 style = MaterialTheme.typography.bodySmall,
                 color = if (uiState.bridgeVersionStatus.shouldHighlightInstalledVersion) {
-                    Color(0xFFF29D38)
+                    MaterialTheme.colorScheme.tertiary
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
@@ -606,6 +606,7 @@ private fun SettingsCard(
         )
         Surface(
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(
                 width = 1.dp,
@@ -774,9 +775,9 @@ private fun SettingsInlineMessageCard(
             MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SettingsInlineMessageTone.WARNING -> Triple(
-            Color(0xFFF29D38).copy(alpha = 0.12f),
-            Color(0xFFF29D38).copy(alpha = 0.24f),
-            MaterialTheme.colorScheme.onSurface,
+            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
+            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.22f),
+            MaterialTheme.colorScheme.onTertiaryContainer,
         )
         SettingsInlineMessageTone.ERROR -> Triple(
             MaterialTheme.colorScheme.error.copy(alpha = 0.08f),
@@ -866,6 +867,7 @@ private fun SettingsNavigationRow(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
             width = 1.dp,
@@ -890,6 +892,7 @@ private fun SettingsNavigationRow(
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             trailingText?.let {
                 Text(
@@ -932,6 +935,7 @@ private fun SettingsStatusRow(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Spacer(modifier = Modifier.weight(1f))
         SettingsStatusPill(label = statusLabel)
@@ -954,6 +958,7 @@ private fun SettingsKeyValueRow(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Spacer(modifier = Modifier.weight(1f))
         Text(
@@ -973,6 +978,7 @@ private fun SettingsStatusPill(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         shape = CircleShape,
         border = BorderStroke(
             width = 1.dp,
@@ -1010,6 +1016,7 @@ private fun SettingsSelectionRow(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Box {
             Text(
@@ -1029,7 +1036,12 @@ private fun SettingsSelectionRow(
             ) {
                 options.forEach { option ->
                     DropdownMenuItem(
-                        text = { Text(option.label) },
+                        text = {
+                            Text(
+                                text = option.label,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
                         onClick = {
                             expanded = false
                             onSelected(option.key)
@@ -1085,6 +1097,7 @@ private fun UsageSummaryCardContent(
         text = "Rate limits",
         style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
     )
 
     when {
@@ -1127,6 +1140,7 @@ private fun UsageSummaryCardContent(
         text = "Context window",
         style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
     )
 
     if (contextWindowUsage != null) {
@@ -1165,6 +1179,7 @@ private fun RateLimitRow(
                 text = "${row.window.remainingPercent}% left",
                 style = MaterialTheme.typography.bodyMedium,
                 fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             resetLabel(row.window)?.let { label ->
                 Text(
@@ -1200,6 +1215,7 @@ private fun MetricRow(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
             text = " $detail",
@@ -1240,6 +1256,7 @@ private fun SettingsTrustedMacCard(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(18.dp),
         border = BorderStroke(
             width = 1.dp,
@@ -1350,10 +1367,12 @@ private fun SettingsSavedBridgeProfiles(
             text = "Saved Bridges",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         profiles.forEach { profile ->
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
                 shape = RoundedCornerShape(16.dp),
                 border = BorderStroke(
                     width = 1.dp,

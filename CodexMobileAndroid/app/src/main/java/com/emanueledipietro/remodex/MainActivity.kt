@@ -17,6 +17,8 @@ import com.emanueledipietro.remodex.feature.appshell.RemodexApp
 import com.emanueledipietro.remodex.platform.notifications.parseThreadIdFromRoute
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
 
+private const val PendingThreadDeepLinkStateKey = "pending_thread_deep_link_id"
+
 class MainActivity : ComponentActivity() {
     private val appContainer
         get() = (application as RemodexApplication).container
@@ -32,7 +34,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-        pendingThreadDeepLinkId = intent.threadDeepLinkId()
+        pendingThreadDeepLinkId = resolvePendingThreadDeepLinkId(
+            savedPendingThreadDeepLinkId = savedInstanceState?.getString(PendingThreadDeepLinkStateKey),
+            didRestoreSavedState = savedInstanceState?.containsKey(PendingThreadDeepLinkStateKey) == true,
+            intentThreadDeepLinkId = intent.threadDeepLinkId(),
+        )
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -52,10 +58,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(PendingThreadDeepLinkStateKey, pendingThreadDeepLinkId)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         pendingThreadDeepLinkId = intent.threadDeepLinkId()
+    }
+}
+
+internal fun resolvePendingThreadDeepLinkId(
+    savedPendingThreadDeepLinkId: String?,
+    didRestoreSavedState: Boolean,
+    intentThreadDeepLinkId: String?,
+): String? {
+    return if (didRestoreSavedState) {
+        savedPendingThreadDeepLinkId
+    } else {
+        intentThreadDeepLinkId
     }
 }
 
