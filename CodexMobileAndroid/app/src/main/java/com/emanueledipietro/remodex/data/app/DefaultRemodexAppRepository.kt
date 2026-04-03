@@ -1653,10 +1653,12 @@ class DefaultRemodexAppRepository(
         durationSeconds: Double,
     ): String {
         return try {
-            voiceTranscriptionService.transcribeVoiceAudioFile(
+            val transcript = voiceTranscriptionService.transcribeVoiceAudioFile(
                 file = file,
                 durationSeconds = durationSeconds,
             )
+            runCatching { refreshGptAccountState() }
+            transcript
         } catch (error: Throwable) {
             if (error is CancellationException) {
                 throw error

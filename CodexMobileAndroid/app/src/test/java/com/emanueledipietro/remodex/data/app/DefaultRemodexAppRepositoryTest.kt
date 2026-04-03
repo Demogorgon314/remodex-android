@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.data.connection.InMemorySecureStore
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.ScriptedRpcRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.SuccessfulQrBootstrapRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnexpectedRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnusedTrustedSessionResolver
@@ -21,6 +22,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.threads.TimelineMutation
 import com.emanueledipietro.remodex.data.threads.ThreadCommandService
+import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
@@ -54,6 +56,9 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -61,6 +66,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DefaultRemodexAppRepositoryTest {
@@ -1913,6 +1919,61 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `successful voice transcription refreshes GPT account status`() = runTest {
+        var accountStatusReadCount = 0
+        val coordinator = createConnectedSecureCoordinator(
+            requestHandlers = mapOf(
+                "account/status/read" to {
+                    accountStatusReadCount += 1
+                    buildJsonObject {
+                        put("status", JsonPrimitive("authenticated"))
+                        put("authMethod", JsonPrimitive("chatgpt"))
+                        put("email", JsonPrimitive("voice@example.com"))
+                        put("tokenReady", JsonPrimitive(accountStatusReadCount >= 2))
+                    }
+                },
+            ),
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = FakeThreadSyncService(),
+            threadCommandService = FakeThreadSyncService(),
+            threadHydrationService = null,
+            voiceTranscriptionService = object : RemodexVoiceTranscriptionService {
+                override suspend fun transcribeVoiceAudioFile(
+                    file: File,
+                    durationSeconds: Double,
+                ): String = "ready transcript"
+            },
+            scope = backgroundScope,
+        )
+        val audioFile = File.createTempFile("remodex-repository-voice-", ".wav").apply {
+            writeBytes(ByteArray(16))
+            deleteOnExit()
+        }
+
+        try {
+            repository.refreshGptAccountState()
+            assertFalse(repository.gptAccountSnapshot.value.isVoiceTokenReady)
+
+            val transcript = repository.transcribeVoiceAudioFile(
+                file = audioFile,
+                durationSeconds = 1.0,
+            )
+
+            assertEquals("ready transcript", transcript)
+            assertTrue(repository.gptAccountSnapshot.value.isVoiceTokenReady)
+            assertEquals(2, accountStatusReadCount)
+        } finally {
+            audioFile.delete()
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `send prompt honors an explicit planning mode override`() = runTest {
         val syncService = PlanningModeCaptureSyncService()
         val repository = DefaultRemodexAppRepository(
@@ -2428,7 +2489,9 @@ class DefaultRemodexAppRepositoryTest {
         )
     }
 
-    private suspend fun TestScope.createConnectedSecureCoordinator(): SecureConnectionCoordinator {
+    private suspend fun TestScope.createConnectedSecureCoordinator(
+        requestHandlers: Map<String, (com.emanueledipietro.remodex.data.connection.RpcMessage) -> JsonElement> = emptyMap(),
+    ): SecureConnectionCoordinator {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         val payload = createTestPairingPayload(
@@ -2438,10 +2501,18 @@ class DefaultRemodexAppRepositoryTest {
         val coordinator = SecureConnectionCoordinator(
             store = store,
             trustedSessionResolver = UnusedTrustedSessionResolver,
-            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
-                macDeviceId = payload.macDeviceId,
-                macIdentity = macIdentity,
-            ),
+            relayWebSocketFactory = if (requestHandlers.isEmpty()) {
+                SuccessfulQrBootstrapRelayWebSocketFactory(
+                    macDeviceId = payload.macDeviceId,
+                    macIdentity = macIdentity,
+                )
+            } else {
+                ScriptedRpcRelayWebSocketFactory(
+                    macDeviceId = payload.macDeviceId,
+                    macIdentity = macIdentity,
+                    requestHandlers = requestHandlers,
+                )
+            },
             scope = this,
         )
         coordinator.rememberRelayPairing(payload)

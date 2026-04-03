@@ -10,8 +10,10 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.preferences.DataStoreAppPreferencesRepository
 import com.emanueledipietro.remodex.data.threads.BridgeThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ProfileAwareThreadCacheStore
+import com.emanueledipietro.remodex.data.voice.AndroidWebViewCookieStore
 import com.emanueledipietro.remodex.data.voice.DefaultRemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.data.voice.OkHttpVoiceTranscriptionClient
+import com.emanueledipietro.remodex.data.voice.VoiceTranscriptionCookieJar
 import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotificationManager
 import com.emanueledipietro.remodex.platform.notifications.AndroidManagedPushRegistrationCoordinator
 import com.emanueledipietro.remodex.platform.notifications.FirebaseManagedPushTokenProvider
@@ -34,6 +36,13 @@ class RemodexAppContainer(
         .pingInterval(20, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+    private val voiceTranscriptionClient = okHttpClient.newBuilder()
+        .cookieJar(
+            VoiceTranscriptionCookieJar(
+                cookieStore = AndroidWebViewCookieStore(),
+            ),
+        )
+        .build()
     val notificationManager = AndroidRemodexNotificationManager(context.applicationContext)
     private val secureStore = EncryptedPrefsSecureStore(context.applicationContext)
     private val secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -53,7 +62,7 @@ class RemodexAppContainer(
     val voiceRecorder = DefaultAndroidVoiceRecorder(context.applicationContext)
     private val voiceTranscriptionService = DefaultRemodexVoiceTranscriptionService(
         secureConnectionCoordinator = secureConnectionCoordinator,
-        transcriptionClient = OkHttpVoiceTranscriptionClient(okHttpClient),
+        transcriptionClient = OkHttpVoiceTranscriptionClient(voiceTranscriptionClient),
     )
     val managedPushRegistrationCoordinator = AndroidManagedPushRegistrationCoordinator(
         secureConnectionCoordinator = secureConnectionCoordinator,

@@ -6,6 +6,8 @@ import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -164,15 +166,21 @@ class DefaultRemodexVoiceTranscriptionService(
             transcriptionClient.transcribe(wavFile = file, token = token)
         } catch (error: RemodexVoiceTranscriptionException.AuthExpired) {
             onAuthStateInvalidated()
-            val freshToken = resolveVoiceAuthToken()
+            val freshToken = resolveVoiceAuthToken(forceRefresh = true)
             transcriptionClient.transcribe(wavFile = file, token = freshToken)
         }
     }
 
-    private suspend fun resolveVoiceAuthToken(): String {
+    private suspend fun resolveVoiceAuthToken(forceRefresh: Boolean = false): String {
         val response = secureConnectionCoordinator.sendRequest(
             method = "voice/resolveAuth",
-            params = null,
+            params = if (forceRefresh) {
+                buildJsonObject {
+                    put("forceRefresh", JsonPrimitive(true))
+                }
+            } else {
+                null
+            },
         )
         val payload = response.result?.jsonObjectOrNull
         val token = payload?.firstString("token")

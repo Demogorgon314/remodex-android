@@ -79,7 +79,6 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.remodexGptHintText
-import com.emanueledipietro.remodex.model.remodexGptSummaryText
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 import java.text.DateFormat
 import java.text.NumberFormat
@@ -640,26 +639,22 @@ private fun SettingsChatGptCard(
     val shouldShowRefreshAction = !snapshot.isAuthenticated ||
         !snapshot.isVoiceTokenReady ||
         !errorMessage.isNullOrBlank()
+    val accountMetaText = gptAccountMetaText(snapshot)
 
     SettingsCard(title = "ChatGPT") {
-        SettingsGptHeroRow(
-            snapshot = snapshot,
-            summary = remodexGptSummaryText(
-                snapshot = snapshot,
-                isConnected = isConnected,
-            ),
-        )
+        SettingsGptStatusRow(snapshot = snapshot)
 
-        snapshot.detailText?.let { detail ->
+        accountMetaText?.let { detail ->
             Text(
                 text = detail,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
             )
         }
 
         hintText?.let { hint ->
-            SettingsInlineMessageCard(
+            SettingsInlineMessageText(
                 text = hint,
                 tone = gptHintTone(snapshot = snapshot),
             )
@@ -671,6 +666,16 @@ private fun SettingsChatGptCard(
                 tone = SettingsInlineMessageTone.ERROR,
             )
         }
+
+        snapshot.detailText
+            ?.takeIf { detail -> detail != accountMetaText }
+            ?.let { detail ->
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
         if (!snapshot.isAuthenticated) {
             SettingsNavigationRow(
@@ -704,9 +709,8 @@ private fun SettingsChatGptCard(
 }
 
 @Composable
-private fun SettingsGptHeroRow(
+private fun SettingsGptStatusRow(
     snapshot: RemodexGptAccountSnapshot,
-    summary: String,
 ) {
     val iconTint = gptStatusColor(snapshot)
     Row(
@@ -714,47 +718,37 @@ private fun SettingsGptHeroRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Surface(
-            shape = CircleShape,
-            color = iconTint.copy(alpha = 0.12f),
-            border = BorderStroke(
-                width = 1.dp,
-                color = iconTint.copy(alpha = 0.18f),
-            ),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = gptStatusIcon(snapshot),
-                    contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Text(
-                text = "Voice on your Mac",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = summary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
+        Icon(
+            imageVector = gptStatusIcon(snapshot),
+            contentDescription = null,
+            tint = iconTint,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = "Status",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.weight(1f))
         SettingsStatusPill(label = snapshot.statusLabel)
     }
+}
+
+private fun gptAccountMetaText(
+    snapshot: RemodexGptAccountSnapshot,
+): String? {
+    return buildList {
+        snapshot.email
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let(::add)
+        snapshot.planType
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.replaceFirstChar(Char::titlecase)
+            ?.let(::add)
+    }.takeIf(List<String>::isNotEmpty)?.joinToString(separator = " • ")
 }
 
 private enum class SettingsInlineMessageTone {
@@ -805,6 +799,24 @@ private fun SettingsInlineMessageCard(
     }
 }
 
+@Composable
+private fun SettingsInlineMessageText(
+    text: String,
+    tone: SettingsInlineMessageTone,
+) {
+    val textColor = when (tone) {
+        SettingsInlineMessageTone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+        SettingsInlineMessageTone.WARNING -> MaterialTheme.colorScheme.onSurfaceVariant
+        SettingsInlineMessageTone.ERROR -> MaterialTheme.colorScheme.error
+    }
+
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = textColor,
+    )
+}
+
 private enum class SettingsButtonRole {
     NORMAL,
     DESTRUCTIVE,
@@ -834,7 +846,7 @@ private fun SettingsButton(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = containerColor,
         border = BorderStroke(
             width = 1.dp,
@@ -845,7 +857,7 @@ private fun SettingsButton(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 11.dp),
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -868,7 +880,7 @@ private fun SettingsNavigationRow(
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(
             width = 1.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f),
@@ -878,7 +890,7 @@ private fun SettingsNavigationRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 11.dp),
+                .padding(horizontal = 16.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -975,11 +987,13 @@ private fun SettingsKeyValueRow(
 @Composable
 private fun SettingsStatusPill(
     label: String,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
+        modifier = modifier,
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        shape = CircleShape,
+        shape = RoundedCornerShape(18.dp),
         border = BorderStroke(
             width = 1.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.95f),
@@ -989,7 +1003,7 @@ private fun SettingsStatusPill(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
         )
     }
 }
