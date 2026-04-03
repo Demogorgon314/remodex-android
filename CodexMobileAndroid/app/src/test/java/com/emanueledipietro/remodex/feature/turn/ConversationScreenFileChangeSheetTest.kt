@@ -5,6 +5,53 @@ import org.junit.Test
 
 class ConversationScreenFileChangeSheetTest {
     @Test
+    fun `timeline file change presentation opens for hunk only rendered diff`() {
+        val renderState = FileChangeRenderParser.renderState(
+            """
+                Status: completed
+
+                Path: src/Main.kt
+                Kind: update
+                ```diff
+                @@ -1 +1,2 @@
+                -old
+                +new
+                +more
+                ```
+            """.trimIndent(),
+        )
+
+        val presentation = buildTimelineFileChangeSheetPresentation(
+            messageId = "message-1",
+            renderState = renderState,
+        )
+
+        assertEquals(listOf("src/Main.kt"), presentation?.diffChunks?.map(PerFileDiffChunk::path))
+        assertEquals(2, presentation?.diffChunks?.single()?.additions)
+        assertEquals(1, presentation?.diffChunks?.single()?.deletions)
+    }
+
+    @Test
+    fun `timeline file change presentation ignores totals only summaries`() {
+        val renderState = FileChangeRenderParser.renderState(
+            """
+                Status: completed
+
+                Path: src/SummaryOnly.kt
+                Kind: update
+                Totals: +4 -2
+            """.trimIndent(),
+        )
+
+        val presentation = buildTimelineFileChangeSheetPresentation(
+            messageId = "message-2",
+            renderState = renderState,
+        )
+
+        assertEquals(null, presentation)
+    }
+
+    @Test
     fun `file change group counts aggregate additions and deletions`() {
         val entries = listOf(
             FileChangeSummaryEntry(

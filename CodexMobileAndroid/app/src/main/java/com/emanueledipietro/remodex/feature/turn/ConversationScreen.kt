@@ -899,6 +899,31 @@ internal data class FileChangeSheetPresentation(
     val diffChunks: List<PerFileDiffChunk>,
 )
 
+internal fun buildTimelineFileChangeSheetPresentation(
+    messageId: String,
+    renderState: FileChangeRenderState,
+    title: String = "Changes",
+): FileChangeSheetPresentation? {
+    val normalizedBodyText = renderState.bodyText.trim()
+    if (normalizedBodyText.isEmpty()) {
+        return null
+    }
+    val normalizedRenderState = renderState.copy(bodyText = normalizedBodyText)
+    val diffChunks = FileChangeRenderParser.diffChunks(
+        bodyText = normalizedBodyText,
+        entries = normalizedRenderState.summary?.entries.orEmpty(),
+    )
+    if (diffChunks.isEmpty()) {
+        return null
+    }
+    return FileChangeSheetPresentation(
+        title = title,
+        messageId = messageId,
+        renderState = normalizedRenderState,
+        diffChunks = diffChunks,
+    )
+}
+
 internal fun buildRepositoryDiffSheetPresentation(rawPatch: String): FileChangeSheetPresentation? {
     val normalizedPatch = rawPatch.trim()
     if (normalizedPatch.isEmpty()) {
@@ -1564,6 +1589,9 @@ fun ConversationScreen(
                                             commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
                                             onOpenPlanDetails = { planItemId ->
                                                 selectedPlanSheetItemId = planItemId
+                                            },
+                                            onOpenFileChangeDetails = { presentation ->
+                                                fileChangeSheetPresentation = presentation
                                             },
                                             onOpenCommandExecutionDetails = { messageId ->
                                                 commandDetailsMessageId = messageId
@@ -7110,6 +7138,7 @@ private fun ConversationBubble(
             onSubmitStructuredUserInput = { _, _ -> },
             commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
             onOpenPlanDetails = {},
+            onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
             parentThreadId = parentThreadId,
             threads = threads,
@@ -7195,20 +7224,10 @@ private fun AssistantConversationRow(
                 actionEntries = blockDiffEntries.filter { entry -> entry.action != null },
                 bodyText = blockDiffText,
             )
-            val diffChunks = FileChangeRenderParser.diffChunks(
-                bodyText = blockDiffText,
-                entries = blockDiffEntries,
+            buildTimelineFileChangeSheetPresentation(
+                messageId = item.id,
+                renderState = renderState,
             )
-            if (diffChunks.isEmpty()) {
-                null
-            } else {
-                FileChangeSheetPresentation(
-                    title = "Changes",
-                    messageId = item.id,
-                    renderState = renderState,
-                    diffChunks = diffChunks,
-                )
-            }
         }
     }
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
@@ -7289,6 +7308,7 @@ private fun SystemConversationRow(
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
     commandExecutionDetails: RemodexCommandExecutionDetails?,
     onOpenPlanDetails: (String) -> Unit,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     parentThreadId: String,
     threads: List<RemodexThreadSummary>,
@@ -7328,6 +7348,7 @@ private fun SystemConversationRow(
             ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
                 item = item,
                 accessoryState = accessoryState,
+                onOpenFileChangeDetails = onOpenFileChangeDetails,
             )
             ConversationItemKind.CONTEXT_COMPACTION -> ContextCompactionConversationRow(
                 item = item,
@@ -7972,10 +7993,17 @@ private fun ThinkingDisclosureContentView(
 private fun FileChangeConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val renderState = remember(item.text) {
         FileChangeRenderParser.renderState(item.text)
+    }
+    val detailsPresentation = remember(item.id, renderState) {
+        buildTimelineFileChangeSheetPresentation(
+            messageId = item.id,
+            renderState = renderState,
+        )
     }
     val summaryEntries = remember(renderState) {
         if (renderState.actionEntries.isNotEmpty()) {
@@ -8008,6 +8036,9 @@ private fun FileChangeConversationRow(
                     FileChangeInlineGroup(
                         group = group,
                         chrome = chrome,
+                        onTap = detailsPresentation?.let { presentation ->
+                            { onOpenFileChangeDetails(presentation) }
+                        },
                     )
                 }
             }
@@ -8031,12 +8062,20 @@ private fun FileChangeConversationRow(
 private fun FileChangeInlineGroup(
     group: FileChangeGroup,
     chrome: RemodexConversationChrome,
+    onTap: (() -> Unit)? = null,
 ) {
     val (totalAdditions, totalDeletions) = remember(group.entries) {
         aggregateFileChangeDiffCounts(group.entries)
     }
+    val groupModifier = if (onTap != null) {
+        Modifier.clickable(onClick = onTap)
+    } else {
+        Modifier
+    }
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(groupModifier),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Row(
