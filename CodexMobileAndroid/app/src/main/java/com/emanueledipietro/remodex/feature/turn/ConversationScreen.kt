@@ -306,6 +306,11 @@ private data class TimelineBottomAnchorRequest(
     val pinnedPlanItemId: String?,
 )
 
+private enum class ConversationCircleButtonStyle {
+    STANDARD,
+    FROSTED,
+}
+
 internal data class TimelineBottomLayoutSnapshot(
     val totalItemsCount: Int,
     val lastVisibleItemIndex: Int,
@@ -1586,12 +1591,13 @@ fun ConversationScreen(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .offset(y = -ConversationScrollToLatestButtonOffset),
-                        enter = fadeIn() + scaleIn(initialScale = 0.85f),
-                        exit = fadeOut() + scaleOut(targetScale = 0.85f),
+                        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }),
+                        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }),
                     ) {
                         ConversationCircleButton(
                             icon = Icons.Outlined.ArrowDownward,
                             contentDescription = "Scroll to latest message",
+                            style = ConversationCircleButtonStyle.FROSTED,
                             hapticOnClick = true,
                             onClick = {
                                 autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
@@ -1972,25 +1978,36 @@ private fun ConversationCircleButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     filled: Boolean = false,
+    style: ConversationCircleButtonStyle = ConversationCircleButtonStyle.STANDARD,
     hapticOnClick: Boolean = false,
 ) {
     val chrome = remodexConversationChrome()
     val performLightHaptic = rememberLightImpactHaptic()
+    val isFrosted = style == ConversationCircleButtonStyle.FROSTED
     val buttonColor = when {
+        isFrosted && chrome.canvas.luminance() < 0.45f -> chrome.canvas.copy(alpha = 0.58f)
+        isFrosted -> chrome.panelSurface.copy(alpha = 0.82f)
         filled && enabled -> chrome.sendButton
         filled -> chrome.sendButtonDisabled
         else -> chrome.mutedSurface
     }
     val iconTint = when {
+        isFrosted -> chrome.titleText.copy(alpha = if (enabled) 0.96f else 0.72f)
         filled && enabled -> chrome.sendIcon
         filled -> chrome.sendIconDisabled
         else -> if (enabled) chrome.titleText else chrome.secondaryText.copy(alpha = 0.72f)
+    }
+    val border = when {
+        isFrosted && chrome.canvas.luminance() < 0.45f -> BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.7f))
+        isFrosted -> BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.92f))
+        filled -> null
+        else -> BorderStroke(1.dp, chrome.subtleBorder)
     }
     Surface(
         modifier = modifier.requiredSize(ComposerTrailingButtonSize),
         color = buttonColor,
         shape = CircleShape,
-        border = if (filled) null else BorderStroke(1.dp, chrome.subtleBorder),
+        border = border,
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
