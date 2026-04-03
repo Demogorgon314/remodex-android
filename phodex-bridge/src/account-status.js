@@ -80,6 +80,44 @@ function redactAuthStatus(authStatus = null, extras = {}) {
 
 // ─── Settled snapshot helpers ───────────────────────────────
 
+function applyLocalAuthFallbackToSettledAuthStatus(
+  authStatusResult = null,
+  localAuthResult = null
+) {
+  const localAuthStatus = localAuthResult?.status === "fulfilled" ? localAuthResult.value : null;
+  if (!localAuthStatus?.token || !localAuthStatus?.isChatGPT) {
+    return authStatusResult;
+  }
+
+  if (authStatusResult?.status === "fulfilled") {
+    const authStatus = authStatusResult.value;
+    if (normalizeString(authStatus?.authToken)) {
+      return authStatusResult;
+    }
+
+    return {
+      status: "fulfilled",
+      value: {
+        ...authStatus,
+        authMethod: normalizeString(localAuthStatus.authMethod)
+          || normalizeString(authStatus?.authMethod)
+          || "chatgpt",
+        authToken: localAuthStatus.token,
+        requiresOpenaiAuth: localAuthStatus.requiresOpenaiAuth ?? authStatus?.requiresOpenaiAuth,
+      },
+    };
+  }
+
+  return {
+    status: "fulfilled",
+    value: {
+      authMethod: normalizeString(localAuthStatus.authMethod) || "chatgpt",
+      authToken: localAuthStatus.token,
+      requiresOpenaiAuth: localAuthStatus.requiresOpenaiAuth,
+    },
+  };
+}
+
 // Collapses settled bridge RPC results into one safe snapshot, even if one side fails.
 // Input: Promise.allSettled-style results → Output: sanitized account status object
 // Throws if both the account read and auth status fail, so the bridge can surface a real error.
@@ -141,6 +179,7 @@ function parseBoolean(value) {
 }
 
 module.exports = {
+  applyLocalAuthFallbackToSettledAuthStatus,
   composeAccountStatus,
   composeSanitizedAuthStatusFromSettledResults,
   redactAuthStatus,

@@ -9,6 +9,7 @@ const assert = require("node:assert/strict");
 const { version: bridgePackageVersion } = require("../package.json");
 
 const {
+  applyLocalAuthFallbackToSettledAuthStatus,
   composeAccountStatus,
   composeSanitizedAuthStatusFromSettledResults,
   redactAuthStatus,
@@ -285,4 +286,62 @@ test("composeSanitizedAuthStatusFromSettledResults fails when both auth reads fa
       reason: new Error("getAuthStatus failed"),
     },
   }), (error) => error?.errorCode === "auth_status_unavailable");
+});
+
+test("applyLocalAuthFallbackToSettledAuthStatus fills in a missing ChatGPT token", () => {
+  const result = applyLocalAuthFallbackToSettledAuthStatus(
+    {
+      status: "fulfilled",
+      value: {
+        authMethod: "chatgpt",
+        authToken: null,
+        requiresOpenaiAuth: true,
+      },
+    },
+    {
+      status: "fulfilled",
+      value: {
+        authMethod: "chatgpt",
+        token: "local-token",
+        isChatGPT: true,
+        requiresOpenaiAuth: true,
+      },
+    }
+  );
+
+  assert.deepEqual(result, {
+    status: "fulfilled",
+    value: {
+      authMethod: "chatgpt",
+      authToken: "local-token",
+      requiresOpenaiAuth: true,
+    },
+  });
+});
+
+test("applyLocalAuthFallbackToSettledAuthStatus synthesizes auth status when bridge auth read fails", () => {
+  const result = applyLocalAuthFallbackToSettledAuthStatus(
+    {
+      status: "rejected",
+      reason: new Error("getAuthStatus failed"),
+    },
+    {
+      status: "fulfilled",
+      value: {
+        authMethod: "chatgpt",
+        token: "local-token",
+        isChatGPT: true,
+        requiresOpenaiAuth: true,
+      },
+    }
+  );
+
+  assert.deepEqual(result, {
+    status: "fulfilled",
+    value: {
+      authMethod: "chatgpt",
+      authToken: "local-token",
+      requiresOpenaiAuth: true,
+    },
+  });
 });

@@ -22,8 +22,13 @@ const { handleGitRequest } = require("./git-handler");
 const { handleThreadContextRequest } = require("./thread-context-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
 const { createNotificationsHandler } = require("./notifications-handler");
-const { createVoiceHandler, resolveVoiceAuth } = require("./voice-handler");
 const {
+  createVoiceHandler,
+  readLocalChatGPTAuthTokenFromDisk,
+  resolveVoiceAuth,
+} = require("./voice-handler");
+const {
+  applyLocalAuthFallbackToSettledAuthStatus,
   composeSanitizedAuthStatusFromSettledResults,
 } = require("./account-status");
 const { createBridgePackageVersionStatusReader } = require("./package-version-status");
@@ -537,7 +542,7 @@ function startBridge({
   // Combines account/read + getAuthStatus into one safe snapshot for the phone UI.
   // The two RPCs are settled independently so one transient failure does not hide the other.
   async function readSanitizedAuthStatus() {
-    const [accountReadResult, authStatusResult, bridgeVersionInfoResult] = await Promise.allSettled([
+    const [accountReadResult, authStatusResult, bridgeVersionInfoResult, localAuthResult] = await Promise.allSettled([
       sendCodexRequest("account/read", {
         refreshToken: false,
       }),
@@ -546,6 +551,7 @@ function startBridge({
         refreshToken: false,
       }),
       readBridgePackageVersionStatus(),
+      readLocalChatGPTAuthTokenFromDisk(),
     ]);
 
     return composeSanitizedAuthStatusFromSettledResults({
@@ -555,7 +561,7 @@ function startBridge({
           value: normalizeAccountRead(accountReadResult.value),
         }
         : accountReadResult,
-      authStatusResult,
+      authStatusResult: applyLocalAuthFallbackToSettledAuthStatus(authStatusResult, localAuthResult),
       loginInFlight: Boolean(pendingAuthLogin.loginId),
       bridgeVersionInfo: bridgeVersionInfoResult.status === "fulfilled"
         ? bridgeVersionInfoResult.value

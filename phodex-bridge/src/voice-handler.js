@@ -432,5 +432,6 @@ async function readAuthStatus(
 
 module.exports = {
   createVoiceHandler,
+  readLocalChatGPTAuthTokenFromDisk,
   resolveVoiceAuth,
 };
