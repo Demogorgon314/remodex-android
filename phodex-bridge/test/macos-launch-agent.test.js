@@ -141,7 +141,7 @@ test("runMacOSBridgeService records a clean error state instead of throwing when
     writePairingSession({ sessionId: "stale-session" });
 
     assert.doesNotThrow(() => {
-      runMacOSBridgeService({ env: process.env });
+      runMacOSBridgeService({ env: process.env, platform: "darwin" });
     });
 
     assert.equal(readPairingSession(), null);

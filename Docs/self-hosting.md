@@ -15,7 +15,7 @@ The public source tree is local-first and self-host friendly:
 - local pairing should work out of the box with `./run-local-remodex.sh`
 - internet-facing setups should pass their own relay URL explicitly with `REMODEX_RELAY`
 - the first QR scan bootstraps trust, then later reconnects can reuse the same trusted Mac through that relay
-- the built-in background daemon for trusted reconnect is currently macOS-only
+- the built-in background daemon for trusted reconnect is available on macOS and Linux
 
 ## What Remodex Self-Hosting Means
 
@@ -174,7 +174,7 @@ After the first successful scan:
 - the relay can resolve the current live session for that trusted Mac
 - the app can reconnect without requiring a new QR every time
 
-Today, that background-service path is built in for macOS. If you self-host against a non-macOS bridge, pairing and relay routing still work, but you must manage persistence/background service behavior yourself.
+Today, that background-service path is built in for macOS and Linux. If you self-host against another OS, pairing and relay routing still work, but you must manage persistence/background service behavior yourself.
 
 If you install the bridge from npm and do not use the local launcher, make sure you export `REMODEX_RELAY` before running `remodex up`.
 
@@ -253,5 +253,5 @@ If you cloned the public repo, the supported self-hosting story is:
 - point the bridge at your relay with `REMODEX_RELAY`
 - scan the QR from the iPhone app once to trust the Mac
 - let reconnect reuse that trusted Mac over the same relay
-- remember that the built-in daemon path is currently macOS-only
+- remember that the built-in daemon path is available on macOS and Linux
 - keep private hostnames and credentials out of the public repo

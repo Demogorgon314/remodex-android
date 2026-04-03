@@ -1,5 +1,5 @@
 // FILE: daemon-state.js
-// Purpose: Persists macOS service config/runtime state outside the repo for the launchd bridge flow.
+// Purpose: Persists bridge service config/runtime state outside the repo for local daemon flows.
 // Layer: CLI helper
 // Exports: path resolvers plus read/write helpers for daemon config, pairing payloads, and service status.
 // Depends on: fs, os, path

@@ -27,7 +27,7 @@ The public repository does not include:
 
 If you are running from source, assume you must provide your own relay setup.
 
-The public repo now also includes the trusted-Mac reconnect flow, but the built-in background daemon for that flow is currently macOS-only.
+The public repo now also includes the trusted-Mac reconnect flow, and the built-in background daemon for that flow is available on macOS and Linux.
 
 ## The Self-Hosting Path
 
@@ -99,5 +99,5 @@ If you cloned Remodex from GitHub:
 - use `./run-local-remodex.sh` for local testing
 - use `REMODEX_RELAY` for your own VPS or hosted relay
 - use QR once to trust the Mac, then let reconnect reuse that trust
-- remember that the built-in daemon/background service path is currently macOS-only
+- remember that the built-in daemon/background service path is available on macOS and Linux
 - treat the public repo as the self-hostable version of the project

@@ -24,13 +24,13 @@ Control [Codex](https://openai.com/index/codex/) from your phone. Remodex is a l
 - Access controls with On-Request or Full access
 - Photo attachments from camera or library
 - One-time QR bootstrap with trusted Mac reconnects
-- macOS-only background bridge service via `launchd`
+- Built-in background bridge service on macOS (`launchd`) and Linux (`systemd --user`)
 - Live streaming on your phone while Codex runs on your Mac
 - Shared thread history with Codex on your Mac
 
 The repo stays local-first and self-host friendly: the iOS app source does not embed a public hosted endpoint, and the transport layer remains inspectable for anyone who wants to run their own setup.
 
-Today, the background daemon / trusted auto-reconnect flow is implemented for macOS. Self-hosted relay setups still work on other OSes, but they currently use the foreground bridge flow instead of the macOS `launchd` service path.
+Today, the background daemon / trusted auto-reconnect flow is built in on macOS and Linux. Other platforms still use the foreground bridge flow unless you add your own OS-specific service wrapper.
 
 If you want the public-repo distribution model explained clearly, read [SELF_HOSTING_MODEL.md](SELF_HOSTING_MODEL.md).
 
@@ -164,7 +164,7 @@ After that first scan:
 - the app tries trusted reconnect automatically on later launches
 - the QR remains available as a recovery path if trust changes or the relay cannot resolve the live session
 
-For now, the daemon-backed trusted reconnect path is macOS-only. If you self-host on Linux or Windows, pairing still works, but the bridge runs in the foreground unless you set up your own OS-specific service wrapper.
+The daemon-backed trusted reconnect path is built in on macOS and Linux. On Windows and other platforms, pairing still works, but the bridge runs in the foreground unless you set up your own OS-specific service wrapper.
 
 ## Run Locally
 
@@ -254,14 +254,21 @@ REMODEX_RELAY="ws://localhost:9000/relay" npm start
 
 Starts Remodex.
 
-On macOS, `remodex up` is the friendly entrypoint for the background bridge service:
+On macOS, `remodex up` is the friendly entrypoint for the `launchd` bridge service:
 
 - Writes the daemon config used by the `launchd` service
 - Starts or restarts the background bridge service
 - Waits for a pairing payload and prints a QR for first-time trust or recovery
 - Keeps the bridge alive even if you close the terminal later
 
-On non-macOS platforms, `remodex up` runs the bridge in the foreground.
+On Linux, `remodex up` is the friendly entrypoint for the `systemd --user` bridge service:
+
+- Writes the daemon config used by the user service
+- Writes or refreshes `~/.config/systemd/user/com.remodex.bridge.service`
+- Runs `systemctl --user daemon-reload`, enables the unit, and restarts the bridge service
+- Waits for a pairing payload and prints a QR for first-time trust or recovery
+
+On other non-macOS platforms, `remodex up` runs the bridge in the foreground.
 
 In both cases the bridge:
 
@@ -273,24 +280,25 @@ In both cases the bridge:
 
 ### `remodex start`
 
-macOS only. Starts the background bridge service without waiting for or printing a QR in the current terminal.
+On macOS and Linux, starts the background bridge service without waiting for or printing a QR in the current terminal.
 If the service is already loaded, this path refreshes it in place.
 
 ### `remodex restart`
 
-macOS only. Explicitly restarts the background bridge service without waiting for or printing a QR in the current terminal.
+On macOS and Linux, explicitly restarts the background bridge service without waiting for or printing a QR in the current terminal.
 
 ### `remodex stop`
 
-macOS only. Stops the background bridge service and clears its transient runtime status.
+On macOS and Linux, stops the background bridge service and clears its transient runtime status.
 
 ### `remodex status`
 
-macOS only. Prints the current `launchd` / bridge status, including whether the service is loaded and whether a recent pairing payload exists.
+On macOS, prints the current `launchd` / bridge status.
+On Linux, prints the current `systemd --user` / bridge status, including whether the unit is loaded and whether a recent pairing payload exists.
 
 ### `remodex run-service`
 
-macOS only. Internal service entrypoint used by `launchd`. You normally do not run this manually.
+Internal service entrypoint used by `launchd` on macOS and `systemd --user` on Linux. You normally do not run this manually.
 
 ### `remodex --version`
 
@@ -483,7 +491,7 @@ I'm not actively accepting contributions yet. See [CONTRIBUTING.md](CONTRIBUTING
 Not for Remodex itself. You need Codex CLI set up and working independently.
 
 **Does this work on Linux/Windows?**
-The core bridge client (Codex forwarding + git) works on any OS. Desktop refresh (AppleScript) is macOS-only, and the built-in daemon / trusted auto-reconnect service path is currently macOS-only too.
+The core bridge client (Codex forwarding + git) works on any OS. Desktop refresh (AppleScript) is macOS-only, and the built-in daemon / trusted auto-reconnect service path is currently available on macOS and Linux.
 
 **What happens if I close the terminal?**
 On macOS, the bridge can keep running in the background through `launchd`, so closing the terminal does not stop the trusted reconnect path. On other OSes, the foreground bridge stops when the terminal stops.
