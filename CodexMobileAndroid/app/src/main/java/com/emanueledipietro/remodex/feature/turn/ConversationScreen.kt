@@ -73,6 +73,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -323,6 +324,35 @@ internal data class ConversationTimelineLayout(
     val timelineItems: List<RemodexConversationItem>,
     val pinnedPlanItem: RemodexConversationItem?,
 )
+
+/**
+ * Lightweight structural identity of a messages list that ignores text content.
+ * Used as a `remember` key for computations that only depend on the set of items
+ * (their IDs, kinds, and streaming flags) rather than on the actual text being
+ * streamed. This prevents expensive O(n) and O(n²) recomputations from running
+ * on every streaming text delta.
+ */
+private data class MessagesStructuralIdentity(
+    val size: Int,
+    val idHash: Int,
+    val streamingIds: List<String>,
+)
+
+private fun List<RemodexConversationItem>.structuralIdentity(): MessagesStructuralIdentity {
+    var idHash = size
+    val streamingIds = ArrayList<String>(2)
+    for (item in this) {
+        idHash = idHash * 31 + item.id.hashCode()
+        if (item.isStreaming) {
+            streamingIds += item.id
+        }
+    }
+    return MessagesStructuralIdentity(
+        size = size,
+        idHash = idHash,
+        streamingIds = streamingIds,
+    )
+}
 
 internal data class PlanComposerFlowSnapshot(
     val takeoverPromptItem: RemodexConversationItem? = null,
@@ -1038,8 +1068,9 @@ fun ConversationScreen(
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var dismissedPlanPromptRequestKeys by remember(thread.id) { mutableStateOf(emptySet<String>()) }
+    val messagesIdentity = remember(thread.messages) { thread.messages.structuralIdentity() }
     val planComposerFlow = remember(
-        thread.messages,
+        messagesIdentity,
         thread.latestTurnTerminalState,
         thread.runtimeConfig.planningMode,
         thread.queuedDraftItems,
@@ -1075,6 +1106,10 @@ fun ConversationScreen(
             detailsByItemId = uiState.commandExecutionDetailsByItemId,
         )
     }
+    // Use a lightweight identity for keying expensive computations that don't depend
+    // on message text (e.g. blockAccessories). During streaming, only the last item's
+    // text changes, but the item set remains the same.
+    val timelineItemsIdentity = remember(timelineItems) { timelineItems.structuralIdentity() }
     val emptyTimelineStatePresentation = remember(
         timelineItems,
         pinnedPlanItem?.id,
@@ -1087,7 +1122,7 @@ fun ConversationScreen(
             takeoverPromptItem = planComposerFlow.takeoverPromptItem,
         )
     }
-    val selectedPlanSheetItem = remember(thread.messages, selectedPlanSheetItemId) {
+    val selectedPlanSheetItem = remember(messagesIdentity, selectedPlanSheetItemId) {
         selectedPlanSheetItemId?.let { planItemId ->
             thread.messages.firstOrNull { item ->
                 item.id == planItemId &&
@@ -1096,7 +1131,7 @@ fun ConversationScreen(
         }
     }
     val blockAccessories = remember(
-        timelineItems,
+        timelineItemsIdentity,
         thread.isRunning,
         thread.activeTurnId,
         thread.latestTurnTerminalState,
@@ -1227,7 +1262,7 @@ fun ConversationScreen(
             ?.map(::parseCommandExecutionStatus)
             ?.firstOrNull { status -> status != null }
     }
-    val backgroundTerminalSessions = remember(thread.messages, uiState.commandExecutionDetailsByItemId) {
+    val backgroundTerminalSessions = remember(messagesIdentity, uiState.commandExecutionDetailsByItemId) {
         resolveBackgroundTerminalPresentations(
             messages = thread.messages,
             detailsByItemId = uiState.commandExecutionDetailsByItemId,
@@ -1557,69 +1592,29 @@ fun ConversationScreen(
                             contentPadding = PaddingValues(top = 12.dp, bottom = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.Bottom),
                         ) {
-                            if (timelineItems.isEmpty()) {
-                                item {
-                                    Spacer(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(1.dp),
-                                    )
-                                }
-                            } else {
-                                items(timelineItems, key = { it.id }) { message ->
-                                    when (message.speaker) {
-                                        ConversationSpeaker.USER -> UserConversationRow(item = message)
-                                        ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
-                                            item = message,
-                                            accessoryState = blockAccessories[message.id],
-                                            assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
-                                            contextMenuFooterText = uiState.assistantResponseMetrics
-                                                ?.takeIf { metrics -> metrics.messageId == message.id }
-                                                ?.let(::formatAssistantResponseMetricsLabel),
-                                            onTapAssistantRevert = onStartAssistantRevertPreview,
-                                            onOpenFileChangeDetails = { presentation ->
-                                                fileChangeSheetPresentation = presentation
-                                            },
-                                        )
-
-                                        ConversationSpeaker.SYSTEM -> SystemConversationRow(
-                                            item = message,
-                                            accessoryState = blockAccessories[message.id],
-                                            onSubmitStructuredUserInput = onSubmitStructuredUserInput,
-                                            commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
-                                            onOpenPlanDetails = { planItemId ->
-                                                selectedPlanSheetItemId = planItemId
-                                            },
-                                            onOpenFileChangeDetails = { presentation ->
-                                                fileChangeSheetPresentation = presentation
-                                            },
-                                            onOpenCommandExecutionDetails = { messageId ->
-                                                commandDetailsMessageId = messageId
-                                            },
-                                            parentThreadId = thread.id,
-                                            threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                                                uiState.threads
-                                            } else {
-                                                emptyList()
-                                            },
-                                            parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                                                thread.messages
-                                            } else {
-                                                emptyList()
-                                            },
-                                            onOpenSubagentThread = onOpenSubagentThread,
-                                            onHydrateSubagentThread = onHydrateSubagentThread,
-                                        )
-                                    }
-                                }
-                                item(key = "conversation-bottom-anchor") {
-                                    Spacer(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(ConversationBottomAnchorHeight),
-                                    )
-                                }
-                            }
+                            conversationTimelineItems(
+                                timelineItems = timelineItems,
+                                blockAccessories = blockAccessories,
+                                assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
+                                assistantResponseMetrics = uiState.assistantResponseMetrics,
+                                commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
+                                threads = uiState.threads,
+                                threadId = thread.id,
+                                threadMessages = thread.messages,
+                                onStartAssistantRevertPreview = onStartAssistantRevertPreview,
+                                onOpenFileChangeDetails = { presentation ->
+                                    fileChangeSheetPresentation = presentation
+                                },
+                                onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                                onOpenPlanDetails = { planItemId ->
+                                    selectedPlanSheetItemId = planItemId
+                                },
+                                onOpenCommandExecutionDetails = { messageId ->
+                                    commandDetailsMessageId = messageId
+                                },
+                                onOpenSubagentThread = onOpenSubagentThread,
+                                onHydrateSubagentThread = onHydrateSubagentThread,
+                            )
                         }
                     }
                 }
@@ -1865,91 +1860,250 @@ fun ConversationScreen(
             }
         }
 
-        if (worktreeHandoffSheetExpanded) {
-            WorktreeHandoffSheet(
-                mode = worktreeSheetMode,
-                preferredBaseBranch = preferredWorktreeBaseBranch(
-                    gitState = uiState.composer.gitState,
-                    selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
-                ),
-                onDismiss = { worktreeHandoffSheetExpanded = false },
-                onSubmit = { branchName, baseBranch ->
-                    worktreeHandoffSheetExpanded = false
-                    when (worktreeSheetMode) {
-                        WorktreeSheetMode.HANDOFF -> onHandoffThreadToWorktree(branchName, baseBranch)
-                        WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
-                    }
-                },
-            )
-        }
+        ConversationScreenSheetOverlays(
+            worktreeHandoffSheetExpanded = worktreeHandoffSheetExpanded,
+            worktreeSheetMode = worktreeSheetMode,
+            gitState = uiState.composer.gitState,
+            selectedGitBaseBranch = uiState.composer.selectedGitBaseBranch,
+            onDismissWorktreeHandoffSheet = { worktreeHandoffSheetExpanded = false },
+            onSubmitWorktreeHandoff = { branchName, baseBranch ->
+                worktreeHandoffSheetExpanded = false
+                when (worktreeSheetMode) {
+                    WorktreeSheetMode.HANDOFF -> onHandoffThreadToWorktree(branchName, baseBranch)
+                    WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
+                }
+            },
+            gitSheetExpanded = gitSheetExpanded,
+            onDismissGitSheet = { gitSheetExpanded = false },
+            onSelectGitBaseBranch = onSelectGitBaseBranch,
+            onRefreshGitState = onRefreshGitState,
+            onCheckoutGitBranch = onCheckoutGitBranch,
+            onCreateGitBranch = onCreateGitBranch,
+            onCreateGitWorktree = onCreateGitWorktree,
+            onCommitGitChanges = onCommitGitChanges,
+            onCommitAndPushGitChanges = onCommitAndPushGitChanges,
+            onPullGitChanges = onPullGitChanges,
+            onPushGitChanges = onPushGitChanges,
+            onCreatePullRequest = onCreatePullRequest,
+            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+            selectedPlanSheetItem = selectedPlanSheetItem,
+            onDismissPlanSheet = { selectedPlanSheetItemId = null },
+            statusSheetExpanded = statusSheetExpanded,
+            usageStatus = uiState.usageStatus,
+            isRefreshingUsage = uiState.isRefreshingUsage,
+            onRefreshUsageStatus = onRefreshUsageStatus,
+            onDismissStatusSheet = { statusSheetExpanded = false },
+            backgroundTerminalSheetExpanded = backgroundTerminalSheetExpanded,
+            backgroundTerminalSessions = backgroundTerminalSessions,
+            onDismissBackgroundTerminalSheet = { backgroundTerminalSheetExpanded = false },
+            selectedCommandExecutionStatus = selectedCommandExecutionStatus,
+            selectedCommandExecutionDetails = selectedCommandExecutionItem?.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
+            onDismissCommandExecutionDetails = { commandDetailsMessageId = null },
+            fileChangeSheetPresentation = fileChangeSheetPresentation,
+            onDismissFileChangeSheet = { fileChangeSheetPresentation = null },
+            assistantRevertSheet = uiState.assistantRevertSheet,
+            onDismissAssistantRevertSheet = onDismissAssistantRevertSheet,
+            onConfirmAssistantRevert = onConfirmAssistantRevert,
+        )
+    }
+}
 
-        if (gitSheetExpanded) {
-            DetailedGitSheet(
-                gitState = uiState.composer.gitState,
-                selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
-                onDismiss = { gitSheetExpanded = false },
-                onSelectBaseBranch = onSelectGitBaseBranch,
-                onRefresh = onRefreshGitState,
-                onCheckoutBranch = onCheckoutGitBranch,
-                onCreateBranch = onCreateGitBranch,
-                onCreateWorktree = onCreateGitWorktree,
-                onCommit = onCommitGitChanges,
-                onCommitAndPush = onCommitAndPushGitChanges,
-                onPull = onPullGitChanges,
-                onPush = onPushGitChanges,
-                onCreatePullRequest = onCreatePullRequest,
-                onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+private fun LazyListScope.conversationTimelineItems(
+    timelineItems: List<RemodexConversationItem>,
+    blockAccessories: Map<String, ConversationBlockAccessoryState>,
+    assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
+    assistantResponseMetrics: RemodexAssistantResponseMetrics?,
+    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    threads: List<RemodexThreadSummary>,
+    threadId: String,
+    threadMessages: List<RemodexConversationItem>,
+    onStartAssistantRevertPreview: (String) -> Unit,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onOpenPlanDetails: (String) -> Unit,
+    onOpenCommandExecutionDetails: (String) -> Unit,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
+) {
+    if (timelineItems.isEmpty()) {
+        item {
+            Spacer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp),
             )
         }
+    } else {
+        items(
+            items = timelineItems,
+            key = { it.id },
+            contentType = { item -> "${item.speaker.name}:${item.kind.name}" },
+        ) { message ->
+            when (message.speaker) {
+                ConversationSpeaker.USER -> UserConversationRow(item = message)
+                ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
+                    item = message,
+                    accessoryState = blockAccessories[message.id],
+                    assistantRevertPresentation = assistantRevertStatesByMessageId[message.id],
+                    contextMenuFooterText = assistantResponseMetrics
+                        ?.takeIf { metrics -> metrics.messageId == message.id }
+                        ?.let(::formatAssistantResponseMetricsLabel),
+                    onTapAssistantRevert = onStartAssistantRevertPreview,
+                    onOpenFileChangeDetails = onOpenFileChangeDetails,
+                )
 
-        if (selectedPlanSheetItem != null) {
-            PlanDetailsSheet(
-                planItem = selectedPlanSheetItem,
-                onDismiss = { selectedPlanSheetItemId = null },
+                ConversationSpeaker.SYSTEM -> SystemConversationRow(
+                    item = message,
+                    accessoryState = blockAccessories[message.id],
+                    onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                    commandExecutionDetails = message.itemId?.let(commandExecutionDetailsByItemId::get),
+                    onOpenPlanDetails = onOpenPlanDetails,
+                    onOpenFileChangeDetails = onOpenFileChangeDetails,
+                    onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
+                    parentThreadId = threadId,
+                    threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                        threads
+                    } else {
+                        emptyList()
+                    },
+                    parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                        threadMessages
+                    } else {
+                        emptyList()
+                    },
+                    onOpenSubagentThread = onOpenSubagentThread,
+                    onHydrateSubagentThread = onHydrateSubagentThread,
+                )
+            }
+        }
+        item(key = "conversation-bottom-anchor") {
+            Spacer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ConversationBottomAnchorHeight),
             )
         }
+    }
+}
 
-        if (statusSheetExpanded) {
-            ConversationStatusSheet(
-                usageStatus = uiState.usageStatus,
-                isRefreshingUsage = uiState.isRefreshingUsage,
-                onRefreshUsageStatus = onRefreshUsageStatus,
-                onDismiss = { statusSheetExpanded = false },
-            )
-        }
+@Composable
+private fun ConversationScreenSheetOverlays(
+    worktreeHandoffSheetExpanded: Boolean,
+    worktreeSheetMode: WorktreeSheetMode,
+    gitState: RemodexGitState,
+    selectedGitBaseBranch: String,
+    onDismissWorktreeHandoffSheet: () -> Unit,
+    onSubmitWorktreeHandoff: (String, String) -> Unit,
+    gitSheetExpanded: Boolean,
+    onDismissGitSheet: () -> Unit,
+    onSelectGitBaseBranch: (String) -> Unit,
+    onRefreshGitState: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onCreateGitBranch: (String) -> Unit,
+    onCreateGitWorktree: (String) -> Unit,
+    onCommitGitChanges: () -> Unit,
+    onCommitAndPushGitChanges: () -> Unit,
+    onPullGitChanges: () -> Unit,
+    onPushGitChanges: () -> Unit,
+    onCreatePullRequest: () -> Unit,
+    onDiscardRuntimeChangesAndSync: () -> Unit,
+    selectedPlanSheetItem: RemodexConversationItem?,
+    onDismissPlanSheet: () -> Unit,
+    statusSheetExpanded: Boolean,
+    usageStatus: RemodexUsageStatus,
+    isRefreshingUsage: Boolean,
+    onRefreshUsageStatus: () -> Unit,
+    onDismissStatusSheet: () -> Unit,
+    backgroundTerminalSheetExpanded: Boolean,
+    backgroundTerminalSessions: List<BackgroundTerminalPresentation>,
+    onDismissBackgroundTerminalSheet: () -> Unit,
+    selectedCommandExecutionStatus: CommandExecutionStatusPresentation?,
+    selectedCommandExecutionDetails: RemodexCommandExecutionDetails?,
+    onDismissCommandExecutionDetails: () -> Unit,
+    fileChangeSheetPresentation: FileChangeSheetPresentation?,
+    onDismissFileChangeSheet: () -> Unit,
+    assistantRevertSheet: RemodexAssistantRevertSheetState?,
+    onDismissAssistantRevertSheet: () -> Unit,
+    onConfirmAssistantRevert: () -> Unit,
+) {
+    if (worktreeHandoffSheetExpanded) {
+        WorktreeHandoffSheet(
+            mode = worktreeSheetMode,
+            preferredBaseBranch = preferredWorktreeBaseBranch(
+                gitState = gitState,
+                selectedBaseBranch = selectedGitBaseBranch,
+            ),
+            onDismiss = onDismissWorktreeHandoffSheet,
+            onSubmit = onSubmitWorktreeHandoff,
+        )
+    }
 
-        if (backgroundTerminalSheetExpanded) {
-            BackgroundTerminalSheet(
-                sessions = backgroundTerminalSessions,
-                onDismiss = { backgroundTerminalSheetExpanded = false },
-            )
-        }
+    if (gitSheetExpanded) {
+        DetailedGitSheet(
+            gitState = gitState,
+            selectedBaseBranch = selectedGitBaseBranch,
+            onDismiss = onDismissGitSheet,
+            onSelectBaseBranch = onSelectGitBaseBranch,
+            onRefresh = onRefreshGitState,
+            onCheckoutBranch = onCheckoutGitBranch,
+            onCreateBranch = onCreateGitBranch,
+            onCreateWorktree = onCreateGitWorktree,
+            onCommit = onCommitGitChanges,
+            onCommitAndPush = onCommitAndPushGitChanges,
+            onPull = onPullGitChanges,
+            onPush = onPushGitChanges,
+            onCreatePullRequest = onCreatePullRequest,
+            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+        )
+    }
 
-        if (selectedCommandExecutionItem != null && selectedCommandExecutionStatus != null) {
-            CommandExecutionDetailSheet(
-                status = selectedCommandExecutionStatus,
-                details = selectedCommandExecutionItem.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
-                onDismiss = { commandDetailsMessageId = null },
-            )
-        }
+    if (selectedPlanSheetItem != null) {
+        PlanDetailsSheet(
+            planItem = selectedPlanSheetItem,
+            onDismiss = onDismissPlanSheet,
+        )
+    }
 
-        fileChangeSheetPresentation?.let { presentation ->
-                FileChangeDetailSheet(
-                title = presentation.title,
-                messageId = presentation.messageId,
-                renderState = presentation.renderState,
-                diffChunks = presentation.diffChunks,
-                onDismiss = { fileChangeSheetPresentation = null },
-            )
-        }
+    if (statusSheetExpanded) {
+        ConversationStatusSheet(
+            usageStatus = usageStatus,
+            isRefreshingUsage = isRefreshingUsage,
+            onRefreshUsageStatus = onRefreshUsageStatus,
+            onDismiss = onDismissStatusSheet,
+        )
+    }
 
-        uiState.assistantRevertSheet?.let { sheetState ->
-            AssistantRevertSheet(
-                sheetState = sheetState,
-                onClose = onDismissAssistantRevertSheet,
-                onConfirm = onConfirmAssistantRevert,
-            )
-        }
+    if (backgroundTerminalSheetExpanded) {
+        BackgroundTerminalSheet(
+            sessions = backgroundTerminalSessions,
+            onDismiss = onDismissBackgroundTerminalSheet,
+        )
+    }
+
+    if (selectedCommandExecutionStatus != null) {
+        CommandExecutionDetailSheet(
+            status = selectedCommandExecutionStatus,
+            details = selectedCommandExecutionDetails,
+            onDismiss = onDismissCommandExecutionDetails,
+        )
+    }
+
+    fileChangeSheetPresentation?.let { presentation ->
+        FileChangeDetailSheet(
+            title = presentation.title,
+            messageId = presentation.messageId,
+            renderState = presentation.renderState,
+            diffChunks = presentation.diffChunks,
+            onDismiss = onDismissFileChangeSheet,
+        )
+    }
+
+    assistantRevertSheet?.let { sheetState ->
+        AssistantRevertSheet(
+            sheetState = sheetState,
+            onClose = onDismissAssistantRevertSheet,
+            onConfirm = onConfirmAssistantRevert,
+        )
     }
 }
 
