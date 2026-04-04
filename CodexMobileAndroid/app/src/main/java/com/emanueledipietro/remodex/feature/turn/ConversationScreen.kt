@@ -7936,19 +7936,15 @@ private fun ThinkingConversationRow(
 ) {
     val chrome = remodexConversationChrome()
     val thinkingText = remember(item.text) {
-        ThinkingDisclosureParser.normalizedThinkingContent(item.text)
+        cachedThinkingText(item.text)
     }
     val activityPreview = remember(thinkingText) {
-        if (thinkingText.isEmpty()) {
-            null
-        } else {
-            ThinkingDisclosureParser.compactActivityPreview(thinkingText)
-        }
+        cachedThinkingActivityPreview(thinkingText)
     }
     val showDetailedThinking = !item.isStreaming && activityPreview == null && thinkingText.isNotEmpty()
     val thinkingContent = remember(item.id, thinkingText, showDetailedThinking) {
         if (showDetailedThinking) {
-            ThinkingDisclosureParser.parse(thinkingText)
+            cachedThinkingDisclosureContent(thinkingText)
         } else {
             ThinkingDisclosureContent(
                 sections = emptyList(),
@@ -8186,23 +8182,16 @@ private fun FileChangeConversationRow(
 ) {
     val chrome = remodexConversationChrome()
     val renderState = remember(item.text) {
-        FileChangeRenderParser.renderState(item.text)
+        cachedFileChangeRenderState(item.text)
     }
     val detailsPresentation = remember(item.id, renderState) {
-        buildTimelineFileChangeSheetPresentation(
+        cachedTimelineFileChangeSheetPresentation(
             messageId = item.id,
             renderState = renderState,
         )
     }
-    val summaryEntries = remember(renderState) {
-        if (renderState.actionEntries.isNotEmpty()) {
-            renderState.actionEntries
-        } else {
-            renderState.summary?.entries.orEmpty()
-        }
-    }
-    val groupedEntries = remember(summaryEntries) {
-        FileChangeRenderParser.grouped(summaryEntries)
+    val groupedEntries = remember(renderState) {
+        cachedFileChangeGroupedEntries(renderState)
     }
     val showsStreamingIndicator = accessoryState?.showsRunningIndicator == true || item.isStreaming
     if (groupedEntries.isEmpty() && item.supportingText.isNullOrBlank() && !showsStreamingIndicator) {
@@ -8588,7 +8577,7 @@ private fun CommandExecutionConversationRow(
 ) {
     val chrome = remodexConversationChrome()
     val resolvedRows = remember(item.text, item.isStreaming, details) {
-        resolvedCommandExecutionStatusPresentations(
+        cachedCommandExecutionStatusPresentations(
             item = item,
             details = details,
         )

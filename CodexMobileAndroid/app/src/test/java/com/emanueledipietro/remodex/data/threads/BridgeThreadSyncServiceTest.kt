@@ -1179,6 +1179,91 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `completed reasoning item keeps local streaming text and rebinds the provisional row while turn is still running`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-reasoning-completion-no-shrink",
+                    title = "Reasoning completion no shrink thread",
+                    preview = "Recovered partial prefix plus newer local tail",
+                    projectPath = "/tmp/project-reasoning-completion-no-shrink",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "reasoning-turn-reasoning-completion-no-shrink",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Recovered partial prefix plus newer local tail",
+                                turnId = "turn-reasoning-completion-no-shrink",
+                                itemId = null,
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-reasoning-completion-no-shrink",
+            "turn-reasoning-completion-no-shrink",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleStructuredItemLifecycle",
+            buildJsonObject {
+                put("id", JsonPrimitive("reasoning-item-completion-no-shrink"))
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("output_text"))
+                                put("text", JsonPrimitive("Recovered partial prefix"))
+                            },
+                        )
+                    },
+                )
+            },
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-reasoning-completion-no-shrink"))
+                put("turnId", JsonPrimitive("turn-reasoning-completion-no-shrink"))
+            },
+            "reasoning",
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-reasoning-completion-no-shrink" }
+        val reasoning = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .single { item -> item.kind == ConversationItemKind.REASONING }
+
+        assertEquals("reasoning-turn-reasoning-completion-no-shrink", reasoning.id)
+        assertEquals("reasoning-item-completion-no-shrink", reasoning.itemId)
+        assertEquals("Recovered partial prefix plus newer local tail", reasoning.text)
+        assertTrue(reasoning.isStreaming)
+        assertEquals(1, thread.timelineMutations.size)
+        assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
+    }
+
+    @Test
     fun `approval policy fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithApprovalPolicyFallbackValue(
@@ -6058,6 +6143,69 @@ class BridgeThreadSyncServiceTest {
         assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
         assertTrue(thread.timelineMutations.none { mutation ->
             mutation is TimelineMutation.AssistantTextDelta
+        })
+    }
+
+    @Test
+    fun `reasoning deltas coalesce into a single streaming upsert mutation`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-reasoning-coalesce",
+                    title = "Reasoning coalescing",
+                    preview = "",
+                    projectPath = "/tmp/project-reasoning-coalesce",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-reasoning-coalesce"))
+                put("turnId", JsonPrimitive("turn-reasoning-coalesce"))
+                put("itemId", JsonPrimitive("reasoning-item-coalesce"))
+                put("delta", JsonPrimitive("```thin"))
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-reasoning-coalesce"))
+                put("turnId", JsonPrimitive("turn-reasoning-coalesce"))
+                put("itemId", JsonPrimitive("reasoning-item-coalesce"))
+                put("delta", JsonPrimitive("king\nstep"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-reasoning-coalesce" }
+        val reasoning = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .single { item -> item.kind == ConversationItemKind.REASONING }
+
+        assertEquals("```thinking\nstep", reasoning.text)
+        assertTrue(reasoning.isStreaming)
+        assertEquals(1, thread.timelineMutations.size)
+        assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
+        assertTrue(thread.timelineMutations.none { mutation ->
+            mutation is TimelineMutation.ReasoningTextDelta
         })
     }
 

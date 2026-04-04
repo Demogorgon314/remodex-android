@@ -342,7 +342,7 @@ internal fun ConversationRichMarkdownContent(
     enablesSelection: Boolean = false,
     onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
-    val segments = remember(text) { parseConversationMarkdownSegments(text) }
+    val segments = remember(text) { cachedConversationMarkdownSegments(text) }
     val saveController = rememberConversationMarkdownSaveController()
     var preview by remember(text) { mutableStateOf<ConversationMarkdownPreview?>(null) }
 
