@@ -44,6 +44,26 @@ private data class MarkdownCodeBlockHighlightedTextCacheKey(
     val normalizedLanguage: String?,
 )
 
+private data class ConversationMessageRowRenderModelCacheKey(
+    val messageId: String,
+    val text: String,
+    val isStreaming: Boolean,
+    val blockDiffText: String?,
+    val blockDiffEntries: List<FileChangeSummaryEntry>?,
+    val commandExecutionPresentationKey: CommandExecutionPresentationCacheKey?,
+)
+
+internal data class ConversationMessageRowRenderModel(
+    val assistantBlockDiffPresentation: FileChangeSheetPresentation? = null,
+    val thinkingText: String = "",
+    val thinkingActivityPreview: String? = null,
+    val thinkingDisclosureContent: ThinkingDisclosureContent? = null,
+    val fileChangeRenderState: FileChangeRenderState? = null,
+    val fileChangeDetailsPresentation: FileChangeSheetPresentation? = null,
+    val fileChangeGroupedEntries: List<FileChangeGroup> = emptyList(),
+    val commandExecutionStatuses: List<CommandExecutionStatusPresentation> = emptyList(),
+)
+
 private object ConversationRenderCaches {
     val thinkingText = BoundedRenderCache<String, String>(maxEntries = 128)
     val thinkingActivityPreview = BoundedRenderCache<String, String?>(maxEntries = 128)
@@ -57,6 +77,8 @@ private object ConversationRenderCaches {
     val markdownSpans = BoundedRenderCache<ConversationMarkdownTextRenderToken, Spanned>(maxEntries = 96)
     val markdownCodeBlockHighlightedText =
         BoundedRenderCache<MarkdownCodeBlockHighlightedTextCacheKey, CharSequence>(maxEntries = 96)
+    val messageRowRenderModels =
+        BoundedRenderCache<ConversationMessageRowRenderModelCacheKey, ConversationMessageRowRenderModel>(maxEntries = 160)
 }
 
 internal fun cachedThinkingText(
@@ -179,3 +201,109 @@ internal fun cachedConversationMarkdownCodeBlockHighlightedText(
     ),
     block,
 )
+
+internal fun cachedConversationMessageRowRenderModel(
+    item: RemodexConversationItem,
+    blockDiffText: String?,
+    blockDiffEntries: List<FileChangeSummaryEntry>?,
+    commandExecutionDetails: RemodexCommandExecutionDetails?,
+): ConversationMessageRowRenderModel {
+    val commandExecutionPresentationKey = if (item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.COMMAND_EXECUTION) {
+        CommandExecutionPresentationCacheKey(
+            text = item.text,
+            isStreaming = item.isStreaming,
+            fullCommand = commandExecutionDetails?.fullCommand,
+            liveStatus = commandExecutionDetails?.liveStatus,
+            exitCode = commandExecutionDetails?.exitCode,
+            durationMs = commandExecutionDetails?.durationMs,
+        )
+    } else {
+        null
+    }
+    return ConversationRenderCaches.messageRowRenderModels.getOrPut(
+        ConversationMessageRowRenderModelCacheKey(
+            messageId = item.id,
+            text = item.text,
+            isStreaming = item.isStreaming,
+            blockDiffText = blockDiffText?.trim()?.takeIf(String::isNotEmpty),
+            blockDiffEntries = blockDiffEntries?.takeIf(List<FileChangeSummaryEntry>::isNotEmpty),
+            commandExecutionPresentationKey = commandExecutionPresentationKey,
+        ),
+    ) {
+        val normalizedBlockDiffText = blockDiffText?.trim().orEmpty()
+        val normalizedBlockDiffEntries = blockDiffEntries.orEmpty()
+        val assistantBlockDiffPresentation = if (
+            normalizedBlockDiffText.isBlank() || normalizedBlockDiffEntries.isEmpty()
+        ) {
+            null
+        } else {
+            val renderState = FileChangeRenderState(
+                summary = FileChangeSummary(normalizedBlockDiffEntries),
+                actionEntries = normalizedBlockDiffEntries.filter { entry -> entry.action != null },
+                bodyText = normalizedBlockDiffText,
+            )
+            buildTimelineFileChangeSheetPresentation(
+                messageId = item.id,
+                renderState = renderState,
+            )
+        }
+        val thinkingText = if (item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.REASONING) {
+            cachedThinkingText(item.text)
+        } else {
+            ""
+        }
+        val thinkingActivityPreview = if (thinkingText.isEmpty()) {
+            null
+        } else {
+            cachedThinkingActivityPreview(thinkingText)
+        }
+        val thinkingDisclosureContent = if (
+            item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.REASONING &&
+                !item.isStreaming &&
+                thinkingActivityPreview == null &&
+                thinkingText.isNotEmpty()
+        ) {
+            cachedThinkingDisclosureContent(thinkingText)
+        } else {
+            null
+        }
+        val fileChangeRenderState = if (item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.FILE_CHANGE) {
+            cachedFileChangeRenderState(item.text)
+        } else {
+            null
+        }
+        val fileChangeDetailsPresentation = if (fileChangeRenderState != null) {
+            cachedTimelineFileChangeSheetPresentation(
+                messageId = item.id,
+                renderState = fileChangeRenderState,
+            )
+        } else {
+            null
+        }
+        val fileChangeGroupedEntries = if (fileChangeRenderState != null) {
+            cachedFileChangeGroupedEntries(fileChangeRenderState)
+        } else {
+            emptyList()
+        }
+        val commandExecutionStatuses = if (
+            item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.COMMAND_EXECUTION
+        ) {
+            cachedCommandExecutionStatusPresentations(
+                item = item,
+                details = commandExecutionDetails,
+            )
+        } else {
+            emptyList()
+        }
+        ConversationMessageRowRenderModel(
+            assistantBlockDiffPresentation = assistantBlockDiffPresentation,
+            thinkingText = thinkingText,
+            thinkingActivityPreview = thinkingActivityPreview,
+            thinkingDisclosureContent = thinkingDisclosureContent,
+            fileChangeRenderState = fileChangeRenderState,
+            fileChangeDetailsPresentation = fileChangeDetailsPresentation,
+            fileChangeGroupedEntries = fileChangeGroupedEntries,
+            commandExecutionStatuses = commandExecutionStatuses,
+        )
+    }
+}

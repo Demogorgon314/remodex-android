@@ -304,6 +304,9 @@ private val ComposerMentionFileTint = Color(0xFF2563EB)
 private val ComposerMentionSkillTint = Color(0xFF4F46E5)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
+private const val ConversationTimelinePageSize = 40
+private const val ConversationLoadEarlierMessagesKey = "conversation-load-earlier-messages"
+private const val ConversationBottomAnchorKey = "conversation-bottom-anchor"
 private const val ThreadMarkdownPrewarmAllItems = Int.MAX_VALUE
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
     com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject(projectPath)
@@ -323,6 +326,56 @@ private data class TimelineBottomAnchorRequest(
     val queuedDraftCount: Int,
     val pinnedPlanItemId: String?,
 )
+
+internal data class VisibleConversationTimelineWindow(
+    val items: List<RemodexConversationItem>,
+    val hiddenItemCount: Int,
+    val hasEarlierMessages: Boolean,
+    val bottomAnchorIndex: Int,
+    val activeTurnAnchorIndex: Int?,
+)
+
+internal fun buildVisibleConversationTimelineWindow(
+    timelineItems: List<RemodexConversationItem>,
+    activeTurnAnchorIndex: Int?,
+    visibleTailCount: Int,
+): VisibleConversationTimelineWindow {
+    if (timelineItems.isEmpty()) {
+        return VisibleConversationTimelineWindow(
+            items = emptyList(),
+            hiddenItemCount = 0,
+            hasEarlierMessages = false,
+            bottomAnchorIndex = 0,
+            activeTurnAnchorIndex = null,
+        )
+    }
+    val effectiveVisibleTailCount = visibleTailCount.coerceAtLeast(ConversationTimelinePageSize)
+    val hiddenItemCount = (timelineItems.size - effectiveVisibleTailCount).coerceAtLeast(0)
+    val visibleItems = timelineItems.drop(hiddenItemCount)
+    val hasEarlierMessages = hiddenItemCount > 0
+    val leadingItemsCount = if (hasEarlierMessages) 1 else 0
+    val visibleActiveTurnAnchorIndex = activeTurnAnchorIndex
+        ?.takeIf { it >= hiddenItemCount }
+        ?.let { leadingItemsCount + (it - hiddenItemCount) }
+    return VisibleConversationTimelineWindow(
+        items = visibleItems,
+        hiddenItemCount = hiddenItemCount,
+        hasEarlierMessages = hasEarlierMessages,
+        bottomAnchorIndex = leadingItemsCount + visibleItems.size,
+        activeTurnAnchorIndex = visibleActiveTurnAnchorIndex,
+    )
+}
+
+private fun renderedConversationTimelineIndexForMessageId(
+    window: VisibleConversationTimelineWindow,
+    messageId: String,
+): Int? {
+    val localIndex = window.items.indexOfFirst { it.id == messageId }
+    if (localIndex < 0) {
+        return null
+    }
+    return (if (window.hasEarlierMessages) 1 else 0) + localIndex
+}
 
 internal enum class ConversationMarkdownPrewarmStyle {
     PRIMARY_BODY,
@@ -1351,6 +1404,7 @@ fun ConversationScreen(
     var userInitiatedScrollInProgress by rememberSaveable(thread.id) { mutableStateOf(false) }
     var userScrollCooldownUntilMs by rememberSaveable(thread.id) { mutableStateOf<Long?>(null) }
     var isUserScrollCooldownActive by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var visibleTailCount by rememberSaveable(thread.id) { mutableStateOf(ConversationTimelinePageSize) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledComposerAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var pendingTurnAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1381,14 +1435,30 @@ fun ConversationScreen(
     val pinnedPlanItem = conversationLayout.pinnedPlanItem
     val timelineItems = derivedState.timelineItems
     val timelineItemsIdentity = derivedState.timelineItemsIdentity
+    val visibleTimelineWindow = remember(timelineItemsIdentity, derivedState.activeTurnAnchorIndex, visibleTailCount) {
+        buildVisibleConversationTimelineWindow(
+            timelineItems = timelineItems,
+            activeTurnAnchorIndex = derivedState.activeTurnAnchorIndex,
+            visibleTailCount = visibleTailCount,
+        )
+    }
+    val visibleTimelineItems = visibleTimelineWindow.items
+    val hasEarlierTimelineItems = visibleTimelineWindow.hasEarlierMessages
     val emptyTimelineStatePresentation = derivedState.emptyTimelineStatePresentation
     val selectedPlanSheetItem = derivedState.selectedPlanSheetItem
     val blockAccessories = derivedState.blockAccessories
     val latestRunningIndicatorMessageId = derivedState.latestRunningIndicatorMessageId
-    val activeTurnAnchorIndex = derivedState.activeTurnAnchorIndex
+    val activeTurnAnchorIndex = visibleTimelineWindow.activeTurnAnchorIndex
     val shouldPinTimelineToBottomDuringLayoutChange = derivedState.shouldPinTimelineToBottomDuringLayoutChange
-    val shouldShowScrollToLatestButton = derivedState.shouldShowScrollToLatestButton
-    val bottomAnchorRequest = derivedState.bottomAnchorRequest
+    val shouldShowScrollToLatestButton = remember(visibleTimelineItems.size, isScrolledToBottom) {
+        ConversationScrollStateTracker.shouldShowScrollToLatestButton(
+            itemCount = visibleTimelineItems.size,
+            isScrolledToBottom = isScrolledToBottom,
+        )
+    }
+    val bottomAnchorRequest = remember(derivedState.bottomAnchorRequest, visibleTimelineWindow.bottomAnchorIndex) {
+        derivedState.bottomAnchorRequest?.copy(targetIndex = visibleTimelineWindow.bottomAnchorIndex)
+    }
     val selectedCommandExecutionItem = derivedState.selectedCommandExecutionItem
     val selectedCommandExecutionStatus = derivedState.selectedCommandExecutionStatus
     val backgroundTerminalSessions = derivedState.backgroundTerminalSessions
@@ -1402,7 +1472,7 @@ fun ConversationScreen(
             (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
     val lastTimelineItem = timelineItems.lastOrNull()
     val lastTimelineItemId = lastTimelineItem?.id
-    val bottomAnchorIndex = timelineItems.size
+    val bottomAnchorIndex = visibleTimelineWindow.bottomAnchorIndex
     val handleSelectSlashCommand: (RemodexSlashCommand) -> Unit = remember(
         onSelectSlashCommand,
         onRefreshUsageStatus,
@@ -1446,6 +1516,51 @@ fun ConversationScreen(
         threadId = thread.id,
         requests = markdownPrewarmRequests,
     )
+
+    val handleLoadEarlierMessages = remember(
+        timelineItemsIdentity,
+        visibleTailCount,
+        hasEarlierTimelineItems,
+        activeTurnAnchorIndex,
+        timelineState,
+        coroutineScope,
+    ) {
+        loadEarlier@{
+            if (!hasEarlierTimelineItems) {
+                return@loadEarlier
+            }
+            val previousVisibleAnchor = timelineState.layoutInfo.visibleItemsInfo
+                .firstOrNull { info ->
+                    info.key != ConversationLoadEarlierMessagesKey &&
+                        info.key != ConversationBottomAnchorKey
+                }
+            val previousAnchorMessageId = previousVisibleAnchor?.key as? String
+            val previousAnchorOffset = timelineState.firstVisibleItemScrollOffset
+            val nextVisibleTailCount = minOf(
+                visibleTailCount + ConversationTimelinePageSize,
+                timelineItems.size,
+            )
+            if (nextVisibleTailCount == visibleTailCount) {
+                return@loadEarlier
+            }
+            coroutineScope.launch {
+                visibleTailCount = nextVisibleTailCount
+                withFrameNanos { }
+                previousAnchorMessageId
+                    ?.let { messageId ->
+                        val updatedWindow = buildVisibleConversationTimelineWindow(
+                            timelineItems = timelineItems,
+                            activeTurnAnchorIndex = derivedState.activeTurnAnchorIndex,
+                            visibleTailCount = nextVisibleTailCount,
+                        )
+                        renderedConversationTimelineIndexForMessageId(updatedWindow, messageId)
+                    }
+                    ?.let { targetIndex ->
+                        timelineState.scrollToItem(targetIndex, previousAnchorOffset)
+                    }
+            }
+        }
+    }
 
     LaunchedEffect(thread.id, followBottomThresholdPx, initialScrollApplied, autoScrollMode) {
         snapshotFlow {
@@ -1705,7 +1820,8 @@ fun ConversationScreen(
                 uiState = uiState,
                 thread = thread,
                 timelineState = timelineState,
-                timelineItems = timelineItems,
+                timelineItems = visibleTimelineItems,
+                hasEarlierMessages = hasEarlierTimelineItems,
                 blockAccessories = blockAccessories,
                 showsEmptyTimelineState = showsEmptyTimelineState,
                 emptyTimelineStatePresentation = emptyTimelineStatePresentation,
@@ -1713,6 +1829,7 @@ fun ConversationScreen(
                 shouldShowScrollToLatestButton = shouldShowScrollToLatestButton,
                 bottomAnchorIndex = bottomAnchorIndex,
                 autocompleteVisible = autocompleteVisible,
+                onLoadEarlierMessages = handleLoadEarlierMessages,
                 onRetryConnection = onRetryConnection,
                 onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                 onScrollToLatest = {
@@ -1858,6 +1975,7 @@ private fun ConversationTimelinePane(
     thread: RemodexThreadSummary,
     timelineState: LazyListState,
     timelineItems: List<RemodexConversationItem>,
+    hasEarlierMessages: Boolean,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     showsEmptyTimelineState: Boolean,
     emptyTimelineStatePresentation: ConversationTimelineEmptyStatePresentation,
@@ -1865,6 +1983,7 @@ private fun ConversationTimelinePane(
     shouldShowScrollToLatestButton: Boolean,
     bottomAnchorIndex: Int,
     autocompleteVisible: Boolean,
+    onLoadEarlierMessages: () -> Unit,
     onRetryConnection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
     onScrollToLatest: () -> Unit,
@@ -1914,6 +2033,7 @@ private fun ConversationTimelinePane(
                 ) {
                     conversationTimelineItems(
                         timelineItems = timelineItems,
+                        hasEarlierMessages = hasEarlierMessages,
                         streamingAssistantTextsByMessageId = uiState.streamingAssistantTextsByMessageId,
                         blockAccessories = blockAccessories,
                         assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
@@ -1929,6 +2049,7 @@ private fun ConversationTimelinePane(
                         onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
                         onOpenSubagentThread = onOpenSubagentThread,
                         onHydrateSubagentThread = onHydrateSubagentThread,
+                        onLoadEarlierMessages = onLoadEarlierMessages,
                     )
                 }
             }
@@ -2216,6 +2337,7 @@ private fun ConversationComposerPane(
 
 private fun LazyListScope.conversationTimelineItems(
     timelineItems: List<RemodexConversationItem>,
+    hasEarlierMessages: Boolean,
     streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState>,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
@@ -2231,6 +2353,7 @@ private fun LazyListScope.conversationTimelineItems(
     onOpenCommandExecutionDetails: (String) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
+    onLoadEarlierMessages: () -> Unit,
 ) {
     if (timelineItems.isEmpty()) {
         item {
@@ -2241,6 +2364,13 @@ private fun LazyListScope.conversationTimelineItems(
             )
         }
     } else {
+        if (hasEarlierMessages) {
+            item(key = ConversationLoadEarlierMessagesKey) {
+                ConversationLoadEarlierMessagesButton(
+                    onClick = onLoadEarlierMessages,
+                )
+            }
+        }
         items(
             items = timelineItems,
             key = { it.id },
@@ -2284,7 +2414,7 @@ private fun LazyListScope.conversationTimelineItems(
                 )
             }
         }
-        item(key = "conversation-bottom-anchor") {
+        item(key = ConversationBottomAnchorKey) {
             Spacer(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2533,6 +2663,23 @@ private fun ConversationCircleButton(
                 tint = iconTint,
             )
         }
+    }
+}
+
+@Composable
+private fun ConversationLoadEarlierMessagesButton(
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = "Load earlier messages",
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+        )
     }
 }
 
@@ -8088,27 +8235,19 @@ private fun AssistantConversationRow(
         text = if (hasLiveStreamingText) "streaming" else item.text,
         isStreaming = item.isStreaming,
     )
-    val blockDiffPresentation = remember(
+    val rowRenderModel = remember(
         item.id,
         accessoryState?.blockDiffText,
         accessoryState?.blockDiffEntries,
     ) {
-        val blockDiffText = accessoryState?.blockDiffText?.trim().orEmpty()
-        val blockDiffEntries = accessoryState?.blockDiffEntries.orEmpty()
-        if (blockDiffText.isBlank() || blockDiffEntries.isEmpty()) {
-            null
-        } else {
-            val renderState = FileChangeRenderState(
-                summary = FileChangeSummary(blockDiffEntries),
-                actionEntries = blockDiffEntries.filter { entry -> entry.action != null },
-                bodyText = blockDiffText,
-            )
-            buildTimelineFileChangeSheetPresentation(
-                messageId = item.id,
-                renderState = renderState,
-            )
-        }
+        cachedConversationMessageRowRenderModel(
+            item = item,
+            blockDiffText = accessoryState?.blockDiffText,
+            blockDiffEntries = accessoryState?.blockDiffEntries,
+            commandExecutionDetails = null,
+        )
     }
+    val blockDiffPresentation = rowRenderModel.assistantBlockDiffPresentation
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
     ConversationMessageActionContainer(
         text = item.text,
@@ -8694,23 +8833,20 @@ private fun ThinkingConversationRow(
     accessoryState: ConversationBlockAccessoryState?,
 ) {
     val chrome = remodexConversationChrome()
-    val thinkingText = remember(item.text) {
-        cachedThinkingText(item.text)
+    val rowRenderModel = remember(item.id, item.text, item.isStreaming) {
+        cachedConversationMessageRowRenderModel(
+            item = item,
+            blockDiffText = null,
+            blockDiffEntries = null,
+            commandExecutionDetails = null,
+        )
     }
-    val activityPreview = remember(thinkingText) {
-        cachedThinkingActivityPreview(thinkingText)
-    }
-    val showDetailedThinking = !item.isStreaming && activityPreview == null && thinkingText.isNotEmpty()
-    val thinkingContent = remember(item.id, thinkingText, showDetailedThinking) {
-        if (showDetailedThinking) {
-            cachedThinkingDisclosureContent(thinkingText)
-        } else {
-            ThinkingDisclosureContent(
-                sections = emptyList(),
-                fallbackText = "",
-            )
-        }
-    }
+    val thinkingText = rowRenderModel.thinkingText
+    val activityPreview = rowRenderModel.thinkingActivityPreview
+    val thinkingContent = rowRenderModel.thinkingDisclosureContent ?: ThinkingDisclosureContent(
+        sections = emptyList(),
+        fallbackText = "",
+    )
     ConversationMessageActionContainer(
         text = item.text,
         messageRole = ConversationSpeaker.SYSTEM,
@@ -8940,18 +9076,16 @@ private fun FileChangeConversationRow(
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val renderState = remember(item.text) {
-        cachedFileChangeRenderState(item.text)
-    }
-    val detailsPresentation = remember(item.id, renderState) {
-        cachedTimelineFileChangeSheetPresentation(
-            messageId = item.id,
-            renderState = renderState,
+    val rowRenderModel = remember(item.id, item.text, item.isStreaming) {
+        cachedConversationMessageRowRenderModel(
+            item = item,
+            blockDiffText = null,
+            blockDiffEntries = null,
+            commandExecutionDetails = null,
         )
     }
-    val groupedEntries = remember(renderState) {
-        cachedFileChangeGroupedEntries(renderState)
-    }
+    val detailsPresentation = rowRenderModel.fileChangeDetailsPresentation
+    val groupedEntries = rowRenderModel.fileChangeGroupedEntries
     val showsStreamingIndicator = accessoryState?.showsRunningIndicator == true || item.isStreaming
     if (groupedEntries.isEmpty() && item.supportingText.isNullOrBlank() && !showsStreamingIndicator) {
         return
@@ -9335,12 +9469,15 @@ private fun CommandExecutionConversationRow(
     onOpenDetails: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val resolvedRows = remember(item.text, item.isStreaming, details) {
-        cachedCommandExecutionStatusPresentations(
+    val rowRenderModel = remember(item.id, item.text, item.isStreaming, details) {
+        cachedConversationMessageRowRenderModel(
             item = item,
-            details = details,
+            blockDiffText = null,
+            blockDiffEntries = null,
+            commandExecutionDetails = details,
         )
     }
+    val resolvedRows = rowRenderModel.commandExecutionStatuses
     ConversationMessageActionContainer(
         text = item.text,
         messageRole = ConversationSpeaker.SYSTEM,

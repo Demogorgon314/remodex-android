@@ -233,4 +233,47 @@ class ConversationStreamingRenderHeuristicsTest {
         assertTrue(requests.isNotEmpty())
         assertTrue(requests.all { it.messageId.startsWith("reasoning:") })
     }
+
+    @Test
+    fun `visible timeline window keeps only tail slice and offsets active turn anchor`() {
+        val messages = (1..50).map { index ->
+            RemodexConversationItem(
+                id = "message-$index",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "message $index",
+            )
+        }
+
+        val window = buildVisibleConversationTimelineWindow(
+            timelineItems = messages,
+            activeTurnAnchorIndex = 45,
+            visibleTailCount = 40,
+        )
+
+        assertEquals(10, window.hiddenItemCount)
+        assertTrue(window.hasEarlierMessages)
+        assertEquals("message-11", window.items.first().id)
+        assertEquals("message-50", window.items.last().id)
+        assertEquals(41, window.bottomAnchorIndex)
+        assertEquals(36, window.activeTurnAnchorIndex)
+    }
+
+    @Test
+    fun `visible timeline window hides active turn anchor when it is outside tail slice`() {
+        val messages = (1..50).map { index ->
+            RemodexConversationItem(
+                id = "message-$index",
+                speaker = ConversationSpeaker.SYSTEM,
+                text = "message $index",
+            )
+        }
+
+        val window = buildVisibleConversationTimelineWindow(
+            timelineItems = messages,
+            activeTurnAnchorIndex = 3,
+            visibleTailCount = 40,
+        )
+
+        assertEquals(null, window.activeTurnAnchorIndex)
+    }
 }
