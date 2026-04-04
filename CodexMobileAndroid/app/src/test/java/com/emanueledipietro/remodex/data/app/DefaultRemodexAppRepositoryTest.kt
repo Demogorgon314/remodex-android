@@ -444,6 +444,74 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `thread projection cache keeps incremental correctness when streaming assistant upsert replaces the tail mutation`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        val userMutation = TimelineMutation.Upsert(
+            RemodexConversationItem(
+                id = "user-1",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Ship it",
+                orderIndex = 0L,
+            ),
+        )
+        val assistantMutation = TimelineMutation.Upsert(
+            RemodexConversationItem(
+                id = "assistant-1",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "First chunk",
+                turnId = "turn-cache-tail-replace",
+                itemId = "assistant-item-1",
+                isStreaming = true,
+                orderIndex = 1L,
+            ),
+        )
+        val baselineSnapshot = ThreadSyncSnapshot(
+            id = "thread-cache-tail-replace",
+            title = "Tail replacement",
+            preview = "First chunk",
+            projectPath = "/tmp/project-cache-tail-replace",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                userMutation,
+                assistantMutation,
+            ),
+        )
+        val nextSnapshot = baselineSnapshot.copy(
+            timelineMutations = listOf(
+                userMutation,
+                TimelineMutation.Upsert(
+                    (assistantMutation as TimelineMutation.Upsert).item.copy(
+                        text = "First chunkSecond chunk",
+                        isStreaming = true,
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            baselineSnapshot,
+        )
+        val cachedProjected = invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            nextSnapshot,
+        )
+        val fullProjected = com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
+            .reduceProjected(nextSnapshot.timelineMutations)
+
+        assertEquals(fullProjected.map(RemodexConversationItem::id), cachedProjected.map(RemodexConversationItem::id))
+        assertEquals(fullProjected.map(RemodexConversationItem::text), cachedProjected.map(RemodexConversationItem::text))
+        assertEquals("First chunkSecond chunk", cachedProjected.last().text)
+    }
+
+    @Test
     fun `encrypted reconnect resumes selected running thread to recover live output`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)

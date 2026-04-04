@@ -207,6 +207,102 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items suppresses shorter closed assistant snapshot instead of rolling visible text back`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-local",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Here is the full answer with all details",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = false,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Here is the full",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = false,
+                orderIndex = 5L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals(existing.single().text, merged.single().text)
+        assertEquals("assistant-item-1", merged.single().itemId)
+        assertFalse(merged.single().isStreaming)
+    }
+
+    @Test
+    fun `merge history items prefers the active streaming assistant segment over earlier completed output`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-completed",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "First completed segment",
+                turnId = "turn-1",
+                itemId = "assistant-item-old",
+                isStreaming = false,
+                orderIndex = 1L,
+            ),
+            RemodexConversationItem(
+                id = "assistant-streaming",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Second segment in progress",
+                turnId = "turn-1",
+                itemId = null,
+                isStreaming = true,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Second segment in progress with more detail",
+                turnId = "turn-1",
+                itemId = "assistant-item-new",
+                isStreaming = true,
+                orderIndex = 3L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(2, merged.size)
+        assertEquals("First completed segment", merged[0].text)
+        assertEquals("assistant-item-old", merged[0].itemId)
+        assertEquals("assistant-streaming", merged[1].id)
+        assertEquals("assistant-item-new", merged[1].itemId)
+        assertEquals(
+            "Second segment in progress with more detail",
+            merged[1].text,
+        )
+        assertTrue(merged[1].isStreaming)
+    }
+
+    @Test
     fun `merge history items backfills missing local timestamp from history`() {
         val existing = listOf(
             RemodexConversationItem(

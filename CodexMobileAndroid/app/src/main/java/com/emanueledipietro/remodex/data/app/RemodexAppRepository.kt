@@ -28,6 +28,7 @@ import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import kotlinx.serialization.json.JsonElement
 import java.io.File
 
@@ -35,6 +36,7 @@ interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
     val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>>
+    val streamingAssistantTextsByMessageId: StateFlow<Map<String, StreamingAssistantTextState>>
     val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot>
     val gptAccountErrorMessage: StateFlow<String?>
     val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus>

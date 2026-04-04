@@ -59,11 +59,42 @@ data class ThreadSyncSnapshot(
     val timelineMutations: List<TimelineMutation>,
 )
 
+class StreamingAssistantTextHandle internal constructor(
+    initialText: String = "",
+) {
+    private val builder = StringBuilder(initialText)
+
+    @Synchronized
+    internal fun syncTo(text: String) {
+        builder.clear()
+        builder.append(text)
+    }
+
+    @Synchronized
+    internal fun append(delta: String) {
+        builder.append(delta)
+    }
+
+    @Synchronized
+    fun snapshot(): String = builder.toString()
+
+    @Synchronized
+    fun length(): Int = builder.length
+}
+
+data class StreamingAssistantTextState(
+    val handle: StreamingAssistantTextHandle,
+    val version: Long,
+    val appendedDelta: String? = null,
+    val textLength: Int,
+)
+
 interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
     val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>>
+    val streamingAssistantTextsByMessageId: StateFlow<Map<String, StreamingAssistantTextState>>
     val contextWindowUsageByThreadId: StateFlow<Map<String, RemodexContextWindowUsage>>
     val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?>
     val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?>

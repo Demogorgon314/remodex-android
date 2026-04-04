@@ -7,6 +7,39 @@ import org.junit.Test
 
 class ConversationStreamingRenderHeuristicsTest {
     @Test
+    fun `assistant text render mode stays lightweight while streaming`() {
+        val mode = resolveAssistantTextRenderMode(
+            text = "partial response",
+            isStreaming = true,
+            richRenderArmed = true,
+        )
+
+        assertEquals(AssistantTextRenderMode.LIGHTWEIGHT_PLAIN, mode)
+    }
+
+    @Test
+    fun `assistant text render mode stays lightweight until settling completes`() {
+        val mode = resolveAssistantTextRenderMode(
+            text = "completed response",
+            isStreaming = false,
+            richRenderArmed = false,
+        )
+
+        assertEquals(AssistantTextRenderMode.LIGHTWEIGHT_PLAIN, mode)
+    }
+
+    @Test
+    fun `assistant text render mode upgrades to rich markdown after settling`() {
+        val mode = resolveAssistantTextRenderMode(
+            text = "completed response",
+            isStreaming = false,
+            richRenderArmed = true,
+        )
+
+        assertEquals(AssistantTextRenderMode.RICH_MARKDOWN, mode)
+    }
+
+    @Test
     fun `streaming plain text display leaves tabs and newlines untouched`() {
         val formatted = formatStreamingPlainTextForDisplay("A\n\tB")
 

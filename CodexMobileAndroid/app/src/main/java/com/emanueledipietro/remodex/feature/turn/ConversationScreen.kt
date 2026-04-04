@@ -8,7 +8,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.SystemClock
 import android.text.format.DateFormat
+import android.util.TypedValue
 import android.view.HapticFeedbackConstants
+import android.view.ViewGroup
+import android.widget.TextView
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
@@ -172,6 +175,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
@@ -205,7 +209,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.feature.appshell.PlanComposerSessionUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
@@ -278,6 +284,7 @@ private val ConversationScrollToLatestButtonOffset = 18.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
 private const val StructuredSystemSummaryAutoCollapseDelayMs = 650L
+private const val AssistantRichRenderSettleDelayMs = 180L
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -315,6 +322,30 @@ private enum class ConversationCircleButtonStyle {
     STANDARD,
     FROSTED,
 }
+
+internal enum class AssistantTextRenderMode {
+    LIGHTWEIGHT_PLAIN,
+    RICH_MARKDOWN,
+}
+
+private data class ConversationScreenDerivedState(
+    val messagesIdentity: MessagesStructuralIdentity,
+    val planComposerFlow: PlanComposerFlowSnapshot,
+    val conversationLayout: ConversationTimelineLayout,
+    val timelineItems: List<RemodexConversationItem>,
+    val timelineItemsIdentity: MessagesStructuralIdentity,
+    val emptyTimelineStatePresentation: ConversationTimelineEmptyStatePresentation,
+    val selectedPlanSheetItem: RemodexConversationItem?,
+    val blockAccessories: Map<String, ConversationBlockAccessoryState>,
+    val latestRunningIndicatorMessageId: String?,
+    val activeTurnAnchorIndex: Int?,
+    val shouldPinTimelineToBottomDuringLayoutChange: Boolean,
+    val shouldShowScrollToLatestButton: Boolean,
+    val bottomAnchorRequest: TimelineBottomAnchorRequest?,
+    val selectedCommandExecutionItem: RemodexConversationItem?,
+    val selectedCommandExecutionStatus: CommandExecutionStatusPresentation?,
+    val backgroundTerminalSessions: List<BackgroundTerminalPresentation>,
+)
 
 internal data class TimelineBottomLayoutSnapshot(
     val totalItemsCount: Int,
@@ -1002,6 +1033,210 @@ internal fun initialExpandedFileChangeChunkIds(diffChunks: List<PerFileDiffChunk
 }
 
 @Composable
+private fun rememberConversationScreenDerivedState(
+    thread: RemodexThreadSummary,
+    uiState: AppUiState,
+    dismissedPlanPromptRequestKeys: Set<String>,
+    selectedPlanSheetItemId: String?,
+    commandDetailsMessageId: String?,
+    initialScrollApplied: Boolean,
+    autoScrollMode: ConversationAutoScrollMode,
+    shouldPauseAutomaticScrolling: Boolean,
+    isScrolledToBottom: Boolean,
+    composerFocused: Boolean,
+    imeBottomPx: Int,
+    autocompleteVisible: Boolean,
+): ConversationScreenDerivedState {
+    val messagesIdentity = thread.messages.structuralIdentity()
+    val planComposerFlow = remember(
+        messagesIdentity,
+        thread.latestTurnTerminalState,
+        thread.runtimeConfig.planningMode,
+        thread.queuedDraftItems,
+        uiState.planComposerSession,
+        dismissedPlanPromptRequestKeys,
+    ) {
+        resolvePlanComposerFlow(
+            messages = thread.messages,
+            session = uiState.planComposerSession,
+            latestTurnTerminalState = thread.latestTurnTerminalState,
+            activePlanningMode = thread.runtimeConfig.planningMode,
+            hasQueuedFollowUps = thread.queuedDraftItems.isNotEmpty(),
+            dismissedPromptRequestKeys = dismissedPlanPromptRequestKeys,
+        )
+    }
+    val hiddenPromptItemId = planComposerFlow.takeoverPromptItem?.id
+    val conversationLayout = remember(
+        messagesIdentity,
+        hiddenPromptItemId,
+        thread.runtimeConfig.planningMode,
+    ) {
+        buildConversationTimelineLayout(
+            messages = thread.messages,
+            hiddenPromptItemId = hiddenPromptItemId,
+            activePlanningMode = thread.runtimeConfig.planningMode,
+        )
+    }
+    val timelineItems = remember(
+        conversationLayout,
+        uiState.commandExecutionDetailsByItemId,
+    ) {
+        suppressRunningBackgroundTerminalCommandRows(
+            items = conversationLayout.timelineItems,
+            detailsByItemId = uiState.commandExecutionDetailsByItemId,
+        )
+    }
+    val timelineItemsIdentity = timelineItems.structuralIdentity()
+    val emptyTimelineStatePresentation = remember(
+        timelineItems.isEmpty(),
+        conversationLayout.pinnedPlanItem?.id,
+        planComposerFlow.takeoverPromptItem?.id,
+        planComposerFlow.takeoverPromptItem?.structuredUserInputRequest?.requestIdKey,
+    ) {
+        resolveConversationTimelineEmptyStatePresentation(
+            timelineItems = timelineItems,
+            pinnedPlanItem = conversationLayout.pinnedPlanItem,
+            takeoverPromptItem = planComposerFlow.takeoverPromptItem,
+        )
+    }
+    val selectedPlanSheetItem = remember(messagesIdentity, selectedPlanSheetItemId) {
+        selectedPlanSheetItemId?.let { planItemId ->
+            thread.messages.firstOrNull { item ->
+                item.id == planItemId &&
+                    (item.kind == ConversationItemKind.PLAN || item.kind == ConversationItemKind.PLAN_UPDATE)
+            }
+        }
+    }
+    val blockAccessories = remember(
+        timelineItemsIdentity,
+        thread.isRunning,
+        thread.activeTurnId,
+        thread.latestTurnTerminalState,
+        thread.stoppedTurnIds,
+        uiState.assistantRevertStatesByMessageId,
+    ) {
+        buildConversationBlockAccessories(
+            items = timelineItems,
+            isThreadRunning = thread.isRunning,
+            activeTurnId = thread.activeTurnId,
+            latestTurnTerminalState = thread.latestTurnTerminalState,
+            stoppedTurnIds = thread.stoppedTurnIds,
+            assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
+        )
+    }
+    val latestRunningIndicatorMessageId = remember(timelineItemsIdentity, blockAccessories) {
+        timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
+    }
+    val activeTurnAnchorIndex = remember(timelineItemsIdentity, thread.activeTurnId) {
+        TurnTimelineReducer.activeTurnAnchorIndex(
+            items = timelineItems,
+            activeTurnId = thread.activeTurnId,
+        )
+    }
+    val shouldPinTimelineToBottomDuringLayoutChange = remember(
+        autoScrollMode,
+        shouldPauseAutomaticScrolling,
+        activeTurnAnchorIndex,
+    ) {
+        when {
+            shouldPauseAutomaticScrolling -> false
+            autoScrollMode == ConversationAutoScrollMode.FOLLOW_BOTTOM -> true
+            autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN -> activeTurnAnchorIndex == null
+            else -> false
+        }
+    }
+    val shouldShowScrollToLatestButton = remember(timelineItems.size, isScrolledToBottom) {
+        ConversationScrollStateTracker.shouldShowScrollToLatestButton(
+            itemCount = timelineItems.size,
+            isScrolledToBottom = isScrolledToBottom,
+        )
+    }
+    val lastTimelineItem = timelineItems.lastOrNull()
+    val bottomAnchorIndex = timelineItems.size
+    val bottomAnchorRequest = remember(
+        initialScrollApplied,
+        autoScrollMode,
+        shouldPauseAutomaticScrolling,
+        timelineItems.size,
+        lastTimelineItem?.id,
+        lastTimelineItem?.isStreaming,
+        latestRunningIndicatorMessageId,
+        composerFocused,
+        imeBottomPx,
+        autocompleteVisible,
+        uiState.composer.queuedDrafts.size,
+        conversationLayout.pinnedPlanItem?.id,
+        activeTurnAnchorIndex,
+    ) {
+        if (
+            !initialScrollApplied ||
+            shouldPauseAutomaticScrolling ||
+            timelineItems.isEmpty() ||
+            lastTimelineItem == null
+        ) {
+            null
+        } else if (
+            autoScrollMode != ConversationAutoScrollMode.FOLLOW_BOTTOM &&
+            !(autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN && activeTurnAnchorIndex == null)
+        ) {
+            null
+        } else {
+            TimelineBottomAnchorRequest(
+                targetIndex = bottomAnchorIndex,
+                lastItemId = lastTimelineItem.id,
+                lastItemStreaming = lastTimelineItem.isStreaming,
+                latestRunningIndicatorMessageId = latestRunningIndicatorMessageId,
+                composerFocused = composerFocused,
+                imeBottomPx = imeBottomPx,
+                autocompleteVisible = autocompleteVisible,
+                queuedDraftCount = uiState.composer.queuedDrafts.size,
+                pinnedPlanItemId = conversationLayout.pinnedPlanItem?.id,
+            )
+        }
+    }
+    val selectedCommandExecutionItem = remember(thread.messages, commandDetailsMessageId) {
+        commandDetailsMessageId?.let { messageId ->
+            thread.messages.firstOrNull { item ->
+                item.id == messageId && item.kind == ConversationItemKind.COMMAND_EXECUTION
+            }
+        }
+    }
+    val selectedCommandExecutionStatus = remember(selectedCommandExecutionItem?.text) {
+        selectedCommandExecutionItem
+            ?.text
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.map(::parseCommandExecutionStatus)
+            ?.firstOrNull { status -> status != null }
+    }
+    val backgroundTerminalSessions = remember(messagesIdentity, uiState.commandExecutionDetailsByItemId) {
+        resolveBackgroundTerminalPresentations(
+            messages = thread.messages,
+            detailsByItemId = uiState.commandExecutionDetailsByItemId,
+        )
+    }
+    return ConversationScreenDerivedState(
+        messagesIdentity = messagesIdentity,
+        planComposerFlow = planComposerFlow,
+        conversationLayout = conversationLayout,
+        timelineItems = timelineItems,
+        timelineItemsIdentity = timelineItemsIdentity,
+        emptyTimelineStatePresentation = emptyTimelineStatePresentation,
+        selectedPlanSheetItem = selectedPlanSheetItem,
+        blockAccessories = blockAccessories,
+        latestRunningIndicatorMessageId = latestRunningIndicatorMessageId,
+        activeTurnAnchorIndex = activeTurnAnchorIndex,
+        shouldPinTimelineToBottomDuringLayoutChange = shouldPinTimelineToBottomDuringLayoutChange,
+        shouldShowScrollToLatestButton = shouldShowScrollToLatestButton,
+        bottomAnchorRequest = bottomAnchorRequest,
+        selectedCommandExecutionItem = selectedCommandExecutionItem,
+        selectedCommandExecutionStatus = selectedCommandExecutionStatus,
+        backgroundTerminalSessions = backgroundTerminalSessions,
+    )
+}
+
+@Composable
 fun ConversationScreen(
     uiState: AppUiState,
     onRetryConnection: () -> Unit,
@@ -1082,98 +1317,12 @@ fun ConversationScreen(
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var dismissedPlanPromptRequestKeys by remember(thread.id) { mutableStateOf(emptySet<String>()) }
-    // Compute structural identity inline — this is O(n) but only hashes IDs,
-    // which is vastly cheaper than the O(n × fields) List.equals() that
-    // remember(thread.messages) would perform. The resulting data class
-    // comparison is O(1).
-    val messagesIdentity = thread.messages.structuralIdentity()
-    val planComposerFlow = remember(
-        messagesIdentity,
-        thread.latestTurnTerminalState,
-        thread.runtimeConfig.planningMode,
-        thread.queuedDraftItems,
-        uiState.planComposerSession,
-        dismissedPlanPromptRequestKeys,
-    ) {
-        resolvePlanComposerFlow(
-            messages = thread.messages,
-            session = uiState.planComposerSession,
-            latestTurnTerminalState = thread.latestTurnTerminalState,
-            activePlanningMode = thread.runtimeConfig.planningMode,
-            hasQueuedFollowUps = thread.queuedDraftItems.isNotEmpty(),
-            dismissedPromptRequestKeys = dismissedPlanPromptRequestKeys,
-        )
-    }
-    val planComposerTakeoverRequest = planComposerFlow.takeoverPromptItem?.structuredUserInputRequest
-    val planComposerFollowUpItem = planComposerFlow.completedPlanItem
-    // Compute layout inline instead of remember(thread.messages).
-    // buildConversationTimelineLayout is a lightweight O(n) filter.
-    // Computing inline (~0.1ms for 300 items) is much faster than the
-    // remember key comparison (~5-10ms for List.equals on 300 data classes).
-    val conversationLayout = buildConversationTimelineLayout(
-        messages = thread.messages,
-        hiddenPromptItemId = planComposerFlow.takeoverPromptItem?.id,
-        activePlanningMode = thread.runtimeConfig.planningMode,
-    )
-    val pinnedPlanItem = conversationLayout.pinnedPlanItem
-    // Also inline — suppressRunningBackgroundTerminalCommandRows is O(n).
-    val timelineItems = suppressRunningBackgroundTerminalCommandRows(
-        items = conversationLayout.timelineItems,
-        detailsByItemId = uiState.commandExecutionDetailsByItemId,
-    )
-    // Lightweight structural identity for keying expensive computations.
-    val timelineItemsIdentity = timelineItems.structuralIdentity()
-    val emptyTimelineStatePresentation = remember(
-        timelineItems.isEmpty(),
-        pinnedPlanItem?.id,
-        planComposerFlow.takeoverPromptItem?.id,
-        planComposerFlow.takeoverPromptItem?.structuredUserInputRequest?.requestIdKey,
-    ) {
-        resolveConversationTimelineEmptyStatePresentation(
-            timelineItems = timelineItems,
-            pinnedPlanItem = pinnedPlanItem,
-            takeoverPromptItem = planComposerFlow.takeoverPromptItem,
-        )
-    }
-    val selectedPlanSheetItem = remember(messagesIdentity, selectedPlanSheetItemId) {
-        selectedPlanSheetItemId?.let { planItemId ->
-            thread.messages.firstOrNull { item ->
-                item.id == planItemId &&
-                    (item.kind == ConversationItemKind.PLAN || item.kind == ConversationItemKind.PLAN_UPDATE)
-            }
-        }
-    }
-    val blockAccessories = remember(
-        timelineItemsIdentity,
-        thread.isRunning,
-        thread.activeTurnId,
-        thread.latestTurnTerminalState,
-        thread.stoppedTurnIds,
-        uiState.assistantRevertStatesByMessageId,
-    ) {
-        buildConversationBlockAccessories(
-            items = timelineItems,
-            isThreadRunning = thread.isRunning,
-            activeTurnId = thread.activeTurnId,
-            latestTurnTerminalState = thread.latestTurnTerminalState,
-            stoppedTurnIds = thread.stoppedTurnIds,
-            assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
-        )
-    }
     val timelineState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val isUserDragging by timelineState.interactionSource.collectIsDraggedAsState()
-    val showsEmptyTimelineState = timelineItems.isEmpty()
-    val showsTimelineLoadingState =
-        showsEmptyTimelineState &&
-            emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome &&
-            (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
-    val lastTimelineItem = timelineItems.lastOrNull()
-    val lastTimelineItemId = lastTimelineItem?.id
-    val bottomAnchorIndex = timelineItems.size
     val followBottomThresholdPx = with(density) { ComposerFollowBottomThreshold.roundToPx() }
     var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
     var autoScrollModeName by rememberSaveable(thread.id) {
@@ -1193,94 +1342,47 @@ fun ConversationScreen(
         ConversationAutoScrollMode.valueOf(autoScrollModeName)
     }
     val shouldPauseAutomaticScrolling = isUserDragging || isUserScrollCooldownActive
-    val latestRunningIndicatorMessageId = remember(timelineItemsIdentity, blockAccessories) {
-        timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
-    }
-    val activeTurnAnchorIndex = remember(timelineItemsIdentity, thread.activeTurnId) {
-        TurnTimelineReducer.activeTurnAnchorIndex(
-            items = timelineItems,
-            activeTurnId = thread.activeTurnId,
-        )
-    }
-    val shouldPinTimelineToBottomDuringLayoutChange = remember(
-        autoScrollMode,
-        shouldPauseAutomaticScrolling,
-        activeTurnAnchorIndex,
-    ) {
-        when {
-            shouldPauseAutomaticScrolling -> false
-            autoScrollMode == ConversationAutoScrollMode.FOLLOW_BOTTOM -> true
-            autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN -> activeTurnAnchorIndex == null
-            else -> false
-        }
-    }
-    val shouldShowScrollToLatestButton = remember(timelineItems.size, isScrolledToBottom) {
-        ConversationScrollStateTracker.shouldShowScrollToLatestButton(
-            itemCount = timelineItems.size,
-            isScrolledToBottom = isScrolledToBottom,
-        )
-    }
-    val bottomAnchorRequest = remember(
-        initialScrollApplied,
-        autoScrollMode,
-        shouldPauseAutomaticScrolling,
-        timelineItems.size,
-        lastTimelineItemId,
-        lastTimelineItem?.isStreaming,
-        latestRunningIndicatorMessageId,
-        composerFocused,
-        imeBottomPx,
-        autocompleteVisible,
-        uiState.composer.queuedDrafts.size,
-        pinnedPlanItem?.id,
-        activeTurnAnchorIndex,
-    ) {
-        if (
-            !initialScrollApplied ||
-            shouldPauseAutomaticScrolling ||
-            timelineItems.isEmpty() ||
-            lastTimelineItem == null
-        ) {
-            null
-        } else if (
-            autoScrollMode != ConversationAutoScrollMode.FOLLOW_BOTTOM &&
-            !(autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN && activeTurnAnchorIndex == null)
-        ) {
-            null
-        } else {
-            TimelineBottomAnchorRequest(
-                targetIndex = bottomAnchorIndex,
-                lastItemId = lastTimelineItem.id,
-                lastItemStreaming = lastTimelineItem.isStreaming,
-                latestRunningIndicatorMessageId = latestRunningIndicatorMessageId,
-                composerFocused = composerFocused,
-                imeBottomPx = imeBottomPx,
-                autocompleteVisible = autocompleteVisible,
-                queuedDraftCount = uiState.composer.queuedDrafts.size,
-                pinnedPlanItemId = pinnedPlanItem?.id,
-            )
-        }
-    }
-    val selectedCommandExecutionItem = remember(thread.messages, commandDetailsMessageId) {
-        commandDetailsMessageId?.let { messageId ->
-            thread.messages.firstOrNull { item -> item.id == messageId && item.kind == ConversationItemKind.COMMAND_EXECUTION }
-        }
-    }
-    val selectedCommandExecutionStatus = remember(selectedCommandExecutionItem?.text) {
-        selectedCommandExecutionItem
-            ?.text
-            ?.lineSequence()
-            ?.map(String::trim)
-            ?.filter(String::isNotEmpty)
-            ?.map(::parseCommandExecutionStatus)
-            ?.firstOrNull { status -> status != null }
-    }
-    val backgroundTerminalSessions = remember(messagesIdentity, uiState.commandExecutionDetailsByItemId) {
-        resolveBackgroundTerminalPresentations(
-            messages = thread.messages,
-            detailsByItemId = uiState.commandExecutionDetailsByItemId,
-        )
-    }
+    val derivedState = rememberConversationScreenDerivedState(
+        thread = thread,
+        uiState = uiState,
+        dismissedPlanPromptRequestKeys = dismissedPlanPromptRequestKeys,
+        selectedPlanSheetItemId = selectedPlanSheetItemId,
+        commandDetailsMessageId = commandDetailsMessageId,
+        initialScrollApplied = initialScrollApplied,
+        autoScrollMode = autoScrollMode,
+        shouldPauseAutomaticScrolling = shouldPauseAutomaticScrolling,
+        isScrolledToBottom = isScrolledToBottom,
+        composerFocused = composerFocused,
+        imeBottomPx = imeBottomPx,
+        autocompleteVisible = autocompleteVisible,
+    )
+    val messagesIdentity = derivedState.messagesIdentity
+    val planComposerFlow = derivedState.planComposerFlow
+    val planComposerTakeoverRequest = planComposerFlow.takeoverPromptItem?.structuredUserInputRequest
+    val planComposerFollowUpItem = planComposerFlow.completedPlanItem
+    val conversationLayout = derivedState.conversationLayout
+    val pinnedPlanItem = conversationLayout.pinnedPlanItem
+    val timelineItems = derivedState.timelineItems
+    val timelineItemsIdentity = derivedState.timelineItemsIdentity
+    val emptyTimelineStatePresentation = derivedState.emptyTimelineStatePresentation
+    val selectedPlanSheetItem = derivedState.selectedPlanSheetItem
+    val blockAccessories = derivedState.blockAccessories
+    val latestRunningIndicatorMessageId = derivedState.latestRunningIndicatorMessageId
+    val activeTurnAnchorIndex = derivedState.activeTurnAnchorIndex
+    val shouldPinTimelineToBottomDuringLayoutChange = derivedState.shouldPinTimelineToBottomDuringLayoutChange
+    val shouldShowScrollToLatestButton = derivedState.shouldShowScrollToLatestButton
+    val bottomAnchorRequest = derivedState.bottomAnchorRequest
+    val selectedCommandExecutionItem = derivedState.selectedCommandExecutionItem
+    val selectedCommandExecutionStatus = derivedState.selectedCommandExecutionStatus
+    val backgroundTerminalSessions = derivedState.backgroundTerminalSessions
+    val showsEmptyTimelineState = timelineItems.isEmpty()
+    val showsTimelineLoadingState =
+        showsEmptyTimelineState &&
+            emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome &&
+            (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
+    val lastTimelineItem = timelineItems.lastOrNull()
+    val lastTimelineItemId = lastTimelineItem?.id
+    val bottomAnchorIndex = timelineItems.size
     val handleSelectSlashCommand: (RemodexSlashCommand) -> Unit = remember(
         onSelectSlashCommand,
         onRefreshUsageStatus,
@@ -1574,308 +1676,107 @@ fun ConversationScreen(
             modifier = Modifier
                 .fillMaxSize(),
         ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    ConversationTopOverlays(
-                        uiState = uiState,
-                        onRetryConnection = onRetryConnection,
-                    )
-
-                    if (showsEmptyTimelineState) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            ConversationTimelineEmptyState(
-                                presentation = emptyTimelineStatePresentation,
-                                isLoading = showsTimelineLoadingState,
-                            )
-                        }
-                    } else {
-                        LazyColumn(
-                            state = timelineState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(horizontal = 16.dp),
-                            contentPadding = PaddingValues(top = 12.dp, bottom = 2.dp),
-                            verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.Bottom),
-                        ) {
-                            conversationTimelineItems(
-                                timelineItems = timelineItems,
-                                blockAccessories = blockAccessories,
-                                assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
-                                assistantResponseMetrics = uiState.assistantResponseMetrics,
-                                commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
-                                threads = uiState.threads,
-                                threadId = thread.id,
-                                threadMessages = thread.messages,
-                                onStartAssistantRevertPreview = onStartAssistantRevertPreview,
-                                onOpenFileChangeDetails = { presentation ->
-                                    fileChangeSheetPresentation = presentation
-                                },
-                                onSubmitStructuredUserInput = onSubmitStructuredUserInput,
-                                onOpenPlanDetails = { planItemId ->
-                                    selectedPlanSheetItemId = planItemId
-                                },
-                                onOpenCommandExecutionDetails = { messageId ->
-                                    commandDetailsMessageId = messageId
-                                },
-                                onOpenSubagentThread = onOpenSubagentThread,
-                                onHydrateSubagentThread = onHydrateSubagentThread,
-                            )
-                        }
+            ConversationTimelinePane(
+                uiState = uiState,
+                thread = thread,
+                timelineState = timelineState,
+                timelineItems = timelineItems,
+                blockAccessories = blockAccessories,
+                showsEmptyTimelineState = showsEmptyTimelineState,
+                emptyTimelineStatePresentation = emptyTimelineStatePresentation,
+                showsTimelineLoadingState = showsTimelineLoadingState,
+                shouldShowScrollToLatestButton = shouldShowScrollToLatestButton,
+                bottomAnchorIndex = bottomAnchorIndex,
+                autocompleteVisible = autocompleteVisible,
+                onRetryConnection = onRetryConnection,
+                onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                onScrollToLatest = {
+                    autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
+                    isScrolledToBottom = true
+                    userScrollCooldownUntilMs = null
+                    isUserScrollCooldownActive = false
+                    pendingTurnAnchorSignal = 0L
+                    coroutineScope.launch {
+                        timelineState.scrollToItem(bottomAnchorIndex)
                     }
-                }
+                },
+                onStartAssistantRevertPreview = onStartAssistantRevertPreview,
+                onOpenFileChangeDetails = { presentation ->
+                    fileChangeSheetPresentation = presentation
+                },
+                onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                onOpenPlanDetails = { planItemId ->
+                    selectedPlanSheetItemId = planItemId
+                },
+                onOpenCommandExecutionDetails = { messageId ->
+                    commandDetailsMessageId = messageId
+                },
+                onOpenSubagentThread = onOpenSubagentThread,
+                onHydrateSubagentThread = onHydrateSubagentThread,
+                modifier = Modifier.weight(1f),
+            )
 
-                Box(modifier = Modifier.matchParentSize()) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = shouldShowScrollToLatestButton,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .offset(y = -ConversationScrollToLatestButtonOffset),
-                        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }),
-                        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }),
-                    ) {
-                        ConversationCircleButton(
-                            icon = Icons.Outlined.ArrowDownward,
-                            contentDescription = "Scroll to latest message",
-                            style = ConversationCircleButtonStyle.FROSTED,
-                            hapticOnClick = true,
-                            onClick = {
-                                autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
-                                isScrolledToBottom = true
-                                userScrollCooldownUntilMs = null
-                                isUserScrollCooldownActive = false
-                                pendingTurnAnchorSignal = 0L
-                                coroutineScope.launch {
-                                    timelineState.scrollToItem(bottomAnchorIndex)
-                                }
-                            },
-                        )
-                    }
-                }
-
-                if (autocompleteVisible) {
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .testTag(ComposerAutocompleteDismissLayerTag)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = onCloseComposerAutocomplete,
-                            ),
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
-                    .imePadding(),
-            ) {
-                if (autocompleteVisible) {
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = onCloseComposerAutocomplete,
-                            ),
-                    )
-                }
-
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    when {
-                        planComposerTakeoverRequest != null -> {
-                            PlanStructuredUserInputComposerCard(
-                                request = planComposerTakeoverRequest,
-                                onSubmit = onSubmitStructuredUserInput,
-                                onDismiss = {
-                                    dismissedPlanPromptRequestKeys = dismissedPlanPromptRequestKeys + planComposerTakeoverRequest.requestIdKey
-                                },
-                            )
-                        }
-
-                        planComposerFollowUpItem != null -> {
-                            PlanFollowUpComposerCard(
-                                planItem = planComposerFollowUpItem,
-                                onDismiss = onDismissPlanComposerSession,
-                                onSubmit = onSubmitPlanFollowUp,
-                            )
-                        }
-
-                        else -> {
-                            pinnedPlanItem?.let { planItem ->
-                                PlanAccessoryCard(
-                                    planItem = planItem,
-                                    onClick = { selectedPlanSheetItemId = planItem.id },
-                                )
-                            }
-
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                if (uiState.composer.queuedDrafts.isNotEmpty()) {
-                                    QueuedDraftsCard(
-                                        queuedDrafts = uiState.composer.queuedDrafts,
-                                        isThreadRunning = uiState.selectedThread?.isRunning == true,
-                                        canRestoreDrafts = uiState.composer.canRestoreQueuedDrafts,
-                                        steeringDraftId = uiState.composer.steeringQueuedDraftId,
-                                        onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
-                                        onRestoreQueuedDraft = onRestoreQueuedDraft,
-                                        onSteerQueuedDraft = onSteerQueuedDraft,
-                                        onRemoveQueuedDraft = onRemoveQueuedDraft,
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.spacedBy(0.dp),
-                                    ) {
-                                    AnimatedVisibility(
-                                        visible = uiState.composer.voice.isRecording,
-                                        enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
-                                            slideInVertically(
-                                                animationSpec = tween(durationMillis = 180),
-                                                initialOffsetY = { fullHeight -> fullHeight / 6 },
-                                            ) +
-                                            scaleIn(
-                                                animationSpec = tween(durationMillis = 160),
-                                                initialScale = 0.98f,
-                                            ),
-                                        exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
-                                            slideOutVertically(
-                                                animationSpec = tween(durationMillis = 120),
-                                                targetOffsetY = { fullHeight -> fullHeight / 8 },
-                                            ) +
-                                            scaleOut(
-                                                animationSpec = tween(durationMillis = 110),
-                                                targetScale = 0.985f,
-                                            ),
-                                    ) {
-                                        VoiceRecordingCapsule(
-                                            voiceUiState = uiState.composer.voice,
-                                            onCancel = onCancelVoiceRecording,
-                                            modifier = Modifier.padding(bottom = 6.dp),
-                                        )
-                                    }
-
-                                    AnimatedVisibility(
-                                        visible = autocompleteVisible,
-                                        enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
-                                            slideInVertically(
-                                                animationSpec = tween(durationMillis = 180),
-                                                initialOffsetY = { fullHeight -> fullHeight / 6 },
-                                            ) +
-                                            scaleIn(
-                                                animationSpec = tween(durationMillis = 160),
-                                                initialScale = 0.98f,
-                                            ),
-                                        exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
-                                            slideOutVertically(
-                                                animationSpec = tween(durationMillis = 120),
-                                                targetOffsetY = { fullHeight -> fullHeight / 8 },
-                                            ) +
-                                            scaleOut(
-                                                animationSpec = tween(durationMillis = 110),
-                                                targetScale = 0.985f,
-                                            ),
-                                    ) {
-                                        AutocompletePanel(
-                                            uiState = uiState,
-                                            onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                            onSelectSlashCommand = handleSelectSlashCommand,
-                                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                            onSelectCodeReviewBranch = onSelectCodeReviewBranch,
-                                            onSelectCodeReviewCommit = onSelectCodeReviewCommit,
-                                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                            onForkThread = handleForkThread,
-                                            modifier = Modifier
-                                                .padding(bottom = 6.dp),
-                                        )
-                                    }
-
-                                        ComposerCard(
-                                            uiState = uiState,
-                                            onComposerInputChanged = onComposerInputChanged,
-                                            onSendPrompt = onSendPrompt,
-                                            onStopTurn = onStopTurn,
-                                            onResumeQueue = onResumeQueue,
-                                            onSelectModel = onSelectModel,
-                                            onSelectPlanningMode = onSelectPlanningMode,
-                                            onSelectReasoningEffort = onSelectReasoningEffort,
-                                            onSelectAccessMode = onSelectAccessMode,
-                                            onSelectServiceTier = onSelectServiceTier,
-                                            onOpenAttachmentPicker = onOpenAttachmentPicker,
-                                            onOpenCameraCapture = onOpenCameraCapture,
-                                            onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
-                                            onTapVoiceButton = onTapVoiceButton,
-                                            onRemoveAttachment = onRemoveAttachment,
-                                            onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                            onRemoveMentionedFile = onRemoveMentionedFile,
-                                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                            onRemoveMentionedSkill = onRemoveMentionedSkill,
-                                            onSelectSlashCommand = handleSelectSlashCommand,
-                                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                            onSelectCodeReviewBranch = onSelectCodeReviewBranch,
-                                            onSelectCodeReviewCommit = onSelectCodeReviewCommit,
-                                            onClearReviewSelection = onClearReviewSelection,
-                                            onClearSubagentsSelection = onClearSubagentsSelection,
-                                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                            onForkThread = handleForkThread,
-                                            onComposerFocusChanged = { isFocused ->
-                                                composerFocused = isFocused
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-
-                            if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
-                                ComposerSecondaryBar(
-                                    thread = thread,
-                                    gitState = uiState.composer.gitState,
-                                    usageStatus = uiState.usageStatus,
-                                    isRefreshingUsage = uiState.isRefreshingUsage,
-                                    isConnectedToMac = uiState.isConnected,
-                                    isHandingOffToMac = uiState.isHandingOffToMac,
-                                    accessMode = uiState.composer.runtimeConfig.accessMode,
-                                    onSelectAccessMode = onSelectAccessMode,
-                                    onRefreshUsageStatus = onRefreshUsageStatus,
-                                    onRequestContinueOnMac = onRequestContinueOnMac,
-                                    onOpenGitSheet = { gitSheetExpanded = true },
-                                    onOpenWorktreeHandoff = {
-                                        worktreeSheetMode = WorktreeSheetMode.HANDOFF
-                                        worktreeHandoffSheetExpanded = true
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            ConversationComposerPane(
+                uiState = uiState,
+                thread = thread,
+                autocompleteVisible = autocompleteVisible,
+                composerFocused = composerFocused,
+                composerSawImeWhileFocused = composerSawImeWhileFocused,
+                imeBottomPx = imeBottomPx,
+                planComposerTakeoverRequest = planComposerTakeoverRequest,
+                planComposerFollowUpItem = planComposerFollowUpItem,
+                pinnedPlanItem = pinnedPlanItem,
+                onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                onDismissPlanPromptRequest = { requestIdKey ->
+                    dismissedPlanPromptRequestKeys = dismissedPlanPromptRequestKeys + requestIdKey
+                },
+                onDismissPlanComposerSession = onDismissPlanComposerSession,
+                onSubmitPlanFollowUp = onSubmitPlanFollowUp,
+                onOpenPlanDetails = { planItemId ->
+                    selectedPlanSheetItemId = planItemId
+                },
+                handleSelectSlashCommand = handleSelectSlashCommand,
+                handleForkThread = handleForkThread,
+                onComposerInputChanged = onComposerInputChanged,
+                onSendPrompt = onSendPrompt,
+                onStopTurn = onStopTurn,
+                onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
+                onRestoreQueuedDraft = onRestoreQueuedDraft,
+                onSteerQueuedDraft = onSteerQueuedDraft,
+                onRemoveQueuedDraft = onRemoveQueuedDraft,
+                onResumeQueue = onResumeQueue,
+                onSelectModel = onSelectModel,
+                onSelectPlanningMode = onSelectPlanningMode,
+                onSelectReasoningEffort = onSelectReasoningEffort,
+                onSelectAccessMode = onSelectAccessMode,
+                onSelectServiceTier = onSelectServiceTier,
+                onOpenAttachmentPicker = onOpenAttachmentPicker,
+                onOpenCameraCapture = onOpenCameraCapture,
+                onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
+                onTapVoiceButton = onTapVoiceButton,
+                onCancelVoiceRecording = onCancelVoiceRecording,
+                onRemoveAttachment = onRemoveAttachment,
+                onSelectFileAutocomplete = onSelectFileAutocomplete,
+                onRemoveMentionedFile = onRemoveMentionedFile,
+                onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                onRemoveMentionedSkill = onRemoveMentionedSkill,
+                onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                onSelectCodeReviewCommit = onSelectCodeReviewCommit,
+                onClearReviewSelection = onClearReviewSelection,
+                onClearSubagentsSelection = onClearSubagentsSelection,
+                onComposerFocusChanged = { isFocused ->
+                    composerFocused = isFocused
+                },
+                onOpenGitSheet = { gitSheetExpanded = true },
+                onOpenWorktreeHandoff = {
+                    worktreeSheetMode = WorktreeSheetMode.HANDOFF
+                    worktreeHandoffSheetExpanded = true
+                },
+                onRefreshUsageStatus = onRefreshUsageStatus,
+                onRequestContinueOnMac = onRequestContinueOnMac,
+            )
         }
 
         ConversationScreenSheetOverlays(
@@ -1926,8 +1827,371 @@ fun ConversationScreen(
     }
 }
 
+@Composable
+private fun ConversationTimelinePane(
+    uiState: AppUiState,
+    thread: RemodexThreadSummary,
+    timelineState: LazyListState,
+    timelineItems: List<RemodexConversationItem>,
+    blockAccessories: Map<String, ConversationBlockAccessoryState>,
+    showsEmptyTimelineState: Boolean,
+    emptyTimelineStatePresentation: ConversationTimelineEmptyStatePresentation,
+    showsTimelineLoadingState: Boolean,
+    shouldShowScrollToLatestButton: Boolean,
+    bottomAnchorIndex: Int,
+    autocompleteVisible: Boolean,
+    onRetryConnection: () -> Unit,
+    onCloseComposerAutocomplete: () -> Unit,
+    onScrollToLatest: () -> Unit,
+    onStartAssistantRevertPreview: (String) -> Unit,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onOpenPlanDetails: (String) -> Unit,
+    onOpenCommandExecutionDetails: (String) -> Unit,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            ConversationTopOverlays(
+                uiState = uiState,
+                onRetryConnection = onRetryConnection,
+            )
+
+            if (showsEmptyTimelineState) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ConversationTimelineEmptyState(
+                        presentation = emptyTimelineStatePresentation,
+                        isLoading = showsTimelineLoadingState,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = timelineState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp),
+                    contentPadding = PaddingValues(top = 12.dp, bottom = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.Bottom),
+                ) {
+                    conversationTimelineItems(
+                        timelineItems = timelineItems,
+                        streamingAssistantTextsByMessageId = uiState.streamingAssistantTextsByMessageId,
+                        blockAccessories = blockAccessories,
+                        assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
+                        assistantResponseMetrics = uiState.assistantResponseMetrics,
+                        commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
+                        threads = uiState.threads,
+                        threadId = thread.id,
+                        threadMessages = thread.messages,
+                        onStartAssistantRevertPreview = onStartAssistantRevertPreview,
+                        onOpenFileChangeDetails = onOpenFileChangeDetails,
+                        onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                        onOpenPlanDetails = onOpenPlanDetails,
+                        onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
+                        onOpenSubagentThread = onOpenSubagentThread,
+                        onHydrateSubagentThread = onHydrateSubagentThread,
+                    )
+                }
+            }
+        }
+
+        Box(modifier = Modifier.matchParentSize()) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = shouldShowScrollToLatestButton,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = -ConversationScrollToLatestButtonOffset),
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 3 }),
+            ) {
+                ConversationCircleButton(
+                    icon = Icons.Outlined.ArrowDownward,
+                    contentDescription = "Scroll to latest message",
+                    style = ConversationCircleButtonStyle.FROSTED,
+                    hapticOnClick = true,
+                    onClick = onScrollToLatest,
+                )
+            }
+        }
+
+        if (autocompleteVisible) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .testTag(ComposerAutocompleteDismissLayerTag)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onCloseComposerAutocomplete,
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationComposerPane(
+    uiState: AppUiState,
+    thread: RemodexThreadSummary,
+    autocompleteVisible: Boolean,
+    composerFocused: Boolean,
+    composerSawImeWhileFocused: Boolean,
+    imeBottomPx: Int,
+    planComposerTakeoverRequest: RemodexStructuredUserInputRequest?,
+    planComposerFollowUpItem: RemodexConversationItem?,
+    pinnedPlanItem: RemodexConversationItem?,
+    onCloseComposerAutocomplete: () -> Unit,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onDismissPlanPromptRequest: (String) -> Unit,
+    onDismissPlanComposerSession: () -> Unit,
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
+    onOpenPlanDetails: (String) -> Unit,
+    handleSelectSlashCommand: (RemodexSlashCommand) -> Unit,
+    handleForkThread: (RemodexComposerForkDestination) -> Unit,
+    onComposerInputChanged: (String) -> Unit,
+    onSendPrompt: () -> Unit,
+    onStopTurn: () -> Unit,
+    onRestoreLatestQueuedDraft: () -> Unit,
+    onRestoreQueuedDraft: (String) -> Unit,
+    onSteerQueuedDraft: (String) -> Unit,
+    onRemoveQueuedDraft: (String) -> Unit,
+    onResumeQueue: () -> Unit,
+    onSelectModel: (String?) -> Unit,
+    onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
+    onSelectReasoningEffort: (String) -> Unit,
+    onSelectAccessMode: (RemodexAccessMode) -> Unit,
+    onSelectServiceTier: (RemodexServiceTier?) -> Unit,
+    onOpenAttachmentPicker: () -> Unit,
+    onOpenCameraCapture: () -> Unit,
+    onReceiveComposerAttachmentUris: (List<Uri>) -> Unit,
+    onTapVoiceButton: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
+    onRemoveMentionedFile: (String) -> Unit,
+    onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
+    onRemoveMentionedSkill: (String) -> Unit,
+    onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
+    onSelectCodeReviewBranch: (String) -> Unit,
+    onSelectCodeReviewCommit: (RemodexGitCommit) -> Unit,
+    onClearReviewSelection: () -> Unit,
+    onClearSubagentsSelection: () -> Unit,
+    onComposerFocusChanged: (Boolean) -> Unit,
+    onOpenGitSheet: () -> Unit,
+    onOpenWorktreeHandoff: () -> Unit,
+    onRefreshUsageStatus: () -> Unit,
+    onRequestContinueOnMac: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+            .imePadding(),
+    ) {
+        if (autocompleteVisible) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onCloseComposerAutocomplete,
+                    ),
+            )
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when {
+                planComposerTakeoverRequest != null -> {
+                    PlanStructuredUserInputComposerCard(
+                        request = planComposerTakeoverRequest,
+                        onSubmit = onSubmitStructuredUserInput,
+                        onDismiss = {
+                            onDismissPlanPromptRequest(planComposerTakeoverRequest.requestIdKey)
+                        },
+                    )
+                }
+
+                planComposerFollowUpItem != null -> {
+                    PlanFollowUpComposerCard(
+                        planItem = planComposerFollowUpItem,
+                        onDismiss = onDismissPlanComposerSession,
+                        onSubmit = onSubmitPlanFollowUp,
+                    )
+                }
+
+                else -> {
+                    pinnedPlanItem?.let { planItem ->
+                        PlanAccessoryCard(
+                            planItem = planItem,
+                            onClick = { onOpenPlanDetails(planItem.id) },
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (uiState.composer.queuedDrafts.isNotEmpty()) {
+                            QueuedDraftsCard(
+                                queuedDrafts = uiState.composer.queuedDrafts,
+                                isThreadRunning = uiState.selectedThread?.isRunning == true,
+                                canRestoreDrafts = uiState.composer.canRestoreQueuedDrafts,
+                                steeringDraftId = uiState.composer.steeringQueuedDraftId,
+                                onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
+                                onRestoreQueuedDraft = onRestoreQueuedDraft,
+                                onSteerQueuedDraft = onSteerQueuedDraft,
+                                onRemoveQueuedDraft = onRemoveQueuedDraft,
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(0.dp),
+                            ) {
+                                AnimatedVisibility(
+                                    visible = uiState.composer.voice.isRecording,
+                                    enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
+                                        slideInVertically(
+                                            animationSpec = tween(durationMillis = 180),
+                                            initialOffsetY = { fullHeight -> fullHeight / 6 },
+                                        ) +
+                                        scaleIn(
+                                            animationSpec = tween(durationMillis = 160),
+                                            initialScale = 0.98f,
+                                        ),
+                                    exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                                        slideOutVertically(
+                                            animationSpec = tween(durationMillis = 120),
+                                            targetOffsetY = { fullHeight -> fullHeight / 8 },
+                                        ) +
+                                        scaleOut(
+                                            animationSpec = tween(durationMillis = 110),
+                                            targetScale = 0.985f,
+                                        ),
+                                ) {
+                                    VoiceRecordingCapsule(
+                                        voiceUiState = uiState.composer.voice,
+                                        onCancel = onCancelVoiceRecording,
+                                        modifier = Modifier.padding(bottom = 6.dp),
+                                    )
+                                }
+
+                                AnimatedVisibility(
+                                    visible = autocompleteVisible,
+                                    enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
+                                        slideInVertically(
+                                            animationSpec = tween(durationMillis = 180),
+                                            initialOffsetY = { fullHeight -> fullHeight / 6 },
+                                        ) +
+                                        scaleIn(
+                                            animationSpec = tween(durationMillis = 160),
+                                            initialScale = 0.98f,
+                                        ),
+                                    exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                                        slideOutVertically(
+                                            animationSpec = tween(durationMillis = 120),
+                                            targetOffsetY = { fullHeight -> fullHeight / 8 },
+                                        ) +
+                                        scaleOut(
+                                            animationSpec = tween(durationMillis = 110),
+                                            targetScale = 0.985f,
+                                        ),
+                                ) {
+                                    AutocompletePanel(
+                                        uiState = uiState,
+                                        onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                        onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                        onSelectSlashCommand = handleSelectSlashCommand,
+                                        onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                        onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                                        onSelectCodeReviewCommit = onSelectCodeReviewCommit,
+                                        onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                        onForkThread = handleForkThread,
+                                        modifier = Modifier.padding(bottom = 6.dp),
+                                    )
+                                }
+
+                                ComposerCard(
+                                    uiState = uiState,
+                                    onComposerInputChanged = onComposerInputChanged,
+                                    onSendPrompt = onSendPrompt,
+                                    onStopTurn = onStopTurn,
+                                    onResumeQueue = onResumeQueue,
+                                    onSelectModel = onSelectModel,
+                                    onSelectPlanningMode = onSelectPlanningMode,
+                                    onSelectReasoningEffort = onSelectReasoningEffort,
+                                    onSelectAccessMode = onSelectAccessMode,
+                                    onSelectServiceTier = onSelectServiceTier,
+                                    onOpenAttachmentPicker = onOpenAttachmentPicker,
+                                    onOpenCameraCapture = onOpenCameraCapture,
+                                    onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
+                                    onTapVoiceButton = onTapVoiceButton,
+                                    onRemoveAttachment = onRemoveAttachment,
+                                    onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                    onRemoveMentionedFile = onRemoveMentionedFile,
+                                    onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                    onRemoveMentionedSkill = onRemoveMentionedSkill,
+                                    onSelectSlashCommand = handleSelectSlashCommand,
+                                    onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                    onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                                    onSelectCodeReviewCommit = onSelectCodeReviewCommit,
+                                    onClearReviewSelection = onClearReviewSelection,
+                                    onClearSubagentsSelection = onClearSubagentsSelection,
+                                    onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                    onForkThread = handleForkThread,
+                                    onComposerFocusChanged = onComposerFocusChanged,
+                                )
+                            }
+                        }
+                    }
+
+                    if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
+                        ComposerSecondaryBar(
+                            thread = thread,
+                            gitState = uiState.composer.gitState,
+                            usageStatus = uiState.usageStatus,
+                            isRefreshingUsage = uiState.isRefreshingUsage,
+                            isConnectedToMac = uiState.isConnected,
+                            isHandingOffToMac = uiState.isHandingOffToMac,
+                            accessMode = uiState.composer.runtimeConfig.accessMode,
+                            onSelectAccessMode = onSelectAccessMode,
+                            onRefreshUsageStatus = onRefreshUsageStatus,
+                            onRequestContinueOnMac = onRequestContinueOnMac,
+                            onOpenGitSheet = onOpenGitSheet,
+                            onOpenWorktreeHandoff = onOpenWorktreeHandoff,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun LazyListScope.conversationTimelineItems(
     timelineItems: List<RemodexConversationItem>,
+    streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState>,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
     assistantResponseMetrics: RemodexAssistantResponseMetrics?,
@@ -1961,6 +2225,7 @@ private fun LazyListScope.conversationTimelineItems(
                 ConversationSpeaker.USER -> UserConversationRow(item = message)
                 ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
                     item = message,
+                    streamingTextState = streamingAssistantTextsByMessageId[message.id],
                     accessoryState = blockAccessories[message.id],
                     assistantRevertPresentation = assistantRevertStatesByMessageId[message.id],
                     contextMenuFooterText = assistantResponseMetrics
@@ -2304,6 +2569,42 @@ private fun ConversationMarkdownText(
 
 internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
+}
+
+internal fun resolveAssistantTextRenderMode(
+    text: String,
+    isStreaming: Boolean,
+    richRenderArmed: Boolean,
+): AssistantTextRenderMode {
+    if (text.isBlank()) {
+        return AssistantTextRenderMode.RICH_MARKDOWN
+    }
+    return if (isStreaming || !richRenderArmed) {
+        AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
+    } else {
+        AssistantTextRenderMode.RICH_MARKDOWN
+    }
+}
+
+@Composable
+private fun rememberAssistantTextRenderMode(
+    itemId: String,
+    text: String,
+    isStreaming: Boolean,
+): AssistantTextRenderMode {
+    var richRenderArmed by rememberSaveable(itemId) { mutableStateOf(false) }
+    LaunchedEffect(itemId, isStreaming, text) {
+        richRenderArmed = false
+        if (!isStreaming && text.isNotBlank()) {
+            delay(AssistantRichRenderSettleDelayMs)
+            richRenderArmed = true
+        }
+    }
+    return resolveAssistantTextRenderMode(
+        text = text,
+        isStreaming = isStreaming,
+        richRenderArmed = richRenderArmed,
+    )
 }
 
 @Composable
@@ -6405,6 +6706,8 @@ private fun ComposerDropdownMenuItem(
 @Composable
 private fun ConversationMessageActionContainer(
     text: String,
+    hasActionableTextOverride: Boolean? = null,
+    resolveTextForActions: (() -> String)? = null,
     messageRole: ConversationSpeaker,
     usesMarkdownSelection: Boolean,
     allowsSelectText: Boolean,
@@ -6418,7 +6721,8 @@ private fun ConversationMessageActionContainer(
     // During streaming, text grows continuously — keying on text would reset
     // the context menu state, gesture detector, and lambda captures on every
     // delta, causing unnecessary work and visual jitter.
-    val hasActionableText = text.isNotEmpty()
+    val hasActionableText = hasActionableTextOverride ?: text.isNotEmpty()
+    val resolvedTextForActions = resolveTextForActions ?: { text }
     val context = LocalContext.current
     val density = LocalDensity.current
     val performLightHaptic = rememberLightImpactHaptic()
@@ -6487,7 +6791,7 @@ private fun ConversationMessageActionContainer(
             onSelectText = {
                 selectableTextSheetState = SelectableMessageTextSheetState(
                     role = messageRole,
-                    text = text,
+                    text = resolvedTextForActions(),
                     usesMarkdownSelection = usesMarkdownSelection,
                 )
                 menuExpanded = false
@@ -6496,7 +6800,7 @@ private fun ConversationMessageActionContainer(
                 copyPlainTextToClipboard(
                     context = context,
                     label = "Conversation message",
-                    text = text,
+                    text = resolvedTextForActions(),
                 )
                 menuExpanded = false
             },
@@ -7319,6 +7623,7 @@ private fun ConversationBubble(
         ConversationSpeaker.USER -> UserConversationRow(item = item)
         ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
             item = item,
+            streamingTextState = null,
             accessoryState = accessoryState,
             assistantRevertPresentation = assistantRevertPresentation,
             onTapAssistantRevert = onTapAssistantRevert,
@@ -7394,6 +7699,7 @@ private fun UserConversationRow(item: RemodexConversationItem) {
 @Composable
 private fun AssistantConversationRow(
     item: RemodexConversationItem,
+    streamingTextState: StreamingAssistantTextState?,
     accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     contextMenuFooterText: String? = null,
@@ -7401,6 +7707,12 @@ private fun AssistantConversationRow(
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val hasLiveStreamingText = item.isStreaming && streamingTextState != null
+    val textRenderMode = rememberAssistantTextRenderMode(
+        itemId = item.id,
+        text = if (hasLiveStreamingText) "streaming" else item.text,
+        isStreaming = item.isStreaming,
+    )
     val blockDiffPresentation = remember(
         item.id,
         accessoryState?.blockDiffText,
@@ -7425,6 +7737,14 @@ private fun AssistantConversationRow(
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
     ConversationMessageActionContainer(
         text = item.text,
+        hasActionableTextOverride = item.text.isNotEmpty() || hasLiveStreamingText,
+        resolveTextForActions = {
+            if (hasLiveStreamingText) {
+                streamingTextState?.handle?.snapshot().orEmpty()
+            } else {
+                item.text
+            }
+        },
         messageRole = ConversationSpeaker.ASSISTANT,
         usesMarkdownSelection = true,
         allowsSelectText = true,
@@ -7434,19 +7754,24 @@ private fun AssistantConversationRow(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (item.text.isNotBlank()) {
-                if (item.isStreaming) {
-                    LightweightStreamingAssistantMarkdownText(
-                        text = item.text,
-                        chrome = chrome,
-                    )
-                } else {
-                    ConversationMarkdownText(
-                        text = item.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = chrome.bodyText,
-                        onLongPress = showContextMenuAt,
-                    )
+            if (item.text.isNotBlank() || hasLiveStreamingText) {
+                when (textRenderMode) {
+                    AssistantTextRenderMode.LIGHTWEIGHT_PLAIN -> {
+                        LightweightStreamingAssistantMarkdownText(
+                            text = item.text,
+                            streamingTextState = streamingTextState.takeIf { hasLiveStreamingText },
+                            chrome = chrome,
+                        )
+                    }
+
+                    AssistantTextRenderMode.RICH_MARKDOWN -> {
+                        ConversationMarkdownText(
+                            text = item.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                            onLongPress = showContextMenuAt,
+                        )
+                    }
                 }
             }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
@@ -7481,17 +7806,73 @@ private fun AssistantConversationRow(
 @Composable
 private fun LightweightStreamingAssistantMarkdownText(
     text: String,
+    streamingTextState: StreamingAssistantTextState?,
     chrome: RemodexConversationChrome,
 ) {
+    val density = LocalDensity.current
+    val bodyStyle = MaterialTheme.typography.bodyMedium
+    val textSizePx = remember(bodyStyle.fontSize, density) {
+        with(density) { bodyStyle.fontSize.toPx() }
+    }
+    if (streamingTextState != null) {
+        AndroidView(
+            modifier = Modifier.fillMaxWidth(),
+            factory = { viewContext ->
+                TextView(viewContext).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                    includeFontPadding = false
+                    setLineSpacing(0f, 1f)
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(chrome.bodyText.toArgb())
+                    setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
+                    setText(streamingTextState.handle.snapshot())
+                    tag = StreamingAssistantTextRenderTag(
+                        handle = streamingTextState.handle,
+                        version = streamingTextState.version,
+                        renderedLength = streamingTextState.textLength,
+                    )
+                }
+            },
+            update = { textView ->
+                textView.setTextColor(chrome.bodyText.toArgb())
+                textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
+                val previous = textView.tag as? StreamingAssistantTextRenderTag
+                val canAppendDelta =
+                    previous?.handle === streamingTextState.handle &&
+                        streamingTextState.appendedDelta != null &&
+                        previous.renderedLength + streamingTextState.appendedDelta.length == streamingTextState.textLength
+                if (canAppendDelta) {
+                    textView.append(streamingTextState.appendedDelta)
+                } else if (previous?.version != streamingTextState.version) {
+                    textView.text = streamingTextState.handle.snapshot()
+                }
+                textView.tag = StreamingAssistantTextRenderTag(
+                    handle = streamingTextState.handle,
+                    version = streamingTextState.version,
+                    renderedLength = streamingTextState.textLength,
+                )
+            },
+        )
+        return
+    }
     val displayText = remember(text) { formatStreamingPlainTextForDisplay(text) }
     Text(
         text = displayText,
         modifier = Modifier.fillMaxWidth(),
-        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        style = MaterialTheme.typography.bodyMedium,
         color = chrome.bodyText,
         softWrap = true,
     )
 }
+
+private data class StreamingAssistantTextRenderTag(
+    val handle: com.emanueledipietro.remodex.data.threads.StreamingAssistantTextHandle,
+    val version: Long,
+    val renderedLength: Int,
+)
 
 @Composable
 private fun SystemConversationRow(

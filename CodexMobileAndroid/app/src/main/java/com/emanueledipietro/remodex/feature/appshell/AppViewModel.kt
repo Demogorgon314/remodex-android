@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.platform.media.AndroidVoiceRecorder
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
@@ -168,6 +169,7 @@ data class AppUiState(
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
     val assistantResponseMetrics: RemodexAssistantResponseMetrics? = null,
+    val streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState> = emptyMap(),
 ) {
     val isConnected: Boolean
         get() = connectionStatus.phase == RemodexConnectionPhase.CONNECTED
@@ -273,6 +275,7 @@ private data class SessionRenderState(
     val snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     val commandExecutionDetails: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
     val assistantResponseMetricsByThreadId: Map<String, RemodexAssistantResponseMetrics> = emptyMap(),
+    val streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState> = emptyMap(),
 )
 
 private data class SettingsRenderState(
@@ -451,11 +454,13 @@ class AppViewModel(
             repository.session,
             repository.commandExecutionDetails,
             repository.assistantResponseMetricsByThreadId,
-        ) { snapshot, commandExecutionDetails, assistantResponseMetricsByThreadId ->
+            repository.streamingAssistantTextsByMessageId,
+        ) { snapshot, commandExecutionDetails, assistantResponseMetricsByThreadId, streamingAssistantTextsByMessageId ->
             SessionRenderState(
                 snapshot = snapshot,
                 commandExecutionDetails = commandExecutionDetails,
                 assistantResponseMetricsByThreadId = assistantResponseMetricsByThreadId,
+                streamingAssistantTextsByMessageId = streamingAssistantTextsByMessageId,
             )
         }
 
@@ -630,6 +635,7 @@ class AppViewModel(
                 assistantResponseMetrics = selectedThread?.id?.let(
                     sessionRenderState.assistantResponseMetricsByThreadId::get,
                 ),
+                streamingAssistantTextsByMessageId = sessionRenderState.streamingAssistantTextsByMessageId,
             )
         }
 

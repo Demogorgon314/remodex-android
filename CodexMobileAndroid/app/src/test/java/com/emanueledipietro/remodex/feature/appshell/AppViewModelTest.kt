@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.feature.appshell
 import com.emanueledipietro.remodex.MainDispatcherRule
 import com.emanueledipietro.remodex.data.app.RemodexAppRepository
 import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
+import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
@@ -2913,6 +2914,7 @@ class AppViewModelTest {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
         val assistantResponseMetricsState = MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
+        val streamingAssistantTextsState = MutableStateFlow<Map<String, StreamingAssistantTextState>>(emptyMap())
         val gptAccountSnapshotFlow = MutableStateFlow(RemodexGptAccountSnapshot())
         val gptAccountErrorMessageFlow = MutableStateFlow<String?>(null)
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
@@ -3007,6 +3009,8 @@ class AppViewModelTest {
         override val session: StateFlow<RemodexSessionSnapshot> = snapshot
         override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = commandDetails
         override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> = assistantResponseMetricsState
+        override val streamingAssistantTextsByMessageId: StateFlow<Map<String, StreamingAssistantTextState>> =
+            streamingAssistantTextsState
         override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotFlow
         override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageFlow
         override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusFlow

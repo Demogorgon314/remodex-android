@@ -57,6 +57,8 @@ class FakeThreadSyncService(
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val backingAssistantResponseMetricsByThreadId =
         MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
+    private val backingStreamingAssistantTextsByMessageId =
+        MutableStateFlow<Map<String, StreamingAssistantTextState>>(emptyMap())
     private val backingContextWindowUsageByThreadId =
         MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
@@ -74,6 +76,8 @@ class FakeThreadSyncService(
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = backingCommandExecutionDetails
     override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> =
         backingAssistantResponseMetricsByThreadId
+    override val streamingAssistantTextsByMessageId: StateFlow<Map<String, StreamingAssistantTextState>> =
+        backingStreamingAssistantTextsByMessageId
     override val contextWindowUsageByThreadId: StateFlow<Map<String, RemodexContextWindowUsage>> =
         backingContextWindowUsageByThreadId
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest

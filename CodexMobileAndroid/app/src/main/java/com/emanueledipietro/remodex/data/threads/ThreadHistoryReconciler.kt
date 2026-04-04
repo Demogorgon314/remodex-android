@@ -9,6 +9,9 @@ import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.androidUserMessageFallbackText
 
 internal object ThreadHistoryReconciler {
+    private const val MatchNotFound = -1
+    private const val MatchSuppress = -2
+
     fun mergeHistoryItems(
         existing: List<RemodexConversationItem>,
         history: List<RemodexConversationItem>,
@@ -22,6 +25,14 @@ internal object ThreadHistoryReconciler {
             return history.sortedBy(RemodexConversationItem::orderIndex)
         }
 
+        val assistantHistoryCountByTurn = history
+            .asSequence()
+            .filter { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT
+            }
+            .mapNotNull { item -> normalizedIdentifier(item.turnId) }
+            .groupingBy { it }
+            .eachCount()
         val merged = existing.toMutableList()
         history.forEach { item ->
             val matchIndex = findMatchIndex(
@@ -29,8 +40,12 @@ internal object ThreadHistoryReconciler {
                 historyItem = item,
                 threadIsActive = threadIsActive,
                 threadIsRunning = threadIsRunning,
+                assistantHistoryCountByTurn = assistantHistoryCountByTurn,
             )
-            if (matchIndex == -1) {
+            if (matchIndex == MatchSuppress) {
+                return@forEach
+            }
+            if (matchIndex == MatchNotFound) {
                 merged += item
             } else {
                 merged[matchIndex] = reconcileExistingItem(
@@ -122,23 +137,19 @@ internal object ThreadHistoryReconciler {
         historyItem: RemodexConversationItem,
         threadIsActive: Boolean,
         threadIsRunning: Boolean,
+        assistantHistoryCountByTurn: Map<String, Int>,
     ): Int {
         if (historyItem.speaker == ConversationSpeaker.ASSISTANT) {
             val turnId = normalizedIdentifier(historyItem.turnId)
             val incomingItemId = normalizedIdentifier(historyItem.itemId)
             if (turnId != null) {
-                merged.indexOfLast { candidate ->
-                    candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                        candidate.turnId == turnId &&
-                        normalizedText(candidate.text) == normalizedText(historyItem.text)
-                }.takeIf { it >= 0 }?.let { return it }
-
-                merged.indexOfLast { candidate ->
-                    candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                        candidate.turnId == turnId &&
-                        (normalizedIdentifier(candidate.itemId) == null ||
-                            normalizedIdentifier(candidate.itemId) == incomingItemId)
-                }.takeIf { it >= 0 }?.let { return it }
+                if (incomingItemId == null) {
+                    merged.indexOfLast { candidate ->
+                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                            candidate.turnId == turnId &&
+                            normalizedIdentifier(candidate.itemId) == null
+                    }.takeIf { it >= 0 }?.let { return it }
+                }
 
                 if (threadIsActive || threadIsRunning) {
                     merged.indexOfLast { candidate ->
@@ -147,6 +158,43 @@ internal object ThreadHistoryReconciler {
                             candidate.isStreaming
                     }.takeIf { it >= 0 }?.let { return it }
                 }
+
+                val threadIsStillActive = threadIsActive || threadIsRunning
+                if (!threadIsStillActive && assistantHistoryCountByTurn[turnId] == 1) {
+                    val candidateIndices = merged.indices.filter { index ->
+                        val candidate = merged[index]
+                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                            candidate.turnId == turnId &&
+                            !candidate.isStreaming
+                    }
+                    if (candidateIndices.size == 1) {
+                        val candidateIndex = candidateIndices.single()
+                        return if (
+                            shouldReplaceClosedAssistantMessage(
+                                localItem = merged[candidateIndex],
+                                historyItem = historyItem,
+                            )
+                        ) {
+                            candidateIndex
+                        } else {
+                            MatchSuppress
+                        }
+                    }
+                }
+
+                if (incomingItemId != null) {
+                    merged.indexOfLast { candidate ->
+                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                            candidate.turnId == turnId &&
+                            normalizedIdentifier(candidate.itemId) == incomingItemId
+                    }.takeIf { it >= 0 }?.let { return it }
+                }
+
+                merged.indexOfLast { candidate ->
+                    candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                        candidate.turnId == turnId &&
+                        normalizedText(candidate.text) == normalizedText(historyItem.text)
+                }.takeIf { it >= 0 }?.let { return it }
             }
         }
 
@@ -304,7 +352,7 @@ internal object ThreadHistoryReconciler {
             }.takeIf { it >= 0 }?.let { return it }
         }
 
-        return -1
+        return MatchNotFound
     }
 
     private fun reconcileExistingItem(
@@ -504,6 +552,21 @@ internal object ThreadHistoryReconciler {
     }
 
     private fun normalizedText(value: String): String = value.trim()
+
+    private fun shouldReplaceClosedAssistantMessage(
+        localItem: RemodexConversationItem,
+        historyItem: RemodexConversationItem,
+    ): Boolean {
+        val localText = normalizedText(localItem.text)
+        val historyText = normalizedText(historyItem.text)
+        if (historyText.isEmpty()) {
+            return false
+        }
+        if (localText.isEmpty() || localText == historyText) {
+            return true
+        }
+        return historyText.length > localText.length && historyText.startsWith(localText)
+    }
 
     private fun compactStreamingText(value: String): String {
         return buildString(value.length) {

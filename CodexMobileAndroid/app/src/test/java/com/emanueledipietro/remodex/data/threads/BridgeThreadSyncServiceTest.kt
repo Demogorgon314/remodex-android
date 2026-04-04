@@ -84,6 +84,93 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `assistant streaming text buffer builds incrementally across multiple deltas`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer",
+            "assistant-buffer",
+            "Hello",
+            " world",
+        )
+        val first = invokePrivateMethod(
+            service,
+            "snapshotAssistantStreamingText",
+            "thread-buffer",
+            "assistant-buffer",
+            "Hello",
+        ) as String
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer",
+            "assistant-buffer",
+            first,
+            "!",
+        )
+        val second = invokePrivateMethod(
+            service,
+            "snapshotAssistantStreamingText",
+            "thread-buffer",
+            "assistant-buffer",
+            first,
+        ) as String
+
+        assertEquals("Hello world", first)
+        assertEquals("Hello world!", second)
+    }
+
+    @Test
+    fun `assistant streaming text buffer resets when external reconciliation changes the visible text`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer-reset",
+            "assistant-buffer-reset",
+            "Hello",
+            " world",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer-reset",
+            "assistant-buffer-reset",
+            "Reconciled",
+            "!",
+        )
+        val reconciled = invokePrivateMethod(
+            service,
+            "snapshotAssistantStreamingText",
+            "thread-buffer-reset",
+            "assistant-buffer-reset",
+            "Reconciled",
+        ) as String
+
+        assertEquals("Reconciled!", reconciled)
+    }
+
+    @Test
     fun `history file change summary separates metadata only rows from displayable rows`() {
         val displayableFileChange = RemodexConversationItem(
             id = "file-change-displayable",
@@ -1033,7 +1120,12 @@ class BridgeThreadSyncServiceTest {
         assertTrue(thread.isRunning)
         assertEquals("turn-revive-running", thread.activeTurnId)
         assertNull(thread.latestTurnTerminalState)
-        assertEquals(listOf("Streaming answer resumed"), assistantMessages.map(RemodexConversationItem::text))
+        assertEquals(
+            listOf("Streaming answer resumed"),
+            assistantMessages.map { item ->
+                assistantVisibleText(service = service, threadId = thread.id, item = item)
+            },
+        )
         assertTrue(assistantMessages.single().isStreaming)
     }
 
@@ -1451,7 +1543,14 @@ class BridgeThreadSyncServiceTest {
         assertEquals(1, assistantMessages.size)
         assertEquals("turn-legacy-envelope", assistantMessages.single().turnId)
         assertEquals("message-legacy-1", assistantMessages.single().itemId)
-        assertEquals("Primo blocco", assistantMessages.single().text)
+        assertEquals(
+            "Primo blocco",
+            assistantVisibleText(
+                service = service,
+                threadId = "thread-legacy-envelope",
+                item = assistantMessages.single(),
+            ),
+        )
         assertTrue(assistantMessages.single().isStreaming)
     }
 
@@ -1516,7 +1615,10 @@ class BridgeThreadSyncServiceTest {
 
         assertEquals(1, assistantMessages.size)
         assertEquals("turn-active-hint", assistantMessages.single().turnId)
-        assertEquals("chunk-1", assistantMessages.single().text)
+        assertEquals(
+            "chunk-1",
+            assistantVisibleText(service = service, threadId = "thread-active-hint", item = assistantMessages.single()),
+        )
         assertTrue(assistantMessages.single().isStreaming)
         assertTrue(
             TurnTimelineReducer.reduceProjected(
@@ -6288,7 +6390,11 @@ class BridgeThreadSyncServiceTest {
         assertEquals("assistant-item-1", assistantItems.single().itemId)
         assertEquals(
             "现在这个文件同时负责环境变量校验环境变量",
-            assistantItems.single().text,
+            assistantVisibleText(
+                service = service,
+                threadId = thread.id,
+                item = assistantItems.single(),
+            ),
         )
         assertEquals(
             listOf("thinking-1", assistantItems.single().id),
@@ -6354,7 +6460,10 @@ class BridgeThreadSyncServiceTest {
         val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
             .single { item -> item.speaker == ConversationSpeaker.ASSISTANT }
 
-        assertEquals("```mermaid\nflowchart LR", assistant.text)
+        assertEquals(
+            "```mermaid\nflowchart LR",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistant),
+        )
         assertTrue(assistant.isStreaming)
         assertEquals(1, thread.timelineMutations.size)
         assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
@@ -6504,7 +6613,10 @@ class BridgeThreadSyncServiceTest {
         assertEquals("First streamed answer block", assistantItems[0].text)
         assertEquals("assistant-turn-assistant-segments-seg-1", assistantItems[1].id)
         assertTrue(assistantItems[1].isStreaming)
-        assertEquals("Second streamed answer block", assistantItems[1].text)
+        assertEquals(
+            "Second streamed answer block",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistantItems[1]),
+        )
         assertEquals(
             listOf(
                 assistantItems[0].id,
@@ -6595,7 +6707,10 @@ class BridgeThreadSyncServiceTest {
         assertEquals("First review preface", assistantItems[0].text)
         assertEquals("assistant-turn-review-segments-seg-1", assistantItems[1].id)
         assertTrue(assistantItems[1].isStreaming)
-        assertEquals("Second review finding", assistantItems[1].text)
+        assertEquals(
+            "Second review finding",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistantItems[1]),
+        )
         assertEquals(
             listOf(
                 assistantItems[0].id,
@@ -6685,7 +6800,10 @@ class BridgeThreadSyncServiceTest {
         assertEquals("First compaction note", assistantItems[0].text)
         assertEquals("assistant-turn-compaction-segments-seg-1", assistantItems[1].id)
         assertTrue(assistantItems[1].isStreaming)
-        assertEquals("Second compaction note", assistantItems[1].text)
+        assertEquals(
+            "Second compaction note",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistantItems[1]),
+        )
         assertEquals(
             listOf(
                 assistantItems[0].id,
@@ -9128,7 +9246,10 @@ class BridgeThreadSyncServiceTest {
             listOf("assistant-turn-web-search-first-turn", "search-item-first-turn"),
             projected.map(RemodexConversationItem::id),
         )
-        assertEquals("First streamed answer block", projected.first().text)
+        assertEquals(
+            "First streamed answer block",
+            assistantVisibleText(service = service, threadId = thread.id, item = projected.first()),
+        )
         assertEquals("Searched the web", projected.last().text)
     }
 
@@ -9572,6 +9693,22 @@ class BridgeThreadSyncServiceTest {
             Thread.sleep(10)
         }
         fail("Expected $expectedCount threads but found ${service.threads.value.size}")
+    }
+
+    private fun assistantVisibleText(
+        service: BridgeThreadSyncService,
+        threadId: String,
+        item: RemodexConversationItem,
+    ): String {
+        return if (
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+            item.kind == ConversationItemKind.CHAT &&
+            item.isStreaming
+        ) {
+            service.streamingAssistantTextsByMessageId.value[item.id]?.handle?.snapshot() ?: item.text
+        } else {
+            item.text
+        }
     }
 
     private fun invokePrivateMethod(

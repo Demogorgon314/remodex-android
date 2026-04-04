@@ -129,6 +129,11 @@ object TurnTimelineReducer {
         mutation: TimelineMutation,
     ): List<RemodexConversationItem>? {
         return when (mutation) {
+            is TimelineMutation.Upsert -> applyProjectedUpsertFastPath(
+                items = items,
+                item = mutation.item,
+            )
+
             is TimelineMutation.AssistantTextDelta -> applyAssistantProjectedTextDelta(
                 items = items,
                 messageId = mutation.messageId,
@@ -139,6 +144,35 @@ object TurnTimelineReducer {
             )
 
             else -> null
+        }
+    }
+
+    private fun applyProjectedUpsertFastPath(
+        items: List<RemodexConversationItem>,
+        item: RemodexConversationItem,
+    ): List<RemodexConversationItem>? {
+        if (
+            item.speaker != ConversationSpeaker.ASSISTANT ||
+            item.kind != ConversationItemKind.CHAT
+        ) {
+            return null
+        }
+        val existingIndex = items.indexOfFirst { candidate ->
+            candidate.id == item.id &&
+                candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                candidate.kind == ConversationItemKind.CHAT
+        }
+        if (existingIndex == -1) {
+            return null
+        }
+
+        val existing = items[existingIndex]
+        if (existing == item) {
+            return items
+        }
+
+        return items.toMutableList().apply {
+            this[existingIndex] = item
         }
     }
 
