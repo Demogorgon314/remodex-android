@@ -938,6 +938,9 @@ private fun MainPane(
     var repositoryDiffSheetPresentation by remember(uiState.selectedThread?.id) {
         mutableStateOf<FileChangeSheetPresentation?>(null)
     }
+    var isLoadingRepositoryDiff by remember(uiState.selectedThread?.id) {
+        mutableStateOf(false)
+    }
     val repoDiffTotals = if (shellRoute == ShellRoute.CONTENT) {
         uiState.composer.gitState.sync?.diffTotals
     } else {
@@ -955,12 +958,18 @@ private fun MainPane(
             hasSelectedThread = uiState.selectedThread != null,
             compact = compact,
             repoDiffTotals = repoDiffTotals,
-            isLoadingRepoDiff = shellRoute == ShellRoute.CONTENT && uiState.composer.gitState.isLoading,
+            isLoadingRepoDiff = shellRoute == ShellRoute.CONTENT && isLoadingRepositoryDiff,
             onOpenRepoDiff = if (shellRoute == ShellRoute.CONTENT && repoDiffTotals != null) {
                 {
-                    viewModel.loadRepositoryDiff { diff ->
-                        repositoryDiffSheetPresentation = buildRepositoryDiffSheetPresentation(diff.patch)
-                    }
+                    isLoadingRepositoryDiff = true
+                    viewModel.loadRepositoryDiff(
+                        onLoaded = { diff ->
+                            repositoryDiffSheetPresentation = buildRepositoryDiffSheetPresentation(diff.patch)
+                        },
+                        onComplete = {
+                            isLoadingRepositoryDiff = false
+                        },
+                    )
                 }
             } else {
                 null

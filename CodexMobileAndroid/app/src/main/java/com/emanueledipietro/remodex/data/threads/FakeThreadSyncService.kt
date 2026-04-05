@@ -665,6 +665,10 @@ class FakeThreadSyncService(
         return gitStateByThreadId[threadId] ?: RemodexGitState()
     }
 
+    override suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
+        return gitStateByThreadId[threadId]?.sync
+    }
+
     override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {
         val sync = gitStateByThreadId[threadId]?.sync ?: return RemodexGitRepoDiff()
         val patch = buildString {

@@ -45,6 +45,7 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -2107,42 +2108,34 @@ class AppViewModel(
         uiState.value.selectedThread?.id?.let(::scheduleGitStateRefresh)
     }
 
-    fun loadRepositoryDiff(onLoaded: (RemodexGitRepoDiff) -> Unit) {
-        val threadId = uiState.value.selectedThread?.id ?: return
+    fun loadRepositoryDiff(
+        onLoaded: (RemodexGitRepoDiff) -> Unit,
+        onComplete: () -> Unit = {},
+    ) {
+        val threadId = uiState.value.selectedThread?.id ?: run {
+            onComplete()
+            return
+        }
         viewModelScope.launch {
             clearGitSyncAlert(threadId)
-            updateGitState(threadId) { currentState ->
-                currentState.copy(isLoading = true, errorMessage = null)
-            }
-            runCatching { repository.loadGitDiff(threadId) }
-                .onSuccess { diff ->
-                    updateGitState(threadId) { currentState ->
-                        currentState.copy(
-                            isLoading = false,
-                            errorMessage = null,
-                        )
-                    }
-                    if (diff.patch.isNotBlank()) {
-                        onLoaded(diff)
-                    } else {
-                        showGitSyncAlert(
-                            threadId = threadId,
-                            message = "There are no repository changes to show.",
-                        )
-                    }
-                }
-                .onFailure { error ->
-                    updateGitState(threadId) { currentState ->
-                        currentState.copy(
-                            isLoading = false,
-                            errorMessage = null,
-                        )
-                    }
+            try {
+                val diff = repository.loadGitDiff(threadId)
+                if (diff.patch.isNotBlank()) {
+                    onLoaded(diff)
+                } else {
                     showGitSyncAlert(
                         threadId = threadId,
-                        message = error.message ?: "Could not load repository changes.",
+                        message = "There are no repository changes to show.",
                     )
                 }
+            } catch (error: Throwable) {
+                showGitSyncAlert(
+                    threadId = threadId,
+                    message = error.message ?: "Could not load repository changes.",
+                )
+            } finally {
+                onComplete()
+            }
         }
     }
 
@@ -3394,7 +3387,33 @@ class AppViewModel(
             if (uiState.value.selectedThread?.id != threadId) {
                 return@launch
             }
-            refreshGitState(threadId)
+            refreshGitSync(threadId)
+        }
+    }
+
+    private fun refreshGitSync(threadId: String) {
+        viewModelScope.launch {
+            runCatching { repository.loadGitSync(threadId) }
+                .onSuccess { sync ->
+                    updateObservedGitSync(threadId, sync)
+                }
+                .onFailure {
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(errorMessage = null)
+                    }
+                }
+        }
+    }
+
+    private fun updateObservedGitSync(
+        threadId: String,
+        sync: RemodexGitRepoSync?,
+    ) {
+        updateGitState(threadId) { currentState ->
+            currentState.copy(
+                sync = sync,
+                errorMessage = null,
+            )
         }
     }
 

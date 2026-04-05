@@ -2255,12 +2255,12 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         var loadedDiff: RemodexGitRepoDiff? = null
-        viewModel.loadRepositoryDiff { diff ->
+        viewModel.loadRepositoryDiff(onLoaded = { diff ->
             loadedDiff = diff
-        }
+        })
         runCurrent()
 
-        assertTrue(viewModel.uiState.value.composer.gitState.isLoading)
+        assertFalse(viewModel.uiState.value.composer.gitState.isLoading)
         assertEquals(1, repository.gitDiffRequests)
 
         advanceTimeBy(100)
@@ -2292,9 +2292,9 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         var callbackCount = 0
-        viewModel.loadRepositoryDiff {
+        viewModel.loadRepositoryDiff(onLoaded = {
             callbackCount += 1
-        }
+        })
         advanceUntilIdle()
 
         assertEquals(0, callbackCount)
@@ -2381,19 +2381,19 @@ class AppViewModelTest {
         }
         val viewModel = AppViewModel(repository)
         advanceUntilIdle()
-        repository.gitStateRequests = 0
+        repository.gitSyncRequests = 0
 
         viewModel.scheduleGitStateRefresh()
         viewModel.scheduleGitStateRefresh()
         advanceTimeBy(349)
         runCurrent()
 
-        assertEquals(0, repository.gitStateRequests)
+        assertEquals(0, repository.gitSyncRequests)
 
         advanceTimeBy(1)
         advanceUntilIdle()
 
-        assertEquals(1, repository.gitStateRequests)
+        assertEquals(1, repository.gitSyncRequests)
     }
 
     @Test
@@ -3070,8 +3070,11 @@ class AppViewModelTest {
         var gitDiffResult = RemodexGitRepoDiff()
         var gitStateResult = RemodexGitState()
         var gitStateRequests = 0
+        var gitSyncResult: RemodexGitRepoSync? = null
+        var gitSyncRequests = 0
         var gitCommitResults: List<RemodexGitCommit> = emptyList()
         var gitStateError: Throwable? = null
+        var gitSyncError: Throwable? = null
         var checkoutGitBranchError: Throwable? = null
         var remoteUrlResult = RemodexGitRemoteUrl(
             url = "git@github.com:example/remodex.git",
@@ -3432,6 +3435,12 @@ class AppViewModelTest {
             gitStateRequests += 1
             gitStateError?.let { throw it }
             return gitStateResult
+        }
+
+        override suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
+            gitSyncRequests += 1
+            gitSyncError?.let { throw it }
+            return gitSyncResult ?: gitStateResult.sync
         }
 
         override suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff {

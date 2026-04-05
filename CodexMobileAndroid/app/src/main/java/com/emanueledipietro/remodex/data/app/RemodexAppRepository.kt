@@ -17,9 +17,10 @@ import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import kotlinx.coroutines.flow.StateFlow
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitCommit
-import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
+import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -225,6 +226,8 @@ interface RemodexAppRepository {
     ): String?
 
     suspend fun loadGitState(threadId: String): RemodexGitState
+
+    suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? = null
 
     suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()
 

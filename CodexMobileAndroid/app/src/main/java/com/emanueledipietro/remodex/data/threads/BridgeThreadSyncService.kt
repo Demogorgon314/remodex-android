@@ -2304,7 +2304,7 @@ class BridgeThreadSyncService(
         }
     }
 
-    private suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
+    override suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
         val resultObject = runGitRequest(threadId = threadId, method = "git/status")
             .result
             ?.jsonObjectOrNull

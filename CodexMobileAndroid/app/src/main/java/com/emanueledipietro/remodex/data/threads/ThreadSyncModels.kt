@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
@@ -183,6 +184,8 @@ interface ThreadCommandService {
     ): List<RemodexSkillMetadata>
 
     suspend fun loadGitState(threadId: String): RemodexGitState
+
+    suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? = null
 
     suspend fun loadGitDiff(threadId: String): RemodexGitRepoDiff = RemodexGitRepoDiff()
 
