@@ -878,12 +878,17 @@ internal fun remodexNormalizedCreatedBranchName(rawName: String): String {
 internal fun remodexCurrentBranchSelectionIsDisabled(
     branch: String,
     currentBranch: String,
+    branchesCheckedOutElsewhere: Set<String> = emptySet(),
+    worktreePathByBranch: Map<String, String> = emptyMap(),
     allowsSelectingCurrentBranch: Boolean,
 ): Boolean {
-    if (allowsSelectingCurrentBranch) {
-        return false
+    val trimmedBranch = branch.trim()
+    val trimmedCurrentBranch = currentBranch.trim()
+    if (!allowsSelectingCurrentBranch) {
+        return trimmedBranch == trimmedCurrentBranch
     }
-    return branch.trim() == currentBranch.trim()
+    return branchesCheckedOutElsewhere.contains(trimmedBranch) &&
+        worktreePathByBranch[trimmedBranch].isNullOrBlank()
 }
 
 internal fun gitBranchPickerOrderedBranches(

@@ -40,6 +40,32 @@ class ConversationScreenGitBranchPickerTest {
     }
 
     @Test
+    fun `current branch picker disables checked out elsewhere rows when worktree path is missing`() {
+        assertTrue(
+            remodexCurrentBranchSelectionIsDisabled(
+                branch = "remodex/feature-a",
+                currentBranch = "main",
+                branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
+                worktreePathByBranch = emptyMap(),
+                allowsSelectingCurrentBranch = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `current branch picker keeps checked out elsewhere rows enabled when worktree path exists`() {
+        assertFalse(
+            remodexCurrentBranchSelectionIsDisabled(
+                branch = "remodex/feature-a",
+                currentBranch = "main",
+                branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
+                worktreePathByBranch = mapOf("remodex/feature-a" to "/tmp/remodex-feature-a"),
+                allowsSelectingCurrentBranch = true,
+            ),
+        )
+    }
+
+    @Test
     fun `ordered branches prioritize selected branch when search is empty`() {
         val ordered = gitBranchPickerOrderedBranches(
             branches = listOf("feature/a", "feature/b", "feature/c"),
