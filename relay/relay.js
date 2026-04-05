@@ -14,11 +14,13 @@ const CLOSE_CODE_MAC_ABSENCE_BUFFER_FULL = 4004;
 const MAC_ABSENCE_GRACE_MS = 15_000;
 const TRUSTED_SESSION_RESOLVE_TAG = "remodex-trusted-session-resolve-v1";
 const TRUSTED_SESSION_RESOLVE_SKEW_MS = 90_000;
+const RELAY_TRAFFIC_TOP_LABEL_LIMIT = 6;
 
 // In-memory session registry for one Mac host and one live iPhone client per session.
 const sessions = new Map();
 const liveSessionsByMacDeviceId = new Map();
 const usedResolveNonces = new Map();
+let relayTrafficStats = createRelayTrafficStats();
 
 // Attaches relay behavior to a ws WebSocketServer instance.
 function setupRelay(
@@ -29,6 +31,7 @@ function setupRelay(
     macAbsenceGraceMs = MAC_ABSENCE_GRACE_MS,
   } = {}
 ) {
+  relayTrafficStats = createRelayTrafficStats();
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
       if (ws._relayAlive === false) {
@@ -134,10 +137,16 @@ function setupRelay(
       if (role === "mac") {
         for (const client of session.clients) {
           if (client.readyState === WebSocket.OPEN) {
+            relayTrafficStats.record("macToIphone", msg, {
+              label: classifyRelayTrafficLabel(msg),
+            });
             client.send(msg);
           }
         }
       } else if (session.mac?.readyState === WebSocket.OPEN) {
+        relayTrafficStats.record("iphoneToMac", msg, {
+          label: classifyRelayTrafficLabel(msg),
+        });
         session.mac.send(msg);
       } else {
         // The relay cannot prove a buffered request really reached the bridge after
@@ -375,6 +384,7 @@ function getRelayStats() {
     activeSessions: sessions.size,
     sessionsWithMac,
     totalClients,
+    traffic: relayTrafficStats.snapshot(),
   };
 }
 
@@ -537,6 +547,119 @@ function safeParseJSON(value) {
   } catch {
     return null;
   }
+}
+
+function createRelayTrafficStats({
+  now = () => Date.now(),
+  topLabelLimit = RELAY_TRAFFIC_TOP_LABEL_LIMIT,
+} = {}) {
+  const startedAt = now();
+  let updatedAt = startedAt;
+  const channels = new Map();
+
+  return {
+    record(channel, rawMessage, { label = "unknown" } = {}) {
+      const normalizedChannel = normalizeNonEmptyString(channel);
+      const bytes = byteLengthOfRelayTraffic(rawMessage);
+      if (!normalizedChannel || bytes <= 0) {
+        return;
+      }
+
+      updatedAt = now();
+      const channelEntry = ensureRelayTrafficChannel(channels, normalizedChannel);
+      channelEntry.messages += 1;
+      channelEntry.bytes += bytes;
+
+      const normalizedLabel = normalizeNonEmptyString(label) || "unknown";
+      const labelEntry = channelEntry.labels.get(normalizedLabel) || { messages: 0, bytes: 0 };
+      labelEntry.messages += 1;
+      labelEntry.bytes += bytes;
+      channelEntry.labels.set(normalizedLabel, labelEntry);
+    },
+    snapshot() {
+      const normalizedChannels = {};
+      for (const [channelName, channelEntry] of channels.entries()) {
+        normalizedChannels[channelName] = {
+          messages: channelEntry.messages,
+          bytes: channelEntry.bytes,
+          topLabels: [...channelEntry.labels.entries()]
+            .map(([label, entry]) => ({
+              label,
+              messages: entry.messages,
+              bytes: entry.bytes,
+            }))
+            .sort(compareRelayTrafficEntries)
+            .slice(0, topLabelLimit),
+        };
+      }
+
+      return {
+        startedAt: new Date(startedAt).toISOString(),
+        updatedAt: new Date(updatedAt).toISOString(),
+        channels: normalizedChannels,
+      };
+    },
+  };
+}
+
+function classifyRelayTrafficLabel(rawMessage) {
+  const parsed = safeParseJSON(rawMessage);
+  if (!parsed || typeof parsed !== "object") {
+    return "non_json";
+  }
+
+  const kind = normalizeNonEmptyString(parsed.kind);
+  if (kind) {
+    return `kind:${kind}`;
+  }
+
+  const method = normalizeNonEmptyString(parsed.method);
+  if (method) {
+    return method;
+  }
+
+  return parsed?.id != null ? "response" : "json";
+}
+
+function ensureRelayTrafficChannel(channels, channelName) {
+  const existing = channels.get(channelName);
+  if (existing) {
+    return existing;
+  }
+
+  const channel = {
+    messages: 0,
+    bytes: 0,
+    labels: new Map(),
+  };
+  channels.set(channelName, channel);
+  return channel;
+}
+
+function byteLengthOfRelayTraffic(value) {
+  if (typeof value === "string") {
+    return Buffer.byteLength(value, "utf8");
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.length;
+  }
+
+  if (value == null) {
+    return 0;
+  }
+
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function compareRelayTrafficEntries(left, right) {
+  return right.bytes - left.bytes
+    || right.messages - left.messages
+    || left.label.localeCompare(right.label);
 }
 
 module.exports = {

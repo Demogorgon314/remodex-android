@@ -8,7 +8,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   buildHeartbeatBridgeStatus,
+  buildPublishedBridgeStatus,
+  classifyBridgeTrafficMessageLabel,
+  createBridgeTrafficStats,
   hasRelayConnectionGoneStale,
+  rememberTrafficRequestMethod,
   sanitizeThreadHistoryImagesForRelay,
 } = require("../src/bridge");
 
@@ -82,6 +86,50 @@ test("buildHeartbeatBridgeStatus leaves fresh or already-disconnected snapshots 
   assert.deepEqual(buildHeartbeatBridgeStatus(disconnectedStatus, 1_000), disconnectedStatus);
 });
 
+test("buildPublishedBridgeStatus refreshes traffic snapshots during heartbeats", () => {
+  const published = buildPublishedBridgeStatus(
+    {
+      state: "running",
+      connectionStatus: "connected",
+      pid: 123,
+      lastError: "",
+      traffic: {
+        startedAt: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        channels: {},
+      },
+    },
+    {
+      startedAt: "1970-01-01T00:00:01.000Z",
+      updatedAt: "1970-01-01T00:00:02.000Z",
+      channels: {
+        relayInboundWire: {
+          messages: 2,
+          bytes: 256,
+          topLabels: [
+            {
+              label: "kind:encryptedEnvelope",
+              messages: 2,
+              bytes: 256,
+            },
+          ],
+        },
+      },
+    },
+    {
+      lastActivityAt: 5_000,
+      heartbeatOptions: {
+        now: 20_000,
+        staleAfterMs: 25_000,
+      },
+    }
+  );
+
+  assert.equal(published.connectionStatus, "connected");
+  assert.equal(published.traffic.channels.relayInboundWire.bytes, 256);
+  assert.equal(published.traffic.updatedAt, "1970-01-01T00:00:02.000Z");
+});
+
 test("sanitizeThreadHistoryImagesForRelay replaces inline history images with lightweight references", () => {
   const rawMessage = JSON.stringify({
     id: "req-thread-read",
@@ -140,4 +188,96 @@ test("sanitizeThreadHistoryImagesForRelay leaves unrelated RPC payloads unchange
     sanitizeThreadHistoryImagesForRelay(rawMessage, "turn/start"),
     rawMessage
   );
+});
+
+test("bridge traffic classification attributes responses back to the original request method", () => {
+  const applicationRequestMethodsById = new Map();
+  rememberTrafficRequestMethod(
+    applicationRequestMethodsById,
+    JSON.stringify({
+      id: "req-thread-read",
+      method: "thread/read",
+      params: {
+        threadId: "thread-1",
+      },
+    })
+  );
+
+  assert.equal(
+    classifyBridgeTrafficMessageLabel(JSON.stringify({
+      id: "req-thread-read",
+      result: {
+        thread: {
+          id: "thread-1",
+        },
+      },
+    }), {
+      applicationRequestMethodsById,
+    }),
+    "thread/read:response"
+  );
+
+  assert.equal(
+    classifyBridgeTrafficMessageLabel(JSON.stringify({
+      id: "bridge-managed-1",
+      error: {
+        message: "expired",
+      },
+    }), {
+      bridgeManagedCodexRequestWaiters: new Map([
+        [
+          "bridge-managed-1",
+          {
+            method: "getAuthStatus",
+          },
+        ],
+      ]),
+    }),
+    "bridge/getAuthStatus:error"
+  );
+});
+
+test("bridge traffic stats keep per-channel totals plus top labels", () => {
+  let currentTime = 1_000;
+  const trafficStats = createBridgeTrafficStats({
+    now() {
+      return currentTime;
+    },
+  });
+
+  trafficStats.record("relayOutboundApplication", JSON.stringify({
+    id: "req-thread-read",
+    result: {
+      thread: {
+        id: "thread-1",
+      },
+    },
+  }), {
+    label: "thread/read:response",
+  });
+  currentTime = 2_000;
+  trafficStats.record("relayOutboundApplication", JSON.stringify({
+    method: "turn/update",
+    params: {
+      delta: "ok",
+    },
+  }), {
+    label: "turn/update",
+  });
+  currentTime = 3_000;
+  trafficStats.record("codexInbound", JSON.stringify({
+    kind: "encryptedEnvelope",
+  }), {
+    label: "kind:encryptedEnvelope",
+  });
+
+  const snapshot = trafficStats.snapshot();
+  assert.equal(snapshot.startedAt, "1970-01-01T00:00:01.000Z");
+  assert.equal(snapshot.updatedAt, "1970-01-01T00:00:03.000Z");
+  assert.equal(snapshot.channels.relayOutboundApplication.messages, 2);
+  assert.equal(
+    snapshot.channels.relayOutboundApplication.topLabels[0].label,
+    "thread/read:response"
+  );
+  assert.equal(snapshot.channels.codexInbound.topLabels[0].label, "kind:encryptedEnvelope");
 });

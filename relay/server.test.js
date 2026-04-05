@@ -486,6 +486,71 @@ test("websocket relay forwards between mac and iphone on the base relay path", a
   });
 });
 
+test("detailed health includes relay traffic totals and top labels", async () => {
+  await withServer(async ({ port }) => {
+    const mac = new WebSocket(`ws://127.0.0.1:${port}/relay/session-traffic`, {
+      headers: { "x-role": "mac" },
+    });
+    const iphone = new WebSocket(`ws://127.0.0.1:${port}/relay/session-traffic`, {
+      headers: { "x-role": "iphone" },
+    });
+
+    await Promise.all([onceOpen(mac), onceOpen(iphone)]);
+
+    const outboundEnvelope = JSON.stringify({
+      kind: "encryptedEnvelope",
+      sessionId: "session-traffic",
+      sender: "mac",
+      counter: 1,
+      keyEpoch: 1,
+      ciphertext: "AAAA",
+      tag: "BBBB",
+    });
+    const inboundEnvelope = JSON.stringify({
+      kind: "encryptedEnvelope",
+      sessionId: "session-traffic",
+      sender: "iphone",
+      counter: 1,
+      keyEpoch: 1,
+      ciphertext: "CCCC",
+      tag: "DDDD",
+    });
+
+    const iphoneReceived = onceMessage(iphone);
+    mac.send(outboundEnvelope);
+    await iphoneReceived;
+
+    const macReceived = onceMessage(mac);
+    iphone.send(inboundEnvelope);
+    await macReceived;
+
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    const body = await response.json();
+
+    assert.equal(body.ok, true);
+    assert.equal(body.relay.traffic.channels.macToIphone.messages, 1);
+    assert.equal(body.relay.traffic.channels.iphoneToMac.messages, 1);
+    assert.equal(body.relay.traffic.channels.macToIphone.topLabels[0].label, "kind:encryptedEnvelope");
+    assert.equal(body.relay.traffic.channels.iphoneToMac.topLabels[0].label, "kind:encryptedEnvelope");
+    assert.equal(
+      body.relay.traffic.channels.macToIphone.bytes,
+      Buffer.byteLength(outboundEnvelope, "utf8")
+    );
+    assert.equal(
+      body.relay.traffic.channels.iphoneToMac.bytes,
+      Buffer.byteLength(inboundEnvelope, "utf8")
+    );
+
+    const macClosed = onceClosed(mac);
+    const iphoneClosed = onceClosed(iphone);
+    mac.close();
+    iphone.close();
+    await Promise.all([macClosed, iphoneClosed]);
+  }, {
+    exposeDetailedHealth: true,
+  });
+});
+
 test("relay keeps the iPhone connected briefly but rejects new sends while the mac is absent", async () => {
   await withServer(async ({ port }) => {
     const mac = new WebSocket(`ws://127.0.0.1:${port}/relay/session-grace`, {

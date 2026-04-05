@@ -47,6 +47,8 @@ const RELAY_WATCHDOG_STALE_AFTER_MS = 25_000;
 const BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS = 5_000;
 const STALE_RELAY_STATUS_MESSAGE = "Relay heartbeat stalled; reconnect pending.";
 const RELAY_HISTORY_IMAGE_REFERENCE_URL = "remodex://history-image-elided";
+const TRAFFIC_REQUEST_METHOD_TTL_MS = 2 * 60_000;
+const TRAFFIC_TOP_LABEL_LIMIT = 8;
 
 function startBridge({
   config: explicitConfig = null,
@@ -111,6 +113,8 @@ function startBridge({
   const bridgeManagedCodexRequestWaiters = new Map();
   const forwardedRequestMethodsById = new Map();
   const relaySanitizedResponseMethodsById = new Map();
+  const applicationTrafficRequestMethodsById = new Map();
+  const bridgeTrafficStats = createBridgeTrafficStats();
   const trackedForwardedRequestMethods = new Set([
     "account/login/start",
     "account/login/cancel",
@@ -143,6 +147,9 @@ function startBridge({
       return false;
     }
 
+    bridgeTrafficStats.record("relayOutboundWire", wireMessage, {
+      label: classifyBridgeTrafficMessageLabel(wireMessage),
+    });
     socket.send(wireMessage);
     return true;
   }
@@ -211,7 +218,14 @@ function startBridge({
         return;
       }
 
-      onBridgeStatus?.(buildHeartbeatBridgeStatus(lastPublishedBridgeStatus, lastRelayActivityAt));
+      lastPublishedBridgeStatus = buildPublishedBridgeStatus(
+        lastPublishedBridgeStatus,
+        bridgeTrafficStats.snapshot(),
+        {
+          lastActivityAt: lastRelayActivityAt,
+        }
+      );
+      onBridgeStatus?.(lastPublishedBridgeStatus);
     }, BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS);
     statusHeartbeatTimer.unref?.();
   }
@@ -344,11 +358,12 @@ function startBridge({
     nextSocket.on("message", (data) => {
       markRelayActivity();
       const message = typeof data === "string" ? data : data.toString("utf8");
+      bridgeTrafficStats.record("relayInboundWire", message, {
+        label: classifyBridgeTrafficMessageLabel(message),
+      });
       if (secureTransport.handleIncomingWireMessage(message, {
         sendControlMessage(controlMessage) {
-          if (nextSocket.readyState === WebSocket.OPEN) {
-            nextSocket.send(JSON.stringify(controlMessage));
-          }
+          sendRelayWireMessage(JSON.stringify(controlMessage));
         },
         onApplicationMessage(plaintextMessage) {
           handleApplicationMessage(plaintextMessage);
@@ -397,6 +412,13 @@ function startBridge({
   connectRelay();
 
   codex.onMessage((message) => {
+    pruneExpiredTrafficRequestMethods(applicationTrafficRequestMethodsById);
+    bridgeTrafficStats.record("codexInbound", message, {
+      label: classifyBridgeTrafficMessageLabel(message, {
+        applicationRequestMethodsById: applicationTrafficRequestMethodsById,
+        bridgeManagedCodexRequestWaiters,
+      }),
+    });
     if (handleBridgeManagedCodexResponse(message)) {
       return;
     }
@@ -405,10 +427,13 @@ function startBridge({
     desktopRefresher.handleOutbound(message);
     pushNotificationTracker.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
-    secureTransport.queueOutboundApplicationMessage(
-      sanitizeRelayBoundCodexMessage(message),
-      sendRelayWireMessage
-    );
+    const relayBoundMessage = sanitizeRelayBoundCodexMessage(message);
+    bridgeTrafficStats.record("relayOutboundApplication", relayBoundMessage, {
+      label: classifyBridgeTrafficMessageLabel(relayBoundMessage, {
+        applicationRequestMethodsById: applicationTrafficRequestMethodsById,
+      }),
+    });
+    secureTransport.queueOutboundApplicationMessage(relayBoundMessage, sendRelayWireMessage);
   });
 
   codex.onClose(() => {
@@ -448,6 +473,13 @@ function startBridge({
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
+    pruneExpiredTrafficRequestMethods(applicationTrafficRequestMethodsById);
+    rememberTrafficRequestMethod(applicationTrafficRequestMethodsById, rawMessage);
+    bridgeTrafficStats.record("relayInboundApplication", rawMessage, {
+      label: classifyBridgeTrafficMessageLabel(rawMessage, {
+        applicationRequestMethodsById: applicationTrafficRequestMethodsById,
+      }),
+    });
     if (handleBridgeManagedHandshakeMessage(rawMessage)) {
       return;
     }
@@ -479,11 +511,22 @@ function startBridge({
     rolloutLiveMirror?.observeInbound(rawMessage);
     rememberForwardedRequestMethod(rawMessage);
     rememberThreadFromMessage("phone", rawMessage);
+    bridgeTrafficStats.record("codexOutbound", rawMessage, {
+      label: classifyBridgeTrafficMessageLabel(rawMessage, {
+        applicationRequestMethodsById: applicationTrafficRequestMethodsById,
+      }),
+    });
     codex.send(rawMessage);
   }
 
   // Encrypts bridge-generated responses instead of letting the relay see plaintext.
   function sendApplicationResponse(rawMessage) {
+    pruneExpiredTrafficRequestMethods(applicationTrafficRequestMethodsById);
+    bridgeTrafficStats.record("relayOutboundApplication", rawMessage, {
+      label: classifyBridgeTrafficMessageLabel(rawMessage, {
+        applicationRequestMethodsById: applicationTrafficRequestMethodsById,
+      }),
+    });
     secureTransport.queueOutboundApplicationMessage(rawMessage, sendRelayWireMessage);
   }
 
@@ -901,6 +944,9 @@ function startBridge({
       });
 
       try {
+        bridgeTrafficStats.record("codexOutbound", payload, {
+          label: classifyBridgeTrafficMessageLabel(payload),
+        });
         codex.send(payload);
       } catch (error) {
         clearTimeout(timeout);
@@ -954,8 +1000,8 @@ function startBridge({
   }
 
   function publishBridgeStatus(status) {
-    lastPublishedBridgeStatus = status;
-    onBridgeStatus?.(status);
+    lastPublishedBridgeStatus = buildPublishedBridgeStatus(status, bridgeTrafficStats.snapshot());
+    onBridgeStatus?.(lastPublishedBridgeStatus);
   }
 
   // Refreshes the relay's trusted-mac index after the QR bootstrap locks in a phone identity.
@@ -965,7 +1011,7 @@ function startBridge({
       return;
     }
 
-    socket.send(JSON.stringify({
+    sendRelayWireMessage(JSON.stringify({
       kind: "relayMacRegistration",
       registration: buildMacRegistration(nextDeviceState),
     }));
@@ -1257,9 +1303,214 @@ function buildHeartbeatBridgeStatus(
   };
 }
 
+function buildPublishedBridgeStatus(
+  status,
+  trafficSnapshot,
+  {
+    lastActivityAt = null,
+    heartbeatOptions = {},
+  } = {}
+) {
+  const baseStatus = lastActivityAt == null
+    ? status
+    : buildHeartbeatBridgeStatus(status, lastActivityAt, heartbeatOptions);
+  if (!baseStatus || typeof baseStatus !== "object") {
+    return baseStatus;
+  }
+
+  return {
+    ...baseStatus,
+    traffic: trafficSnapshot,
+  };
+}
+
+function createBridgeTrafficStats({
+  now = () => Date.now(),
+  topLabelLimit = TRAFFIC_TOP_LABEL_LIMIT,
+} = {}) {
+  const startedAt = now();
+  let updatedAt = startedAt;
+  const channels = new Map();
+
+  return {
+    record(channel, rawMessage, { label = "unknown" } = {}) {
+      const normalizedChannel = normalizeNonEmptyString(channel);
+      const bytes = byteLengthOfTrafficMessage(rawMessage);
+      if (!normalizedChannel || bytes <= 0) {
+        return;
+      }
+
+      updatedAt = now();
+      const channelEntry = ensureTrafficChannel(channels, normalizedChannel);
+      channelEntry.messages += 1;
+      channelEntry.bytes += bytes;
+
+      const normalizedLabel = normalizeNonEmptyString(label) || "unknown";
+      const labelEntry = channelEntry.labels.get(normalizedLabel) || { messages: 0, bytes: 0 };
+      labelEntry.messages += 1;
+      labelEntry.bytes += bytes;
+      channelEntry.labels.set(normalizedLabel, labelEntry);
+    },
+    snapshot() {
+      const normalizedChannels = {};
+      for (const [channelName, channelEntry] of channels.entries()) {
+        normalizedChannels[channelName] = {
+          messages: channelEntry.messages,
+          bytes: channelEntry.bytes,
+          topLabels: [...channelEntry.labels.entries()]
+            .map(([label, entry]) => ({
+              label,
+              messages: entry.messages,
+              bytes: entry.bytes,
+            }))
+            .sort(compareTrafficEntries)
+            .slice(0, topLabelLimit),
+        };
+      }
+
+      return {
+        startedAt: new Date(startedAt).toISOString(),
+        updatedAt: new Date(updatedAt).toISOString(),
+        channels: normalizedChannels,
+      };
+    },
+  };
+}
+
+function classifyBridgeTrafficMessageLabel(
+  rawMessage,
+  {
+    applicationRequestMethodsById = null,
+    bridgeManagedCodexRequestWaiters = null,
+  } = {}
+) {
+  const parsed = parseBridgeJSON(rawMessage);
+  if (!parsed || typeof parsed !== "object") {
+    return "non_json";
+  }
+
+  const kind = normalizeNonEmptyString(parsed.kind);
+  if (kind) {
+    return `kind:${kind}`;
+  }
+
+  const method = normalizeNonEmptyString(parsed.method);
+  if (method) {
+    return method;
+  }
+
+  const responseId = parsed?.id;
+  if (responseId == null) {
+    return "json";
+  }
+
+  const matchedMethod = resolveTrafficRequestMethod(responseId, {
+    applicationRequestMethodsById,
+    bridgeManagedCodexRequestWaiters,
+  });
+  if (parsed.error) {
+    return `${matchedMethod || "unknown"}:error`;
+  }
+
+  return `${matchedMethod || "unknown"}:response`;
+}
+
+function rememberTrafficRequestMethod(requestMethodsById, rawMessage, { now = Date.now() } = {}) {
+  const parsed = parseBridgeJSON(rawMessage);
+  const method = normalizeNonEmptyString(parsed?.method);
+  const requestId = parsed?.id;
+  if (!method || requestId == null || !(requestMethodsById instanceof Map)) {
+    return;
+  }
+
+  pruneExpiredTrafficRequestMethods(requestMethodsById, { now });
+  requestMethodsById.set(String(requestId), {
+    method,
+    createdAt: now,
+  });
+}
+
+function pruneExpiredTrafficRequestMethods(requestMethodsById, { now = Date.now() } = {}) {
+  if (!(requestMethodsById instanceof Map)) {
+    return;
+  }
+
+  for (const [requestId, trackedRequest] of requestMethodsById.entries()) {
+    if (!trackedRequest || (now - trackedRequest.createdAt) >= TRAFFIC_REQUEST_METHOD_TTL_MS) {
+      requestMethodsById.delete(requestId);
+    }
+  }
+}
+
+function resolveTrafficRequestMethod(
+  responseId,
+  {
+    applicationRequestMethodsById = null,
+    bridgeManagedCodexRequestWaiters = null,
+  } = {}
+) {
+  const normalizedResponseId = String(responseId);
+  const applicationTrackedRequest = applicationRequestMethodsById?.get(normalizedResponseId);
+  if (applicationTrackedRequest?.method) {
+    return applicationTrackedRequest.method;
+  }
+
+  const bridgeManagedWaiter = bridgeManagedCodexRequestWaiters?.get(normalizedResponseId);
+  if (bridgeManagedWaiter?.method) {
+    return `bridge/${bridgeManagedWaiter.method}`;
+  }
+
+  return "";
+}
+
+function ensureTrafficChannel(channels, channelName) {
+  const existing = channels.get(channelName);
+  if (existing) {
+    return existing;
+  }
+
+  const channel = {
+    messages: 0,
+    bytes: 0,
+    labels: new Map(),
+  };
+  channels.set(channelName, channel);
+  return channel;
+}
+
+function byteLengthOfTrafficMessage(value) {
+  if (typeof value === "string") {
+    return Buffer.byteLength(value, "utf8");
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.length;
+  }
+
+  if (value == null) {
+    return 0;
+  }
+
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function compareTrafficEntries(left, right) {
+  return right.bytes - left.bytes
+    || right.messages - left.messages
+    || left.label.localeCompare(right.label);
+}
+
 module.exports = {
+  buildPublishedBridgeStatus,
+  classifyBridgeTrafficMessageLabel,
+  createBridgeTrafficStats,
   buildHeartbeatBridgeStatus,
   hasRelayConnectionGoneStale,
+  rememberTrafficRequestMethod,
   sanitizeThreadHistoryImagesForRelay,
   startBridge,
 };
