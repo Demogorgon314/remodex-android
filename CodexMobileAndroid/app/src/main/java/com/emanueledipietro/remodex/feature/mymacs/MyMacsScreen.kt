@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +38,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -577,32 +578,45 @@ private fun SwitchingOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f))
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.42f))
             .clickable(enabled = false) {},
         contentAlignment = Alignment.Center,
     ) {
         Surface(
-            shape = RoundedCornerShape(28.dp),
-            tonalElevation = 6.dp,
-            shadowElevation = 6.dp,
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 8.dp,
+            shadowElevation = 10.dp,
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier
-                .padding(horizontal = 48.dp)
-                .fillMaxWidth(),
+                .padding(horizontal = 20.dp)
+                .fillMaxWidth()
+                .widthIn(max = 320.dp),
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(32.dp),
-                    strokeWidth = 3.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.fillMaxSize(),
+                            strokeWidth = 3.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
 
                 Text(
-                    text = "Switching Mac…",
+                    text = "Switching Mac",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -614,21 +628,67 @@ private fun SwitchingOverlay(
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
 
                 targetProfile?.let { profile ->
-                    Text(
-                        text = profile.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Computer,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = profile.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = profile.systemName ?: "Preparing secure reconnect",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
                 }
 
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = onCancel,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 44.dp),
+                    shape = RoundedCornerShape(14.dp),
                 ) {
                     Text("Cancel")
                 }
