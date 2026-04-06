@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.MainDispatcherRule
 import com.emanueledipietro.remodex.data.app.RemodexAppRepository
 import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
+import com.emanueledipietro.remodex.data.threads.StopTurnResult
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
@@ -1178,6 +1179,34 @@ class AppViewModelTest {
         assertFalse(viewModel.uiState.value.isSwitchingMac)
         assertNull(viewModel.uiState.value.switchingMacDeviceId)
         assertNull(viewModel.uiState.value.macSwitchNotice)
+    }
+
+    @Test
+    fun `stop turn shows banner while interruptible turn id is still pending`() = runTest {
+        val runningThread = threadSummary(
+            id = "thread-running",
+            title = "Running thread",
+            isRunning = true,
+        )
+        val repository = TestRemodexAppRepository().apply {
+            stopTurnResult = StopTurnResult.INTERRUPT_TURN_ID_PENDING
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(runningThread),
+                selectedThreadId = runningThread.id,
+                selectedThreadSnapshot = runningThread,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.stopTurn()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-running"), repository.stopTurnRequests)
+        assertEquals(
+            "Still waiting for the active run id. Try Stop again in a moment.",
+            viewModel.uiState.value.transientBanner,
+        )
     }
 
     @Test
@@ -3640,6 +3669,7 @@ class AppViewModelTest {
         var sendPromptDelayMs = 0L
         var continueOnMacDelayMs = 0L
         var stopTurnDelayMs = 0L
+        var stopTurnResult = StopTurnResult.INTERRUPT_REQUESTED
         var activateBridgeProfileDelayMs = 0L
         var pairWithQrPayloadDelayMs = 0L
         var createThreadDelayMs = 0L
@@ -3849,11 +3879,12 @@ class AppViewModelTest {
             continueOnMacError?.let { throw it }
         }
 
-        override suspend fun stopTurn(threadId: String) {
+        override suspend fun stopTurn(threadId: String): StopTurnResult {
             stopTurnRequests += threadId
             if (stopTurnDelayMs > 0) {
                 delay(stopTurnDelayMs)
             }
+            return stopTurnResult
         }
 
         override suspend fun sendQueuedDraft(threadId: String, draftId: String) {

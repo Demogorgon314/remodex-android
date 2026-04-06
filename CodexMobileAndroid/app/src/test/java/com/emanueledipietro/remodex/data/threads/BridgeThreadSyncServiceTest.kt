@@ -1131,6 +1131,51 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `turn started without turn id keeps running fallback visible`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turn-start-without-id",
+                    title = "Turn start without id",
+                    preview = "",
+                    projectPath = "/tmp/project-turn-start-without-id",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnStartedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turn-start-without-id"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turn-start-without-id" }
+
+        assertTrue(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
+    }
+
+    @Test
     fun `late assistant delta for the already completed turn does not revive running state`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -1203,6 +1248,148 @@ class BridgeThreadSyncServiceTest {
         assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
         assertEquals(listOf("Finished response\nLate tail"), assistantMessages.map(RemodexConversationItem::text))
         assertFalse(assistantMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `late reasoning delta for the already completed turn does not revive running state`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-late-reasoning-delta",
+                    title = "Late reasoning delta thread",
+                    preview = "Done thinking",
+                    projectPath = "/tmp/project-late-reasoning-delta",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    activeTurnId = null,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "reasoning-turn-late-reasoning-delta",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Thinking",
+                                turnId = "turn-late-reasoning-delta",
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setLatestTurnTerminalState",
+            "thread-late-reasoning-delta",
+            RemodexTurnTerminalState.COMPLETED,
+            "turn-late-reasoning-delta",
+        )
+        invokePrivateMethod(
+            service,
+            "clearThreadRunningState",
+            "thread-late-reasoning-delta",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-late-reasoning-delta"))
+                put("turnId", JsonPrimitive("turn-late-reasoning-delta"))
+                put("delta", JsonPrimitive(" harder"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-late-reasoning-delta" }
+        val reasoningMessages = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .filter { item ->
+                item.speaker == ConversationSpeaker.SYSTEM && item.kind == ConversationItemKind.REASONING
+            }
+
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertEquals(listOf("Thinking harder"), reasoningMessages.map(RemodexConversationItem::text))
+        assertFalse(reasoningMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `late reasoning delta without an existing row is ignored after completion`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-late-reasoning-without-row",
+                    title = "Late reasoning without row",
+                    preview = "Done",
+                    projectPath = "/tmp/project-late-reasoning-without-row",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    activeTurnId = null,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setLatestTurnTerminalState",
+            "thread-late-reasoning-without-row",
+            RemodexTurnTerminalState.COMPLETED,
+            "turn-late-reasoning-without-row",
+        )
+        invokePrivateMethod(
+            service,
+            "clearThreadRunningState",
+            "thread-late-reasoning-without-row",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-late-reasoning-without-row"))
+                put("turnId", JsonPrimitive("turn-late-reasoning-without-row"))
+                put("delta", JsonPrimitive("Should not create a row"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-late-reasoning-without-row" }
+        val reasoningMessages = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .filter { item ->
+                item.speaker == ConversationSpeaker.SYSTEM && item.kind == ConversationItemKind.REASONING
+            }
+
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertTrue(reasoningMessages.isEmpty())
     }
 
     @Test
@@ -8275,10 +8462,11 @@ class BridgeThreadSyncServiceTest {
                 "turn-stop-visible",
             )
 
-            connected.service.stopTurn("thread-stop-visible")
+            val result = connected.service.stopTurn("thread-stop-visible")
             advanceUntilIdle()
 
             val thread = connected.service.threads.value.first { it.id == "thread-stop-visible" }
+            assertEquals(StopTurnResult.INTERRUPT_REQUESTED, result)
             assertTrue(thread.isRunning)
             assertEquals("turn-stop-visible", thread.activeTurnId)
             assertTrue(
@@ -8371,12 +8559,13 @@ class BridgeThreadSyncServiceTest {
                 ),
             )
 
-            service.stopTurn("thread-stop-pending-id")
+            val result = service.stopTurn("thread-stop-pending-id")
             advanceUntilIdle()
 
             val requestsBeforeInterrupt = relayFactory.receivedRequests.takeWhile { request ->
                 request.method != "turn/interrupt"
             }
+            assertEquals(StopTurnResult.INTERRUPT_TURN_ID_PENDING, result)
             assertEquals(
                 3,
                 requestsBeforeInterrupt.count { request -> request.method == "thread/read" },
@@ -8477,9 +8666,10 @@ class BridgeThreadSyncServiceTest {
                 ),
             )
 
-            service.stopTurn("thread-stop-turn-id-retry")
+            val result = service.stopTurn("thread-stop-turn-id-retry")
             advanceUntilIdle()
 
+            assertEquals(StopTurnResult.INTERRUPT_REQUESTED, result)
             val interruptRequest = relayFactory.receivedRequests.firstOrNull { request ->
                 request.method == "turn/interrupt"
             }

@@ -1598,8 +1598,8 @@ class DefaultRemodexAppRepository(
         threadCommandService.continueOnMac(threadId)
     }
 
-    override suspend fun stopTurn(threadId: String) {
-        threadCommandService.stopTurn(threadId)
+    override suspend fun stopTurn(threadId: String) =
+        threadCommandService.stopTurn(threadId).also {
         refreshBaseThreadsFromSync()
     }
 

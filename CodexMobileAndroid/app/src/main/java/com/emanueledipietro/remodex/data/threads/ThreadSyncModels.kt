@@ -91,6 +91,12 @@ data class StreamingAssistantTextState(
     val textLength: Int,
 )
 
+enum class StopTurnResult {
+    INTERRUPT_REQUESTED,
+    INTERRUPT_TURN_ID_PENDING,
+    NOT_CONNECTED,
+}
+
 interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
@@ -244,7 +250,7 @@ interface ThreadCommandService {
         forwardPatch: String,
     ): RemodexRevertApplyResult
 
-    suspend fun stopTurn(threadId: String)
+    suspend fun stopTurn(threadId: String): StopTurnResult
 }
 
 interface ThreadHydrationService {

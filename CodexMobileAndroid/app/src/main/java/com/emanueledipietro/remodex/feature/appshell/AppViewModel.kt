@@ -12,6 +12,7 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
+import com.emanueledipietro.remodex.data.threads.StopTurnResult
 import com.emanueledipietro.remodex.platform.media.AndroidVoiceRecorder
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
@@ -1318,7 +1319,18 @@ class AppViewModel(
     fun stopTurn() {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
-            repository.stopTurn(threadId)
+            runCatching {
+                repository.stopTurn(threadId)
+            }.onSuccess { result ->
+                if (result == StopTurnResult.INTERRUPT_TURN_ID_PENDING) {
+                    presentTransientBanner("Still waiting for the active run id. Try Stop again in a moment.")
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                presentTransientBanner(error.message ?: "Could not stop this turn.")
+            }
         }
     }
 

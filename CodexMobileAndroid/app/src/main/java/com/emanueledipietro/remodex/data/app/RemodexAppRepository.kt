@@ -30,6 +30,7 @@ import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
+import com.emanueledipietro.remodex.data.threads.StopTurnResult
 import kotlinx.serialization.json.JsonElement
 import java.io.File
 
@@ -108,7 +109,7 @@ interface RemodexAppRepository {
 
     suspend fun continueOnMac(threadId: String)
 
-    suspend fun stopTurn(threadId: String)
+    suspend fun stopTurn(threadId: String): StopTurnResult
 
     suspend fun sendQueuedDraft(
         threadId: String,

@@ -2092,9 +2092,9 @@ class BridgeThreadSyncService(
         return applyResult
     }
 
-    override suspend fun stopTurn(threadId: String) {
+    override suspend fun stopTurn(threadId: String): StopTurnResult {
         if (!isConnected()) {
-            return
+            return StopTurnResult.NOT_CONNECTED
         }
 
         val interruptTurnId = activeTurnIdByThread[threadId]
@@ -2108,7 +2108,7 @@ class BridgeThreadSyncService(
                     "stopTurn deferred: thread=$threadId has no interruptible turn id yet",
                 )
             }
-            return
+            return StopTurnResult.INTERRUPT_TURN_ID_PENDING
         }
         setActiveTurnId(threadId = threadId, turnId = interruptTurnId)
 
@@ -2122,6 +2122,7 @@ class BridgeThreadSyncService(
         )
         refreshThreads()
         hydrateThread(threadId)
+        return StopTurnResult.INTERRUPT_REQUESTED
     }
 
     private suspend fun initializeSession(): Boolean {
@@ -3530,6 +3531,22 @@ class BridgeThreadSyncService(
             latestTerminalTurnIdByThread[threadId] == normalizedTurnId
     }
 
+    private fun shouldSuppressRunningRevivalForLateReasoningDelta(
+        threadId: String,
+        resolvedTurnId: String?,
+        existingItem: com.emanueledipietro.remodex.model.RemodexConversationItem?,
+    ): Boolean {
+        val normalizedTurnId = resolvedTurnId?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        if (
+            activeTurnIdByThread[threadId] != null ||
+            latestTurnTerminalStateByThread[threadId] == null ||
+            latestTerminalTurnIdByThread[threadId] != normalizedTurnId
+        ) {
+            return false
+        }
+        return existingItem != null || latestTurnTerminalStateByThread[threadId] == RemodexTurnTerminalState.COMPLETED
+    }
+
     private fun appendLateAssistantDeltaText(
         existingText: String,
         delta: String,
@@ -3705,13 +3722,6 @@ class BridgeThreadSyncService(
         val turnId = extractTurnId(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
-        restoreRunningStateFromStreamingEvent(
-            threadId = threadId,
-            resolvedTurnId = resolvedTurnId,
-        )
-        if (resolvedTurnId != null) {
-            threadIdByTurnId[resolvedTurnId] = threadId
-        }
         val itemId = extractItemId(
             paramsObject = paramsObject,
             eventObject = eventObject,
@@ -3736,28 +3746,58 @@ class BridgeThreadSyncService(
             kind = ConversationItemKind.REASONING,
             text = delta,
         )
+        val suppressRunningRevival = shouldSuppressRunningRevivalForLateReasoningDelta(
+            threadId = threadId,
+            resolvedTurnId = resolvedTurnId,
+            existingItem = existingItem,
+        )
+        if (!suppressRunningRevival) {
+            restoreRunningStateFromStreamingEvent(
+                threadId = threadId,
+                resolvedTurnId = resolvedTurnId,
+            )
+        }
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        if (suppressRunningRevival && existingItem == null) {
+            runCatching {
+                Log.d(
+                    logTag,
+                    "event=suppressLateReasoningDelta threadId=$threadId turnId=${resolvedTurnId.orEmpty()} itemId=${itemId.orEmpty()}",
+                )
+            }
+            return
+        }
         val effectiveMessageId = existingItem?.id ?: messageId
         val effectiveItemId = itemId ?: existingItem?.itemId
-        upsertStreamingItem(
-            threadId = threadId,
-            item = reducedStreamingItemAfterMutation(
-                existingItem = existingItem,
-                mutation = TimelineMutation.ReasoningTextDelta(
+        val updatedItem = reducedStreamingItemAfterMutation(
+            existingItem = existingItem,
+            mutation = TimelineMutation.ReasoningTextDelta(
+                messageId = effectiveMessageId,
+                turnId = resolvedTurnId.orEmpty(),
+                itemId = effectiveItemId,
+                delta = delta,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
                     messageId = effectiveMessageId,
-                    turnId = resolvedTurnId.orEmpty(),
+                    turnId = resolvedTurnId,
                     itemId = effectiveItemId,
-                    delta = delta,
-                    orderIndex = resolveOrderIndex(
-                        threadId = threadId,
-                        messageId = effectiveMessageId,
-                        turnId = resolvedTurnId,
-                        itemId = effectiveItemId,
-                        speaker = ConversationSpeaker.SYSTEM,
-                        kind = ConversationItemKind.REASONING,
-                    ),
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
                 ),
             ),
-            isRunning = true,
+        ).let { reducedItem ->
+            if (suppressRunningRevival) {
+                reducedItem.copy(isStreaming = false)
+            } else {
+                reducedItem
+            }
+        }
+        upsertStreamingItem(
+            threadId = threadId,
+            item = updatedItem,
+            isRunning = if (suppressRunningRevival) false else true,
         )
     }
 

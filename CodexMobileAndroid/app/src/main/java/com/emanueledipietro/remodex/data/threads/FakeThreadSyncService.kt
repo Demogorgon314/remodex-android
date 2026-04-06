@@ -939,7 +939,7 @@ class FakeThreadSyncService(
         )
     }
 
-    override suspend fun stopTurn(threadId: String) {
+    override suspend fun stopTurn(threadId: String): StopTurnResult {
         val now = System.currentTimeMillis()
         backingThreads.update { threads ->
             threads.map { snapshot ->
@@ -969,6 +969,7 @@ class FakeThreadSyncService(
                 }
             }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         }
+        return StopTurnResult.INTERRUPT_REQUESTED
     }
 
     private fun updateGitState(
