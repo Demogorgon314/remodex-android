@@ -981,6 +981,9 @@ class FakeThreadSyncService(
 }
 
 fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
+    val rawTimelineItems = timelineItems.ifEmpty {
+        TurnTimelineReducer.reduce(timelineMutations)
+    }
     return CachedThreadRecord(
         id = id,
         title = title,
@@ -998,12 +1001,15 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
         latestTurnTerminalState = latestTurnTerminalState,
         stoppedTurnIds = stoppedTurnIds,
         runtimeConfig = runtimeConfig,
-        timelineItems = TurnTimelineReducer.reduceProjected(timelineMutations),
+        timelineItems = TurnTimelineReducer.project(rawTimelineItems),
     )
 }
 
 private fun nextOrderIndex(snapshot: ThreadSyncSnapshot): Long {
-    return (TurnTimelineReducer.reduce(snapshot.timelineMutations).maxOfOrNull { item -> item.orderIndex } ?: -1L) + 1L
+    val rawTimelineItems = snapshot.timelineItems.ifEmpty {
+        TurnTimelineReducer.reduce(snapshot.timelineMutations)
+    }
+    return (rawTimelineItems.maxOfOrNull { item -> item.orderIndex } ?: -1L) + 1L
 }
 
 private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {

@@ -58,6 +58,7 @@ data class ThreadSyncSnapshot(
     val stoppedTurnIds: Set<String> = emptySet(),
     val runtimeConfig: RemodexRuntimeConfig,
     val timelineMutations: List<TimelineMutation>,
+    val timelineItems: List<RemodexConversationItem> = emptyList(),
 )
 
 class StreamingAssistantTextHandle internal constructor(

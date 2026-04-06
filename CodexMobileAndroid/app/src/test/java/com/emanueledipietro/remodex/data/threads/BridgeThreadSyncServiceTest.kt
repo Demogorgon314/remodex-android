@@ -8183,6 +8183,324 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `stop turn retries thread read while interruptible turn id is pending and skips interrupt without id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-stop-pending-turn-id",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-stop-pending-id"))
+                                put("title", JsonPrimitive("Stop pending id"))
+                                put("cwd", JsonPrimitive("/tmp/project-stop-pending-id"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("status", JsonPrimitive("running"))
+                                                put("items", buildJsonArray { })
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            val service = BridgeThreadSyncService(
+                secureConnectionCoordinator = coordinator,
+                scope = backgroundScope,
+            )
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-stop-pending-id",
+                        title = "Stop pending id",
+                        preview = "Still running",
+                        projectPath = "/tmp/project-stop-pending-id",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+
+            service.stopTurn("thread-stop-pending-id")
+            advanceUntilIdle()
+
+            val requestsBeforeInterrupt = relayFactory.receivedRequests.takeWhile { request ->
+                request.method != "turn/interrupt"
+            }
+            assertEquals(
+                3,
+                requestsBeforeInterrupt.count { request -> request.method == "thread/read" },
+            )
+            assertFalse(
+                relayFactory.receivedRequests.any { request -> request.method == "turn/interrupt" },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `stop turn interrupts once thread read eventually exposes the running turn id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-stop-turn-id-retry",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var threadReadCount = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    threadReadCount += 1
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-stop-turn-id-retry"))
+                                put("title", JsonPrimitive("Stop retry thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-stop-turn-id-retry"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                if (threadReadCount >= 3) {
+                                                    put("id", JsonPrimitive("turn-stop-turn-id-retry"))
+                                                }
+                                                put("status", JsonPrimitive("running"))
+                                                put("items", buildJsonArray { })
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "turn/interrupt" to {
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            val service = BridgeThreadSyncService(
+                secureConnectionCoordinator = coordinator,
+                scope = backgroundScope,
+            )
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-stop-turn-id-retry",
+                        title = "Stop retry thread",
+                        preview = "Still running",
+                        projectPath = "/tmp/project-stop-turn-id-retry",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+
+            service.stopTurn("thread-stop-turn-id-retry")
+            advanceUntilIdle()
+
+            val interruptRequest = relayFactory.receivedRequests.firstOrNull { request ->
+                request.method == "turn/interrupt"
+            }
+            assertNotNull(interruptRequest)
+            val requestsBeforeInterrupt = relayFactory.receivedRequests.takeWhile { request ->
+                request.method != "turn/interrupt"
+            }
+            assertEquals(
+                3,
+                requestsBeforeInterrupt.count { request -> request.method == "thread/read" },
+            )
+            assertEquals(
+                "turn-stop-turn-id-retry",
+                interruptRequest?.params
+                    ?.jsonObjectOrNull
+                    ?.firstString("turnId"),
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `optimistic user append keeps timeline items aligned with raw mutations`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = backgroundScope,
+            ),
+            scope = backgroundScope,
+            nowEpochMs = { 42L },
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-optimistic-sync",
+                    title = "Optimistic sync",
+                    preview = "Old preview",
+                    projectPath = "/tmp/project-optimistic-sync",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "optimisticAppendUserMessage",
+            "thread-optimistic-sync",
+            "Hello from Android",
+            emptyList<RemodexComposerAttachment>(),
+            RemodexRuntimeConfig(),
+        )
+
+        val thread = service.threads.value.single { it.id == "thread-optimistic-sync" }
+        assertEquals(
+            TurnTimelineReducer.reduce(thread.timelineMutations),
+            thread.timelineItems,
+        )
+        assertEquals(1, thread.timelineItems.size)
+        assertEquals(ConversationSpeaker.USER, thread.timelineItems.single().speaker)
+        assertEquals(RemodexMessageDeliveryState.PENDING, thread.timelineItems.single().deliveryState)
+    }
+
+    @Test
+    fun `completing assistant streaming items keeps raw timeline items synchronized`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = backgroundScope,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-complete-sync",
+                    title = "Complete sync",
+                    preview = "Streaming answer",
+                    projectPath = "/tmp/project-complete-sync",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-streaming",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Streaming answer",
+                                turnId = "turn-complete-sync",
+                                itemId = "assistant-item",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "completeAssistantStreamingItemsForTurn",
+            "thread-complete-sync",
+            "turn-complete-sync",
+        )
+
+        val thread = service.threads.value.single { it.id == "thread-complete-sync" }
+        assertEquals(
+            TurnTimelineReducer.reduce(thread.timelineMutations),
+            thread.timelineItems,
+        )
+        assertFalse(thread.timelineItems.single().isStreaming)
+        assertEquals("Streaming answer", thread.timelineItems.single().text)
+    }
+
+    @Test
     fun `steer prompt sends turn steer with the active turn id`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

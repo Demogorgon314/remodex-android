@@ -1150,7 +1150,7 @@ class TurnTimelineReducerTest {
     }
 
     @Test
-    fun `project prunes completed empty thinking placeholders`() {
+    fun `project keeps completed empty thinking placeholders to match ios timeline projection`() {
         val projected = TurnTimelineReducer.project(
             listOf(
                 RemodexConversationItem(
@@ -1174,7 +1174,10 @@ class TurnTimelineReducerTest {
             ),
         )
 
-        assertEquals(listOf("assistant-1"), projected.map(RemodexConversationItem::id))
+        assertEquals(
+            listOf("thinking-placeholder", "assistant-1"),
+            projected.map(RemodexConversationItem::id),
+        )
     }
 
     @Test

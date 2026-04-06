@@ -19,7 +19,6 @@ import com.emanueledipietro.remodex.data.threads.ThreadLocalTimelineService
 import com.emanueledipietro.remodex.data.threads.ThreadResumeService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
-import com.emanueledipietro.remodex.data.threads.TimelineMutation
 import com.emanueledipietro.remodex.data.threads.shouldRetryAfterThreadMaterializationValue
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
 import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
@@ -2387,99 +2386,21 @@ class DefaultRemodexAppRepository(
 
     private fun projectThreadTimelineItems(snapshot: ThreadSyncSnapshot): List<com.emanueledipietro.remodex.model.RemodexConversationItem> {
         return synchronized(timelineProjectionCacheLock) {
+            val rawTimelineItems = snapshot.timelineItems.ifEmpty {
+                TurnTimelineReducer.reduce(snapshot.timelineMutations)
+            }
             val cachedProjection = timelineProjectionCacheByThread[snapshot.id]
-            if (cachedProjection != null) {
-                if (snapshot.timelineMutations == cachedProjection.timelineMutations) {
-                    return@synchronized cachedProjection.projectedItems
-                }
-                projectedTimelineItemsFastPath(
-                    snapshot = snapshot,
-                    cachedProjection = cachedProjection,
-                )?.let { (reducedItems, projectedItems) ->
-                    timelineProjectionCacheByThread[snapshot.id] = ThreadTimelineProjectionCache(
-                        timelineMutations = snapshot.timelineMutations,
-                        reducedItems = reducedItems,
-                        projectedItems = projectedItems,
-                    )
-                    return@synchronized projectedItems
-                }
+            if (cachedProjection?.timelineItems == rawTimelineItems) {
+                return@synchronized cachedProjection.projectedItems
             }
 
-            val reducedItems = TurnTimelineReducer.reduce(snapshot.timelineMutations)
-            val projectedItems = TurnTimelineReducer.project(reducedItems)
+            val projectedItems = TurnTimelineReducer.project(rawTimelineItems)
             timelineProjectionCacheByThread[snapshot.id] = ThreadTimelineProjectionCache(
-                timelineMutations = snapshot.timelineMutations,
-                reducedItems = reducedItems,
+                timelineItems = rawTimelineItems,
                 projectedItems = projectedItems,
             )
             projectedItems
         }
-    }
-
-    private fun projectedTimelineItemsFastPath(
-        snapshot: ThreadSyncSnapshot,
-        cachedProjection: ThreadTimelineProjectionCache,
-    ): Pair<List<com.emanueledipietro.remodex.model.RemodexConversationItem>, List<com.emanueledipietro.remodex.model.RemodexConversationItem>>? {
-        val mutation = resolveProjectedTimelineFastPathMutation(
-            snapshot = snapshot,
-            cachedProjection = cachedProjection,
-        ) ?: return null
-        val reducedItems = TurnTimelineReducer.reduce(
-            items = cachedProjection.reducedItems,
-            mutation = mutation,
-        )
-        val projectedItems = TurnTimelineReducer.applyProjectedFastPath(
-            items = cachedProjection.projectedItems,
-            mutation = mutation,
-        ) ?: TurnTimelineReducer.project(reducedItems)
-        return reducedItems to projectedItems
-    }
-
-    private fun resolveProjectedTimelineFastPathMutation(
-        snapshot: ThreadSyncSnapshot,
-        cachedProjection: ThreadTimelineProjectionCache,
-    ): TimelineMutation? {
-        if (snapshot.timelineMutations.size == cachedProjection.timelineMutations.size + 1) {
-            val prefixMutations = snapshot.timelineMutations.subList(0, cachedProjection.timelineMutations.size)
-            if (prefixMutations != cachedProjection.timelineMutations) {
-                return null
-            }
-            return snapshot.timelineMutations.last()
-        }
-
-        if (snapshot.timelineMutations.size != cachedProjection.timelineMutations.size) {
-            return null
-        }
-        if (snapshot.timelineMutations.isEmpty()) {
-            return null
-        }
-
-        val tailIndex = snapshot.timelineMutations.lastIndex
-        val prefixMutations = snapshot.timelineMutations.subList(0, tailIndex)
-        val cachedPrefixMutations = cachedProjection.timelineMutations.subList(0, tailIndex)
-        if (prefixMutations != cachedPrefixMutations) {
-            return null
-        }
-
-        val previousTailMutation = cachedProjection.timelineMutations[tailIndex]
-        val nextTailMutation = snapshot.timelineMutations[tailIndex]
-        return if (canReplaceTailMutationFastPath(previousTailMutation, nextTailMutation)) {
-            nextTailMutation
-        } else {
-            null
-        }
-    }
-
-    private fun canReplaceTailMutationFastPath(
-        previousMutation: TimelineMutation,
-        nextMutation: TimelineMutation,
-    ): Boolean {
-        if (previousMutation !is TimelineMutation.Upsert || nextMutation !is TimelineMutation.Upsert) {
-            return false
-        }
-        return previousMutation.item.id == nextMutation.item.id &&
-            previousMutation.item.speaker == nextMutation.item.speaker &&
-            previousMutation.item.kind == nextMutation.item.kind
     }
 
     private fun scheduleThreadCacheWrite(
@@ -3119,8 +3040,7 @@ class DefaultRemodexAppRepository(
 }
 
 private data class ThreadTimelineProjectionCache(
-    val timelineMutations: List<TimelineMutation>,
-    val reducedItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+    val timelineItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
     val projectedItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
 )
 
