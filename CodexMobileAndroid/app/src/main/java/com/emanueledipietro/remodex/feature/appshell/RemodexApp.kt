@@ -55,13 +55,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Computer
-import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.QrCodeScanner
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -98,6 +93,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -115,6 +111,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import com.emanueledipietro.remodex.R
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
 import com.emanueledipietro.remodex.feature.recovery.PairingScannerScreen
@@ -129,7 +126,9 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.remodexGitUiActionIsAvailable
 import com.emanueledipietro.remodex.feature.turn.remodexShowsGitControls
-import com.emanueledipietro.remodex.feature.turn.RemodexGitCommitGlyph
+import com.emanueledipietro.remodex.feature.turn.RemodexGitPushGlyph
+import com.emanueledipietro.remodex.feature.turn.RemodexGitSyncGlyph
+import com.emanueledipietro.remodex.feature.turn.RemodexTrashCircleGlyph
 import com.emanueledipietro.remodex.feature.turn.shouldShowDiscardRuntimeChangesAndSync
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexApprovalKind
@@ -1878,9 +1877,11 @@ private fun ShellTopBarGitActionsButton(
                 )
             } else {
                 Box(contentAlignment = Alignment.Center) {
-                    RemodexGitCommitGlyph(
-                        color = chrome.titleText,
-                        modifier = Modifier.size(18.dp),
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_git_commit),
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = chrome.titleText,
                     )
                     syncStatusColor?.let { color ->
                         Box(
@@ -1906,7 +1907,10 @@ private fun ShellTopBarGitActionsButton(
             ShellTopBarGitActionMenuItem(
                 label = "Update",
                 leadingIcon = {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                    RemodexGitSyncGlyph(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
                 },
                 enabled = isEnabled && onSyncGitChanges != null,
                 onClick = {
@@ -1917,9 +1921,11 @@ private fun ShellTopBarGitActionsButton(
             ShellTopBarGitActionMenuItem(
                 label = "Commit",
                 leadingIcon = {
-                    RemodexGitCommitGlyph(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_git_commit),
+                        contentDescription = null,
                         modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 },
                 enabled = isEnabled && onCommitGitChanges != null,
@@ -1931,7 +1937,10 @@ private fun ShellTopBarGitActionsButton(
             ShellTopBarGitActionMenuItem(
                 label = "Push",
                 leadingIcon = {
-                    Icon(Icons.Outlined.ArrowUpward, contentDescription = null)
+                    RemodexGitPushGlyph(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
                 },
                 enabled = isEnabled && onPushGitChanges != null,
                 onClick = {
@@ -1942,7 +1951,10 @@ private fun ShellTopBarGitActionsButton(
             ShellTopBarGitActionMenuItem(
                 label = "Commit & Push",
                 leadingIcon = {
-                    Icon(Icons.Outlined.ArrowUpward, contentDescription = null)
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_cloud_upload),
+                        contentDescription = null,
+                    )
                 },
                 enabled = isEnabled && onCommitAndPushGitChanges != null,
                 onClick = {
@@ -1953,7 +1965,10 @@ private fun ShellTopBarGitActionsButton(
             ShellTopBarGitActionMenuItem(
                 label = "Create PR",
                 leadingIcon = {
-                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_github_invertocat_black),
+                        contentDescription = null,
+                    )
                 },
                 enabled = isEnabled && canCreatePullRequest && onCreatePullRequest != null,
                 onClick = {
@@ -1965,7 +1980,10 @@ private fun ShellTopBarGitActionsButton(
                 ShellTopBarGitActionMenuItem(
                     label = "Discard Local Changes",
                     leadingIcon = {
-                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                        RemodexTrashCircleGlyph(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
                     },
                     enabled = isEnabled,
                     onClick = {
