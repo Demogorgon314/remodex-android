@@ -61,14 +61,10 @@ fun androidUserMessageFallbackText(attachmentCount: Int): String {
 
 fun androidUserMessageText(
     prompt: String,
+    @Suppress("UNUSED_PARAMETER")
     attachmentCount: Int,
 ): String {
-    val trimmedPrompt = prompt.trim()
-    return if (trimmedPrompt.isNotEmpty()) {
-        trimmedPrompt
-    } else {
-        androidUserMessageFallbackText(attachmentCount)
-    }
+    return prompt.trim()
 }
 
 @Serializable

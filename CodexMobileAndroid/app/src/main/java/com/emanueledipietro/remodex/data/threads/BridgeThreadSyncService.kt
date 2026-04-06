@@ -9796,11 +9796,12 @@ class BridgeThreadSyncService(
                 snapshot
             } else {
                 val orderIndex = nextOrderIndex(snapshot)
+                val optimisticText = androidUserMessageText(
+                    prompt = prompt,
+                    attachmentCount = attachments.size,
+                )
                 snapshot.copy(
-                    preview = androidUserMessageText(
-                        prompt = prompt,
-                        attachmentCount = attachments.size,
-                    ),
+                    preview = optimisticText,
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
                     isRunning = true,
@@ -9809,10 +9810,7 @@ class BridgeThreadSyncService(
                         timelineItem(
                             id = "user-local-$now",
                             speaker = ConversationSpeaker.USER,
-                            text = androidUserMessageText(
-                                prompt = prompt,
-                                attachmentCount = attachments.size,
-                            ),
+                            text = optimisticText,
                             deliveryState = RemodexMessageDeliveryState.PENDING,
                             createdAtEpochMs = now,
                             attachments = attachments.map { attachment -> attachment.toConversationAttachment() },

@@ -247,6 +247,46 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items preserves completed assistant text while turn is still running`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-local",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Here is the full streamed answer with extra detail",
+                turnId = "turn-1",
+                itemId = null,
+                isStreaming = false,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "Here is the full streamed answer",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = false,
+                orderIndex = 5L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("Here is the full streamed answer with extra detail", merged.single().text)
+        assertEquals("assistant-item-1", merged.single().itemId)
+        assertFalse(merged.single().isStreaming)
+    }
+
+    @Test
     fun `merge history items prefers the active streaming assistant segment over earlier completed output`() {
         val existing = listOf(
             RemodexConversationItem(
@@ -755,6 +795,58 @@ class ThreadHistoryReconcilerTest {
             RemodexConversationItem(
                 id = "user-local-image",
                 speaker = ConversationSpeaker.USER,
+                text = "",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.PENDING,
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "local-attachment",
+                        uriString = "content://media/external/images/media/1",
+                        displayName = "1000012658.jpg",
+                        previewDataUrl = "data:image/jpeg;base64,LOCAL",
+                    ),
+                ),
+                orderIndex = 20L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history-image",
+                speaker = ConversationSpeaker.USER,
+                text = "Usermessage",
+                turnId = "turn-1",
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "history-attachment",
+                        uriString = "remodex://history-image-elided",
+                        displayName = "history-image-elided",
+                    ),
+                ),
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("user-local-image", merged.single().id)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
+        assertEquals("turn-1", merged.single().turnId)
+        assertEquals("", merged.single().text)
+        assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().previewDataUrl)
+    }
+
+    @Test
+    fun `merge history items still recognizes legacy Android attachment fallback text`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local-image",
+                speaker = ConversationSpeaker.USER,
                 text = "Shared 1 image from Android.",
                 turnId = "turn-1",
                 deliveryState = RemodexMessageDeliveryState.PENDING,
@@ -797,11 +889,11 @@ class ThreadHistoryReconcilerTest {
         assertEquals("user-local-image", merged.single().id)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
         assertEquals("turn-1", merged.single().turnId)
-        assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().previewDataUrl)
+        assertEquals("Shared 1 image from Android.", merged.single().text)
     }
 
     @Test
-    fun `merge history items folds persisted review prompt into optimistic local review request`() {
+    fun `merge history items preserves optimistic local review request when history text is more authoritative`() {
         val existing = listOf(
             RemodexConversationItem(
                 id = "user-local-review",
@@ -832,10 +924,7 @@ class ThreadHistoryReconcilerTest {
 
         assertEquals(1, merged.size)
         assertEquals("user-local-review", merged.single().id)
-        assertEquals(
-            "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
-            merged.single().text,
-        )
+        assertEquals("Review current changes", merged.single().text)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
         assertEquals("turn-review-1", merged.single().turnId)
     }

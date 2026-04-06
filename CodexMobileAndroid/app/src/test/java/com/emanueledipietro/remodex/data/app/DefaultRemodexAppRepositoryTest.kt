@@ -2625,7 +2625,7 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
-    fun `attachment only sends produce a local Android preview and attachment metadata`() = runTest {
+    fun `attachment only sends keep an empty preview and attach metadata without Android fallback text`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
@@ -2645,7 +2645,14 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         val selectedThread = repository.session.value.selectedThread
-        assertEquals("Shared 1 image from Android.", selectedThread?.preview)
+        assertEquals("", selectedThread?.preview)
+        assertTrue(
+            selectedThread?.messages.orEmpty().any { item ->
+                item.speaker == com.emanueledipietro.remodex.model.ConversationSpeaker.USER &&
+                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
+                    item.text.isEmpty()
+            },
+        )
         assertTrue(
             selectedThread?.messages.orEmpty().any { item ->
                 item.attachments.any { attachment ->

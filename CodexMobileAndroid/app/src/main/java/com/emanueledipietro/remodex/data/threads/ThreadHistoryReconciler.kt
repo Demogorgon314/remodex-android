@@ -436,14 +436,20 @@ internal object ThreadHistoryReconciler {
                 }
 
                 value.speaker == ConversationSpeaker.ASSISTANT || value.speaker == ConversationSpeaker.SYSTEM -> {
-                    if (preservesRunningPresentation && localItem.isStreaming) {
+                    if (
+                        preservesRunningPresentation &&
+                        (
+                            value.speaker == ConversationSpeaker.ASSISTANT ||
+                                localItem.isStreaming
+                            )
+                    ) {
                         mergeStreamingSnapshotText(existingText = value.text, incomingText = serverItem.text)
                     } else {
                         serverItem.text
                     }
                 }
 
-                else -> serverItem.text
+                else -> value.text
             }
             value = value.copy(text = mergedText)
         }
@@ -538,7 +544,8 @@ internal object ThreadHistoryReconciler {
                 incomingText = historyItem.text,
             )
         }
-        return localText == normalizedText(androidUserMessageFallbackText(localItem.attachments.size))
+        return localText.isEmpty() ||
+            localText == normalizedText(androidUserMessageFallbackText(localItem.attachments.size))
     }
 
     private fun userAttachmentsCompatible(

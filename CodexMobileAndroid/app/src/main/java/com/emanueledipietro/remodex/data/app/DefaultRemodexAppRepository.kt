@@ -2628,7 +2628,7 @@ class DefaultRemodexAppRepository(
             prompt = prompt,
             attachments = attachments,
         )
-        if (messageText.isEmpty()) {
+        if (messageText.isEmpty() && attachments.isEmpty()) {
             return null
         }
         val now = System.currentTimeMillis()

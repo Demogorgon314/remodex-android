@@ -3571,6 +3571,113 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `hydrate thread preserves completed assistant text when thread read returns shorter snapshot mid turn`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        val staleSnapshot = ThreadSyncSnapshot(
+            id = "thread-live-completed-assistant",
+            title = "Completed assistant preserve",
+            preview = "Hello world with newer local detail",
+            projectPath = "/tmp/project-live-completed-assistant",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 0L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "assistant-turn-1",
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        text = "Hello world with newer local detail",
+                        turnId = "turn-1",
+                        itemId = null,
+                        isStreaming = false,
+                        orderIndex = 0L,
+                    ),
+                ),
+            ),
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(staleSnapshot),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-live-completed-assistant",
+            "turn-1",
+        )
+
+        val refreshedSnapshot = invokePrivateMethod(
+            service,
+            "mergeThreadSnapshotResponse",
+            "thread/read",
+            "thread-live-completed-assistant",
+            RpcMessage.response(
+                id = null,
+                result = buildJsonObject {
+                    put(
+                        "thread",
+                        buildJsonObject {
+                            put("id", JsonPrimitive("thread-live-completed-assistant"))
+                            put("title", JsonPrimitive("Completed assistant preserve"))
+                            put("cwd", JsonPrimitive("/tmp/project-live-completed-assistant"))
+                            put(
+                                "turns",
+                                buildJsonArray {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("turn-1"))
+                                            put("status", JsonPrimitive("in_progress"))
+                                            put(
+                                                "items",
+                                                buildJsonArray {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("id", JsonPrimitive("assistant-1"))
+                                                            put("type", JsonPrimitive("agent_message"))
+                                                            put("text", JsonPrimitive("Hello world"))
+                                                        },
+                                                    )
+                                                },
+                                            )
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            ),
+            staleSnapshot,
+            RemodexThreadSyncState.LIVE,
+            true,
+        ) as ThreadSyncSnapshot
+
+        val assistantItems = TurnTimelineReducer.reduceProjected(refreshedSnapshot.timelineMutations)
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+        assertEquals(1, assistantItems.size)
+        assertEquals("Hello world with newer local detail", assistantItems.single().text)
+        assertEquals("assistant-1", assistantItems.single().itemId)
+        assertFalse(assistantItems.single().isStreaming)
+
+        val storedThread = service.threads.value.first { it.id == "thread-live-completed-assistant" }
+        val storedAssistant = TurnTimelineReducer.reduceProjected(storedThread.timelineMutations)
+            .single { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+        assertEquals("Hello world with newer local detail", storedAssistant.text)
+        assertEquals("assistant-1", storedAssistant.itemId)
+        assertFalse(storedAssistant.isStreaming)
+    }
+
+    @Test
     fun `rename thread keeps optimistic title when rename rpc fails`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -5637,7 +5744,7 @@ class BridgeThreadSyncServiceTest {
                 ThreadSyncSnapshot(
                     id = "thread-image-lifecycle",
                     title = "Image lifecycle",
-                    preview = "Shared 1 image from Android.",
+                    preview = "Previous preview",
                     projectPath = "/tmp/project-image-lifecycle",
                     lastUpdatedLabel = "Updated just now",
                     lastUpdatedEpochMs = 1L,
@@ -5648,7 +5755,7 @@ class BridgeThreadSyncServiceTest {
                             timelineItem(
                                 id = "user-local-image",
                                 speaker = ConversationSpeaker.USER,
-                                text = "Shared 1 image from Android.",
+                                text = "",
                                 deliveryState = RemodexMessageDeliveryState.PENDING,
                                 attachments = listOf(
                                     RemodexConversationAttachment(
@@ -5695,6 +5802,7 @@ class BridgeThreadSyncServiceTest {
         assertEquals("user-local-image", items.single().id)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
         assertEquals("turn-image-lifecycle", items.single().turnId)
+        assertEquals("", items.single().text)
         assertEquals("data:image/jpeg;base64,LOCAL", items.single().attachments.single().previewDataUrl)
     }
 
@@ -5777,7 +5885,7 @@ class BridgeThreadSyncServiceTest {
                 ThreadSyncSnapshot(
                     id = "thread-image-inline-lifecycle",
                     title = "Inline image lifecycle",
-                    preview = "Shared 1 image from Android.",
+                    preview = "Previous preview",
                     projectPath = "/tmp/project-image-inline-lifecycle",
                     lastUpdatedLabel = "Updated just now",
                     lastUpdatedEpochMs = 1L,
@@ -5788,7 +5896,7 @@ class BridgeThreadSyncServiceTest {
                             timelineItem(
                                 id = "user-local-inline-image",
                                 speaker = ConversationSpeaker.USER,
-                                text = "Shared 1 image from Android.",
+                                text = "",
                                 deliveryState = RemodexMessageDeliveryState.PENDING,
                                 attachments = listOf(
                                     RemodexConversationAttachment(
@@ -5835,6 +5943,7 @@ class BridgeThreadSyncServiceTest {
         assertEquals("user-local-inline-image", items.single().id)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
         assertEquals("turn-image-inline-lifecycle", items.single().turnId)
+        assertEquals("", items.single().text)
         assertEquals("1000012658.jpg", items.single().attachments.single().displayName)
         assertEquals("data:image/jpeg;base64,LOCAL", items.single().attachments.single().previewDataUrl)
     }
