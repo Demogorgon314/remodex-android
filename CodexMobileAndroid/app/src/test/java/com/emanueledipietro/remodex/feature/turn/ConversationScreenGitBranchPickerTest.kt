@@ -1,5 +1,8 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import com.emanueledipietro.remodex.model.RemodexGitBranches
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
+import com.emanueledipietro.remodex.model.RemodexGitState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -74,6 +77,86 @@ class ConversationScreenGitBranchPickerTest {
                 branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
                 worktreePathByBranch = mapOf("remodex/feature-a" to "/tmp/remodex-feature-a"),
                 allowsSelectingCurrentBranch = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `git controls only show while connected and git context exists`() {
+        val gitState = RemodexGitState(
+            sync = RemodexGitRepoSync(currentBranch = "main"),
+            branches = RemodexGitBranches(branches = listOf("main")),
+        )
+
+        assertTrue(remodexShowsGitControls(isConnected = true, gitState = gitState))
+        assertFalse(remodexShowsGitControls(isConnected = false, gitState = gitState))
+        assertFalse(remodexShowsGitControls(isConnected = true, gitState = RemodexGitState()))
+    }
+
+    @Test
+    fun `git ui actions are unavailable while loading running or creating worktree`() {
+        val gitState = RemodexGitState(
+            sync = RemodexGitRepoSync(currentBranch = "main"),
+            branches = RemodexGitBranches(branches = listOf("main")),
+        )
+
+        assertTrue(
+            remodexGitUiActionIsAvailable(
+                isConnected = true,
+                gitState = gitState,
+                isThreadRunning = false,
+                isCreatingGitWorktree = false,
+            ),
+        )
+        assertFalse(
+            remodexGitUiActionIsAvailable(
+                isConnected = true,
+                gitState = gitState.copy(isLoading = true),
+                isThreadRunning = false,
+                isCreatingGitWorktree = false,
+            ),
+        )
+        assertFalse(
+            remodexGitUiActionIsAvailable(
+                isConnected = true,
+                gitState = gitState,
+                isThreadRunning = true,
+                isCreatingGitWorktree = false,
+            ),
+        )
+        assertFalse(
+            remodexGitUiActionIsAvailable(
+                isConnected = true,
+                gitState = gitState,
+                isThreadRunning = false,
+                isCreatingGitWorktree = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `worktree handoff entry stays hidden for existing worktree projects`() {
+        val gitState = RemodexGitState(
+            sync = RemodexGitRepoSync(currentBranch = "main"),
+            branches = RemodexGitBranches(branches = listOf("main")),
+        )
+
+        assertTrue(
+            remodexWorktreeHandoffEntryIsAvailable(
+                isConnected = true,
+                gitState = gitState,
+                isThreadRunning = false,
+                isWorktreeProject = false,
+                isCreatingGitWorktree = false,
+            ),
+        )
+        assertFalse(
+            remodexWorktreeHandoffEntryIsAvailable(
+                isConnected = true,
+                gitState = gitState,
+                isThreadRunning = false,
+                isWorktreeProject = true,
+                isCreatingGitWorktree = false,
             ),
         )
     }

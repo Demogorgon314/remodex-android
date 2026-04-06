@@ -890,6 +890,42 @@ internal fun remodexCurrentBranchSelectionIsDisabled(
     return false
 }
 
+internal fun remodexShowsGitControls(
+    isConnected: Boolean,
+    gitState: RemodexGitState,
+): Boolean {
+    return isConnected && gitState.hasContext
+}
+
+internal fun remodexGitUiActionIsAvailable(
+    isConnected: Boolean,
+    gitState: RemodexGitState,
+    isThreadRunning: Boolean,
+    isCreatingGitWorktree: Boolean,
+): Boolean {
+    return remodexShowsGitControls(
+        isConnected = isConnected,
+        gitState = gitState,
+    ) && !isThreadRunning &&
+        !gitState.isLoading &&
+        !isCreatingGitWorktree
+}
+
+internal fun remodexWorktreeHandoffEntryIsAvailable(
+    isConnected: Boolean,
+    gitState: RemodexGitState,
+    isThreadRunning: Boolean,
+    isWorktreeProject: Boolean,
+    isCreatingGitWorktree: Boolean,
+): Boolean {
+    return remodexGitUiActionIsAvailable(
+        isConnected = isConnected,
+        gitState = gitState,
+        isThreadRunning = isThreadRunning,
+        isCreatingGitWorktree = isCreatingGitWorktree,
+    ) && !isWorktreeProject
+}
+
 internal fun gitBranchPickerOrderedBranches(
     branches: List<String>,
     selectedBranch: String,
@@ -1436,6 +1472,25 @@ fun ConversationScreen(
     }
     val shouldPauseAutomaticScrolling = isUserDragging || isUserScrollCooldownActive
     var previousThreadRunning by rememberSaveable(thread.id) { mutableStateOf(thread.isRunning) }
+    val showsGitControls = remember(uiState.isConnected, uiState.composer.gitState) {
+        remodexShowsGitControls(
+            isConnected = uiState.isConnected,
+            gitState = uiState.composer.gitState,
+        )
+    }
+    val isWorktreeOperationAvailable = remember(
+        uiState.isConnected,
+        uiState.composer.gitState,
+        thread.isRunning,
+        uiState.isCreatingGitWorktree,
+    ) {
+        remodexGitUiActionIsAvailable(
+            isConnected = uiState.isConnected,
+            gitState = uiState.composer.gitState,
+            isThreadRunning = thread.isRunning,
+            isCreatingGitWorktree = uiState.isCreatingGitWorktree,
+        )
+    }
     val derivedState = rememberConversationScreenDerivedState(
         thread = thread,
         uiState = uiState,
@@ -1544,6 +1599,21 @@ fun ConversationScreen(
         }
         handledWorktreeSuccessSignal = uiState.worktreeOperationSuccessSignal
         worktreeHandoffSheetExpanded = false
+    }
+
+    LaunchedEffect(gitSheetExpanded, showsGitControls) {
+        if (gitSheetExpanded && !showsGitControls) {
+            gitSheetExpanded = false
+        }
+    }
+
+    LaunchedEffect(worktreeHandoffSheetExpanded, isWorktreeOperationAvailable, uiState.isCreatingGitWorktree) {
+        if (worktreeHandoffSheetExpanded &&
+            !isWorktreeOperationAvailable &&
+            !uiState.isCreatingGitWorktree
+        ) {
+            worktreeHandoffSheetExpanded = false
+        }
     }
 
     LaunchedEffect(thread.id, thread.isRunning) {
@@ -1985,6 +2055,7 @@ fun ConversationScreen(
             worktreeHandoffSheetExpanded = worktreeHandoffSheetExpanded,
             worktreeSheetMode = worktreeSheetMode,
             gitState = uiState.composer.gitState,
+            isWorktreeOperationAvailable = isWorktreeOperationAvailable,
             isCreatingGitWorktree = uiState.isCreatingGitWorktree,
             selectedGitBaseBranch = uiState.composer.selectedGitBaseBranch,
             canCreatePullRequest = uiState.composer.canCreatePullRequest,
@@ -2383,6 +2454,8 @@ private fun ConversationComposerPane(
                         ComposerSecondaryBar(
                             thread = thread,
                             gitState = uiState.composer.gitState,
+                            isConnected = uiState.isConnected,
+                            isCreatingGitWorktree = uiState.isCreatingGitWorktree,
                             usageStatus = uiState.usageStatus,
                             availableModels = uiState.availableModels,
                             isRefreshingUsage = uiState.isRefreshingUsage,
@@ -2599,6 +2672,7 @@ private fun ConversationScreenSheetOverlays(
     worktreeHandoffSheetExpanded: Boolean,
     worktreeSheetMode: WorktreeSheetMode,
     gitState: RemodexGitState,
+    isWorktreeOperationAvailable: Boolean,
     isCreatingGitWorktree: Boolean,
     selectedGitBaseBranch: String,
     canCreatePullRequest: Boolean,
@@ -2644,6 +2718,7 @@ private fun ConversationScreenSheetOverlays(
                 gitState = gitState,
                 selectedBaseBranch = selectedGitBaseBranch,
             ),
+            isHandoffAvailable = isWorktreeOperationAvailable,
             isSubmitting = isCreatingGitWorktree,
             onDismiss = onDismissWorktreeHandoffSheet,
             onSubmit = onSubmitWorktreeHandoff,
@@ -4579,6 +4654,8 @@ private fun GitContextCard(
 private fun ComposerSecondaryBar(
     thread: RemodexThreadSummary,
     gitState: RemodexGitState,
+    isConnected: Boolean,
+    isCreatingGitWorktree: Boolean,
     usageStatus: RemodexUsageStatus,
     availableModels: List<RemodexModelOption>,
     isRefreshingUsage: Boolean,
@@ -4601,9 +4678,35 @@ private fun ComposerSecondaryBar(
     val showsThreadRunningUi = thread.isRunning
     val runtimeLabel = if (isWorktreeProject) "Worktree" else "Local"
     val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
-    val showsGitBranchSelector = gitState.hasContext
-    val branchSelectorEnabled = showsGitBranchSelector && !showsThreadRunningUi
-    val canHandOffToWorktree = showsGitBranchSelector && !showsThreadRunningUi && !isWorktreeProject
+    val showsGitBranchSelector = remember(isConnected, gitState) {
+        remodexShowsGitControls(
+            isConnected = isConnected,
+            gitState = gitState,
+        )
+    }
+    val branchSelectorEnabled = remember(isConnected, gitState, showsThreadRunningUi, isCreatingGitWorktree) {
+        remodexGitUiActionIsAvailable(
+            isConnected = isConnected,
+            gitState = gitState,
+            isThreadRunning = showsThreadRunningUi,
+            isCreatingGitWorktree = isCreatingGitWorktree,
+        )
+    }
+    val canHandOffToWorktree = remember(
+        isConnected,
+        gitState,
+        showsThreadRunningUi,
+        isWorktreeProject,
+        isCreatingGitWorktree,
+    ) {
+        remodexWorktreeHandoffEntryIsAvailable(
+            isConnected = isConnected,
+            gitState = gitState,
+            isThreadRunning = showsThreadRunningUi,
+            isWorktreeProject = isWorktreeProject,
+            isCreatingGitWorktree = isCreatingGitWorktree,
+        )
+    }
     val canContinueOnMac = isConnectedToMac && !isHandingOffToMac
     val isEmptyThread = thread.messages.isEmpty()
     val runtimeMenuState = rememberComposerMenuState(thread.id, "runtime")
@@ -4708,7 +4811,13 @@ private fun ComposerSecondaryBar(
                         ComposerDropdownMenuItem(
                             text = {
                                 Text(
-                                    if (isEmptyThread) "New worktree" else "Hand off to worktree",
+                                    if (isCreatingGitWorktree) {
+                                        "Creating worktree..."
+                                    } else if (isEmptyThread) {
+                                        "New worktree"
+                                    } else {
+                                        "Hand off to worktree"
+                                    },
                                 )
                             },
                             selected = false,
@@ -5438,6 +5547,7 @@ private fun DetailedGitSheet(
 private fun WorktreeHandoffSheet(
     mode: WorktreeSheetMode,
     preferredBaseBranch: String,
+    isHandoffAvailable: Boolean,
     isSubmitting: Boolean,
     onDismiss: () -> Unit,
     onSubmit: (String, String) -> Unit,
@@ -5449,6 +5559,12 @@ private fun WorktreeHandoffSheet(
 
     LaunchedEffect(mode) {
         focusRequester.requestFocus()
+    }
+
+    LaunchedEffect(isHandoffAvailable, isSubmitting) {
+        if (!isHandoffAvailable && !isSubmitting) {
+            onDismiss()
+        }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -5508,7 +5624,8 @@ private fun WorktreeHandoffSheet(
                     }
                     Button(
                         onClick = { onSubmit(trimmedBranchName, trimmedBaseBranch) },
-                        enabled = !isSubmitting &&
+                        enabled = isHandoffAvailable &&
+                            !isSubmitting &&
                             trimmedBranchName.isNotBlank() &&
                             trimmedBaseBranch.isNotBlank(),
                     ) {
