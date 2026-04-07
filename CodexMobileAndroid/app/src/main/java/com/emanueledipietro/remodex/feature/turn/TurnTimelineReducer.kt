@@ -630,7 +630,9 @@ object TurnTimelineReducer {
             }
 
             val turnItems = indices.map(result::get)
-            val sorted = if (hasInterleavedAssistantActivityFlow(turnItems)) {
+            val sorted = if (hasChronologicalFollowUpUserMessage(turnItems)) {
+                turnItems.sortedBy(RemodexConversationItem::orderIndex)
+            } else if (hasInterleavedAssistantActivityFlow(turnItems)) {
                 turnItems.sortedWith(
                     compareBy<RemodexConversationItem> { it.speaker != ConversationSpeaker.USER }
                         .thenBy(RemodexConversationItem::orderIndex),
@@ -648,6 +650,17 @@ object TurnTimelineReducer {
         }
 
         return result
+    }
+
+    private fun hasChronologicalFollowUpUserMessage(
+        turnItems: List<RemodexConversationItem>,
+    ): Boolean {
+        val distinctUserMessageIds = turnItems
+            .asSequence()
+            .filter { item -> item.speaker == ConversationSpeaker.USER }
+            .map(RemodexConversationItem::id)
+            .toSet()
+        return distinctUserMessageIds.size > 1
     }
 
     private fun hasInterleavedAssistantActivityFlow(

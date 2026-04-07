@@ -1369,17 +1369,19 @@ class BridgeThreadSyncService(
         var imageUrlKey = "url"
         var includeCollaborationMode = shouldIncludeCollaborationMode(runtimeConfig.planningMode)
         var responseMessage: RpcMessage? = null
-        val expectedTurnId = resolveSteerExpectedTurnId(threadId)
+        var currentExpectedTurnId = resolveSteerExpectedTurnId(threadId)
+        var didRetryWithRefreshedTurnId = false
         val response = try {
             retryAfterThreadMaterialization {
                 while (responseMessage == null) {
                     try {
                         responseMessage = sendRequestWithServiceTierFallback(
-                            method = if (expectedTurnId.isNullOrBlank()) "turn/start" else "turn/steer",
+                            method = if (currentExpectedTurnId.isNullOrBlank()) "turn/start" else "turn/steer",
                             accessMode = runtimeConfig.accessMode,
                             includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
                             buildBaseParams = { includeServiceTier ->
-                                if (expectedTurnId.isNullOrBlank()) {
+                                val steeringTurnId = currentExpectedTurnId
+                                if (steeringTurnId.isNullOrBlank()) {
                                     buildTurnStartParams(
                                         threadId = threadId,
                                         prompt = trimmedPrompt,
@@ -1398,7 +1400,7 @@ class BridgeThreadSyncService(
                                         includeServiceTier = includeServiceTier,
                                         imageUrlKey = imageUrlKey,
                                         includeCollaborationMode = includeCollaborationMode,
-                                        expectedTurnId = expectedTurnId,
+                                        expectedTurnId = steeringTurnId,
                                     )
                                 }
                             },
@@ -1415,24 +1417,40 @@ class BridgeThreadSyncService(
                             includeCollaborationMode = false
                             continue
                         }
+                        if (
+                            !didRetryWithRefreshedTurnId &&
+                            !currentExpectedTurnId.isNullOrBlank() &&
+                            shouldRetrySteerWithRefreshedTurnId(error)
+                        ) {
+                            val refreshedTurnId = resolveSteerExpectedTurnId(
+                                threadId = threadId,
+                                forceRefresh = true,
+                            )
+                            if (!refreshedTurnId.isNullOrBlank() && refreshedTurnId != currentExpectedTurnId) {
+                                didRetryWithRefreshedTurnId = true
+                                currentExpectedTurnId = refreshedTurnId
+                                continue
+                            }
+                        }
                         throw error
                     }
                 }
                 responseMessage ?: error("queued send retry loop exited without a response")
             }
         } catch (error: Throwable) {
-            removeLatestPendingUserMessage(
+            markLatestPendingUserMessageFailed(
                 threadId = threadId,
                 matchingText = trimmedPrompt,
                 matchingAttachments = attachments,
             )
             throw error
         }
-        val turnId = extractTurnId(response.result)
-        if (turnId != null) {
-            setActiveTurnId(threadId = threadId, turnId = turnId)
-            confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
-            beginAssistantMessage(threadId = threadId, turnId = turnId)
+        val resolvedTurnId = extractTurnId(response.result)
+            ?: currentExpectedTurnId?.takeIf { it.isNotBlank() }
+        if (resolvedTurnId != null) {
+            setActiveTurnId(threadId = threadId, turnId = resolvedTurnId)
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = resolvedTurnId)
+            beginAssistantMessage(threadId = threadId, turnId = resolvedTurnId)
         } else {
             markThreadAsRunningFallback(threadId)
         }
@@ -2318,8 +2336,13 @@ class BridgeThreadSyncService(
             ?.takeIf(String::isNotEmpty)
     }
 
-    private suspend fun resolveSteerExpectedTurnId(threadId: String): String? {
-        activeTurnIdByThread[threadId]?.takeIf(String::isNotBlank)?.let { return it }
+    private suspend fun resolveSteerExpectedTurnId(
+        threadId: String,
+        forceRefresh: Boolean = false,
+    ): String? {
+        if (!forceRefresh) {
+            activeTurnIdByThread[threadId]?.takeIf(String::isNotBlank)?.let { return it }
+        }
         val threadObject = requestThreadRead(threadId)
             .result
             ?.jsonObjectOrNull
@@ -3004,6 +3027,10 @@ class BridgeThreadSyncService(
 
     private fun shouldRetryWithImageUrlFieldFallback(error: Throwable): Boolean {
         return shouldRetryWithImageUrlFieldFallbackValue(error)
+    }
+
+    private fun shouldRetrySteerWithRefreshedTurnId(error: Throwable): Boolean {
+        return shouldRetrySteerWithRefreshedTurnIdValue(error)
     }
 
     private fun consumeUnsupportedCollaborationMode(
@@ -6760,14 +6787,10 @@ class BridgeThreadSyncService(
         threadId: String,
         turnId: String,
     ) {
-        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
-        val pendingUser = reducedTimelineItems(snapshot)
-            .asReversed()
-            .firstOrNull { item ->
-                item.speaker == ConversationSpeaker.USER &&
-                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
-                    (item.turnId == null || item.turnId == turnId)
-            } ?: return
+        val pendingUser = latestPendingUserMessage(
+            threadId = threadId,
+            turnId = turnId,
+        ) ?: return
         appendTimelineMutation(
             threadId = threadId,
             mutation = TimelineMutation.Upsert(
@@ -6786,18 +6809,11 @@ class BridgeThreadSyncService(
         matchingAttachments: List<RemodexComposerAttachment>,
     ) {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
-        val targetItem = reducedTimelineItems(snapshot)
-            .asReversed()
-            .firstOrNull { item ->
-                item.speaker == ConversationSpeaker.USER &&
-                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
-                    item.text == androidUserMessageText(
-                        prompt = matchingText,
-                        attachmentCount = matchingAttachments.size,
-                    ) &&
-                    item.attachments.map(RemodexConversationAttachment::uriString) ==
-                    matchingAttachments.map(RemodexComposerAttachment::uriString)
-            } ?: return
+        val targetItem = latestPendingUserMessage(
+            threadId = threadId,
+            matchingText = matchingText,
+            matchingAttachments = matchingAttachments,
+        ) ?: return
         val nextMutations = snapshot.timelineMutations.filterNot { mutation ->
             when (mutation) {
                 is TimelineMutation.Upsert -> mutation.item.id == targetItem.id
@@ -6822,6 +6838,54 @@ class BridgeThreadSyncService(
                 ).withResolvedLiveThreadState(threadId = threadId)
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private fun markLatestPendingUserMessageFailed(
+        threadId: String,
+        matchingText: String,
+        matchingAttachments: List<RemodexComposerAttachment>,
+    ) {
+        val pendingUser = latestPendingUserMessage(
+            threadId = threadId,
+            matchingText = matchingText,
+            matchingAttachments = matchingAttachments,
+        ) ?: return
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.Upsert(
+                pendingUser.copy(
+                    deliveryState = RemodexMessageDeliveryState.FAILED,
+                ),
+            ),
+        )
+    }
+
+    private fun latestPendingUserMessage(
+        threadId: String,
+        turnId: String? = null,
+        matchingText: String? = null,
+        matchingAttachments: List<RemodexComposerAttachment>? = null,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        val expectedText = matchingText?.let { prompt ->
+            androidUserMessageText(
+                prompt = prompt,
+                attachmentCount = matchingAttachments?.size ?: 0,
+            )
+        }
+        val expectedAttachmentUris = matchingAttachments?.map(RemodexComposerAttachment::uriString)
+        return reducedTimelineItems(snapshot)
+            .asReversed()
+            .firstOrNull { item ->
+                item.speaker == ConversationSpeaker.USER &&
+                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
+                    (turnId == null || item.turnId == null || item.turnId == turnId) &&
+                    (expectedText == null || item.text == expectedText) &&
+                    (
+                        expectedAttachmentUris == null ||
+                            item.attachments.map(RemodexConversationAttachment::uriString) == expectedAttachmentUris
+                        )
+            }
     }
 
     private fun mutationAffectsThreadPreview(mutation: TimelineMutation): Boolean {
@@ -10450,6 +10514,20 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
         || message.contains("unknown field")
         || message.contains("expected")
         || message.contains("invalid")
+}
+
+internal fun shouldRetrySteerWithRefreshedTurnIdValue(error: Throwable): Boolean {
+    val rpcError = error as? RpcError ?: return false
+    val message = rpcError.message.lowercase(Locale.ROOT)
+    val hints = listOf(
+        "no active turn",
+        "invalid turn",
+        "no such turn",
+        "not active",
+        "does not exist",
+        "cannot interrupt",
+    )
+    return hints.any(message::contains)
 }
 
 internal fun buildStructuredUserInputResponse(

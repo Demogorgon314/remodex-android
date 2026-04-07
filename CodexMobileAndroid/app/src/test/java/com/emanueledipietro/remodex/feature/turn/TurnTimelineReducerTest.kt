@@ -845,6 +845,55 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project preserves chronological steer follow up user messages within the same turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "user-initial",
+                    speaker = ConversationSpeaker.USER,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Initial prompt",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Streaming answer so far",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "user-steer",
+                    speaker = ConversationSpeaker.USER,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Please focus on the Android fix",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-2",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Following the steer",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-2",
+                    orderIndex = 3,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("user-initial", "assistant-1", "user-steer", "assistant-2"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `project preserves command after assistant when a new activity item starts later in the turn`() {
         val projected = TurnTimelineReducer.project(
             listOf(

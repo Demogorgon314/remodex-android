@@ -2533,6 +2533,34 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `steer retry matcher only accepts stale active turn errors`() {
+        assertTrue(
+            shouldRetrySteerWithRefreshedTurnIdValue(
+                RpcError(
+                    code = -32000,
+                    message = "no active turn",
+                ),
+            ),
+        )
+        assertTrue(
+            shouldRetrySteerWithRefreshedTurnIdValue(
+                RpcError(
+                    code = -32000,
+                    message = "cannot interrupt turn-stale",
+                ),
+            ),
+        )
+        assertFalse(
+            shouldRetrySteerWithRefreshedTurnIdValue(
+                RpcError(
+                    code = -32603,
+                    message = "backend unavailable",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `preview recompute only tracks chat upserts`() {
         assertTrue(
             mutationAffectsThreadPreviewValue(
@@ -9242,6 +9270,309 @@ class BridgeThreadSyncServiceTest {
                         item.text.contains("Ship the Android queued draft fix.")
                 },
             )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `steer prompt confirms optimistic user message when steer response omits turn id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-steer-no-turn-id-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "turn/steer" to {
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-steer-no-turn-id",
+                        title = "Steer thread",
+                        preview = "Running",
+                        projectPath = "/tmp/thread-steer-no-turn-id",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-steer-no-turn-id",
+                "turn-live",
+            )
+
+            service.steerPrompt(
+                threadId = "thread-steer-no-turn-id",
+                prompt = "Keep this steer visible.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            val projected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == "thread-steer-no-turn-id" }.timelineMutations,
+            )
+            assertTrue(
+                projected.any { item ->
+                    item.speaker == ConversationSpeaker.USER &&
+                        item.deliveryState == RemodexMessageDeliveryState.CONFIRMED &&
+                        item.turnId == "turn-live" &&
+                        item.text.contains("Keep this steer visible.")
+                },
+            )
+            assertEquals(
+                "turn-live",
+                service.threads.value.first { it.id == "thread-steer-no-turn-id" }.activeTurnId,
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `steer prompt retries once with refreshed turn id when active turn went stale`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-steer-refresh-turn-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val steerAttemptTurnIds = mutableListOf<String>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "turn/steer" to { request ->
+                    val expectedTurnId = request.params?.jsonObjectOrNull?.firstString("expectedTurnId").orEmpty()
+                    steerAttemptTurnIds += expectedTurnId
+                    if (steerAttemptTurnIds.size == 1) {
+                        throw RpcError(
+                            code = -32000,
+                            message = "no active turn",
+                        )
+                    }
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive(expectedTurnId))
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-steer-refresh-turn"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-refreshed"))
+                                                put("status", JsonPrimitive("in_progress"))
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-steer-refresh-turn",
+                        title = "Steer thread",
+                        preview = "Running",
+                        projectPath = "/tmp/thread-steer-refresh-turn",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-steer-refresh-turn",
+                "turn-stale",
+            )
+
+            service.steerPrompt(
+                threadId = "thread-steer-refresh-turn",
+                prompt = "Retry this steer with the refreshed turn id.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals(listOf("turn-stale", "turn-refreshed"), steerAttemptTurnIds)
+            val projected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == "thread-steer-refresh-turn" }.timelineMutations,
+            )
+            assertTrue(
+                projected.any { item ->
+                    item.speaker == ConversationSpeaker.USER &&
+                        item.deliveryState == RemodexMessageDeliveryState.CONFIRMED &&
+                        item.turnId == "turn-refreshed" &&
+                        item.text.contains("Retry this steer with the refreshed turn id.")
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `steer prompt keeps a failed user message when the request errors`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-steer-failure-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "turn/steer" to {
+                    throw RpcError(
+                        code = -32603,
+                        message = "backend unavailable",
+                    )
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-steer-failure",
+                        title = "Steer thread",
+                        preview = "Running",
+                        projectPath = "/tmp/thread-steer-failure",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-steer-failure",
+                "turn-live",
+            )
+
+            try {
+                service.steerPrompt(
+                    threadId = "thread-steer-failure",
+                    prompt = "This steer should stay visible as failed.",
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    attachments = emptyList(),
+                )
+                fail("Expected steerPrompt to throw")
+            } catch (error: RpcError) {
+                assertEquals("backend unavailable", error.message)
+            }
+            advanceUntilIdle()
+
+            val projected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == "thread-steer-failure" }.timelineMutations,
+            )
+            assertTrue(
+                projected.any { item ->
+                    item.speaker == ConversationSpeaker.USER &&
+                        item.deliveryState == RemodexMessageDeliveryState.FAILED &&
+                        item.text.contains("This steer should stay visible as failed.")
+                },
+            )
+            assertTrue(service.threads.value.first { it.id == "thread-steer-failure" }.isRunning)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
