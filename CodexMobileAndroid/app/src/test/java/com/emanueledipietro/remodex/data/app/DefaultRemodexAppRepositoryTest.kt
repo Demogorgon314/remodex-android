@@ -990,6 +990,51 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `sync active thread falls back to hydrate when force resume does not clear a stale running final answer`() = runTest {
+        val syncService = ResumeMissesTerminalHydrationSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        awaitSelectedThread(
+            repository = repository,
+            description = "selected stuck running thread",
+        ) { selectedThread ->
+            selectedThread?.id == "thread-notifications" &&
+                selectedThread.isRunning &&
+                selectedThread.messages.any { item ->
+                    item.speaker == ConversationSpeaker.ASSISTANT &&
+                        item.text == "Finished response" &&
+                        !item.isStreaming
+                }
+        }
+
+        syncService.clearRecordedCalls()
+
+        repository.syncActiveThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertTrue(syncService.resumeCalls >= 1)
+        assertTrue(
+            "syncActiveThread should self-heal a stale running final answer by hydrating authoritative thread state",
+            syncService.hydrateCalls >= 1,
+        )
+        assertFalse(repository.session.value.selectedThread?.isRunning ?: true)
+        assertEquals(
+            null,
+            repository.session.value.selectedThread?.activeTurnId,
+        )
+    }
+
+    @Test
     fun `foreground connected selected running thread keeps syncing active thread at repository level`() = runTest {
         val syncService = WaitingApprovalRecoverySyncService().apply {
             updateThreads(
@@ -1329,6 +1374,43 @@ class DefaultRemodexAppRepositoryTest {
         }
         assertTrue(syncService.hydrateCalls >= hydrateCallsBeforeReconnect + 2)
         assertEquals(1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `hydrate thread drops stale thinking placeholder when rollout recovery cannot resume`() = runTest {
+        val syncService = RolloutMissingThinkingTailSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        awaitSelectedThread(
+            repository = repository,
+            description = "selected thread with stale reconnect timeline",
+        ) { selectedThread ->
+            selectedThread?.id == "thread-notifications"
+        }
+
+        repository.hydrateThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertTrue(syncService.resumeCalls >= 1)
+        assertTrue(syncService.hydrateCalls >= 1)
+        assertTrue(
+            "Stale reconnect placeholder should not remain in selected messages after failed rollout recovery",
+            repository.session.value.selectedThread
+                ?.messages
+                ?.none { item ->
+                    item.kind == ConversationItemKind.REASONING && item.text == "Thinking..."
+                } == true,
+        )
     }
 
     @Test
@@ -1673,6 +1755,51 @@ class DefaultRemodexAppRepositoryTest {
         syncService.allowSend()
         advanceUntilIdle()
         sendJob.join()
+    }
+
+    @Test
+    fun `optimistic running fallback updates selected thread immediately without adding a user row`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val originalThread = requireNotNull(repository.session.value.selectedThread) {
+            "Expected thread-notifications to be selected"
+        }
+
+        val optimisticState = invokePrivateMethod<Any?>(
+            target = repository,
+            methodName = "publishOptimisticRunningState",
+            "thread-notifications",
+            originalThread.runtimeConfig.copy(planningMode = RemodexPlanningMode.PLAN),
+        )
+
+        val selectedThreadWhileOptimistic = repository.session.value.selectedThread
+        assertTrue(optimisticState != null)
+        assertEquals("thread-notifications", selectedThreadWhileOptimistic?.id)
+        assertTrue(selectedThreadWhileOptimistic?.isRunning == true)
+        assertEquals(
+            RemodexPlanningMode.PLAN,
+            selectedThreadWhileOptimistic?.runtimeConfig?.planningMode,
+        )
+        assertEquals(
+            originalThread.messages,
+            selectedThreadWhileOptimistic?.messages,
+        )
+
+        invokePrivateMethod<Unit>(
+            target = repository,
+            methodName = "restoreOptimisticRunningState",
+            optimisticState,
+        )
+
+        val restoredThread = repository.session.value.selectedThread
+        assertEquals(originalThread.isRunning, restoredThread?.isRunning)
+        assertEquals(
+            originalThread.runtimeConfig.planningMode,
+            restoredThread?.runtimeConfig?.planningMode,
+        )
+        assertEquals(originalThread.messages, restoredThread?.messages)
     }
 
     @Test
@@ -3380,6 +3507,99 @@ class DefaultRemodexAppRepositoryTest {
         }
     }
 
+    private class ResumeMissesTerminalHydrationSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        init {
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            activeTurnId = "turn-stale-final-answer",
+                            latestTurnTerminalState = null,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-stale-final-answer",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "Finished response",
+                                        turnId = "turn-stale-final-answer",
+                                        itemId = "assistant-stale-final-answer",
+                                        isStreaming = false,
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        fun clearRecordedCalls() {
+            hydrateCalls = 0
+            resumeCalls = 0
+        }
+
+        override suspend fun refreshThreads() = Unit
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+            if (threadId != "thread-notifications") {
+                return
+            }
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == threadId) {
+                        snapshot.copy(
+                            isRunning = false,
+                            activeTurnId = null,
+                            latestTurnTerminalState = com.emanueledipietro.remodex.model.RemodexTurnTerminalState.COMPLETED,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-stale-final-answer",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "Finished response",
+                                        turnId = "turn-stale-final-answer",
+                                        itemId = "assistant-stale-final-answer",
+                                        isStreaming = false,
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return null
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+    }
+
     private class ReconnectStreamingCatchupSyncService(
         private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
     ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
@@ -3460,6 +3680,115 @@ class DefaultRemodexAppRepositoryTest {
             modelIdentifier: String?,
         ): ThreadSyncSnapshot? {
             resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+    }
+
+    private class RolloutMissingThinkingTailSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        init {
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "user-reconnect-tail",
+                                        speaker = ConversationSpeaker.USER,
+                                        text = "安卓客户端时间线里面为什么中间会有thinking",
+                                        turnId = "turn-reconnect-tail",
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "command-reconnect-tail-1",
+                                        speaker = ConversationSpeaker.SYSTEM,
+                                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                                        text = "Read app/DefaultRemodexAppRepository.kt",
+                                        turnId = "turn-reconnect-tail",
+                                        itemId = "command-reconnect-tail-1",
+                                        orderIndex = 1L,
+                                    ),
+                                ),
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "reasoning-reconnect-tail",
+                                        speaker = ConversationSpeaker.SYSTEM,
+                                        kind = ConversationItemKind.REASONING,
+                                        text = "Thinking...",
+                                        turnId = "turn-reconnect-tail",
+                                        itemId = "rollout-thinking:thread-notifications:turn-reconnect-tail",
+                                        orderIndex = 2L,
+                                    ),
+                                ),
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "command-reconnect-tail-2",
+                                        speaker = ConversationSpeaker.SYSTEM,
+                                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                                        text = "Search coordinator.disconnect",
+                                        turnId = "turn-reconnect-tail",
+                                        itemId = "command-reconnect-tail-2",
+                                        orderIndex = 3L,
+                                    ),
+                                ),
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-reconnect-tail",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "我先用单测把这条具体分支钉住。",
+                                        turnId = "turn-reconnect-tail",
+                                        itemId = "assistant-reconnect-tail",
+                                        orderIndex = 4L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        override suspend fun refreshThreads() = Unit
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+            if (threadId == "thread-notifications") {
+                throw RpcError(
+                    code = -32000,
+                    message = "No rollout found for thread id $threadId",
+                )
+            }
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            if (threadId == "thread-notifications") {
+                throw RpcError(
+                    code = -32000,
+                    message = "No rollout found for thread id $threadId",
+                )
+            }
             return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
         }
 

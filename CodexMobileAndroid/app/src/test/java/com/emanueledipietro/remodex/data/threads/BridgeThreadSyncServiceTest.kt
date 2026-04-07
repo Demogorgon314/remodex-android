@@ -22,6 +22,10 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
@@ -597,6 +601,105 @@ class BridgeThreadSyncServiceTest {
         assertEquals("turn-v2-metrics", metrics?.turnId)
         assertEquals(9, metrics?.outputTokens)
         assertTrue((metrics?.tokensPerSecond ?: 0.0) > 0.0)
+    }
+
+    @Test
+    fun `turn completed finalizes collecting assistant change set without waiting for history like ios`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-live-change-set",
+                    title = "Live change set",
+                    preview = "Working...",
+                    projectPath = "/tmp/project-live-change-set",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-live-change-set",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Partial summary",
+                                turnId = "turn-live-change-set",
+                                itemId = "assistant-live-change-set",
+                                orderIndex = 0L,
+                                assistantChangeSet = RemodexAssistantChangeSet(
+                                    id = "change-set-live",
+                                    threadId = "thread-live-change-set",
+                                    turnId = "turn-live-change-set",
+                                    assistantMessageId = "assistant-live-change-set",
+                                    status = RemodexAssistantChangeSetStatus.COLLECTING,
+                                    source = RemodexAssistantChangeSetSource.TURN_DIFF,
+                                    forwardUnifiedPatch = """
+                                        diff --git a/src/App.kt b/src/App.kt
+                                        index 1111111..2222222 100644
+                                        --- a/src/App.kt
+                                        +++ b/src/App.kt
+                                        @@ -1 +1,2 @@
+                                         val old = true
+                                        +val enabled = true
+                                    """.trimIndent(),
+                                    fileChanges = listOf(
+                                        RemodexAssistantFileChange(
+                                            path = "src/App.kt",
+                                            additions = 1,
+                                            deletions = 0,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-live-change-set",
+            "turn-live-change-set",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnCompletedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-live-change-set"))
+                put(
+                    "turn",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-live-change-set"))
+                        put("status", JsonPrimitive("completed"))
+                    },
+                )
+            },
+        )
+        advanceUntilIdle()
+
+        val thread = service.threads.value.first { it.id == "thread-live-change-set" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .first { item -> item.id == "assistant-live-change-set" }
+
+        assertFalse(thread.isRunning)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertEquals(
+            RemodexAssistantChangeSetStatus.READY,
+            assistant.assistantChangeSet?.status,
+        )
     }
 
     @Test

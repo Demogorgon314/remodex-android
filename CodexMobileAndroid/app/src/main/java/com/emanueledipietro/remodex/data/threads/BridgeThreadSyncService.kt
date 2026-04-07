@@ -3334,6 +3334,7 @@ class BridgeThreadSyncService(
         reviewDebugThreadIds.remove(threadId)
         clearThreadRunningState(threadId)
         completeStreamingItemsForThread(threadId = threadId, turnId = turnId)
+        finalizeAssistantChangeSetsForTurn(threadId = threadId, turnId = turnId)
         touchThread(threadId = threadId, isRunning = false)
         scope.launch {
             refreshThreads()
@@ -6603,6 +6604,76 @@ class BridgeThreadSyncService(
             threadId = threadId,
             messageIds = completionItems.map(com.emanueledipietro.remodex.model.RemodexConversationItem::id),
         )
+    }
+
+    private fun finalizeAssistantChangeSetsForTurn(
+        threadId: String,
+        turnId: String?,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val assistantItems = reducedTimelineItems(snapshot)
+            .filter { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                    item.kind == ConversationItemKind.CHAT &&
+                    item.assistantChangeSet?.status == RemodexAssistantChangeSetStatus.COLLECTING &&
+                    (
+                        turnId == null ||
+                            item.turnId == turnId ||
+                            item.turnId.isNullOrBlank()
+                        )
+            }
+        val finalizedMutations = assistantItems.mapNotNull { item ->
+            val changeSet = item.assistantChangeSet ?: return@mapNotNull null
+            val finalizedChangeSet = finalizeAssistantChangeSet(changeSet)
+            if (finalizedChangeSet == changeSet) {
+                null
+            } else {
+                TimelineMutation.Upsert(
+                    item.copy(assistantChangeSet = finalizedChangeSet),
+                )
+            }
+        }
+        if (finalizedMutations.isEmpty()) {
+            return
+        }
+        val now = nowEpochMs()
+        backingThreads.value = backingThreads.value.map { existing ->
+            if (existing.id != threadId) {
+                existing
+            } else {
+                val nextTimelineItems = applyTimelineMutations(
+                    items = reducedTimelineItems(existing),
+                    mutations = finalizedMutations,
+                )
+                existing.copy(
+                    timelineMutations = existing.timelineMutations + finalizedMutations,
+                    timelineItems = nextTimelineItems,
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                ).withResolvedLiveThreadState(threadId = threadId)
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private fun finalizeAssistantChangeSet(
+        changeSet: RemodexAssistantChangeSet,
+    ): RemodexAssistantChangeSet {
+        if (changeSet.status != RemodexAssistantChangeSetStatus.COLLECTING) {
+            return changeSet
+        }
+        val finalizedStatus = when {
+            changeSet.source == RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK &&
+                changeSet.fallbackPatchCount > 1 -> {
+                RemodexAssistantChangeSetStatus.NOT_REVERTABLE
+            }
+
+            changeSet.unsupportedReasons.isNotEmpty() || changeSet.fileChanges.isEmpty() -> {
+                RemodexAssistantChangeSetStatus.NOT_REVERTABLE
+            }
+
+            else -> RemodexAssistantChangeSetStatus.READY
+        }
+        return changeSet.copy(status = finalizedStatus)
     }
 
     private fun shouldFinalizeAssistantStreamBeforeStructuredItem(

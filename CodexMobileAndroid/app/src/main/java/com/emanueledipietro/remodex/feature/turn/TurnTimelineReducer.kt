@@ -170,7 +170,10 @@ object TurnTimelineReducer {
         val reordered = enforceIntraTurnOrder(visibleItems)
         val collapsedThinking = collapseThinkingMessages(reordered)
         val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(collapsedThinking)
-        val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutCommandThinkingEchoes)
+        val withoutStaleSyntheticThinking = removeStaleSyntheticThinkingPlaceholders(
+            withoutCommandThinkingEchoes,
+        )
+        val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutStaleSyntheticThinking)
         val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
         return removeDuplicateAssistantMessages(dedupedSubagentActions)
     }
@@ -944,6 +947,54 @@ object TurnTimelineReducer {
                 commandActivityKey(line)?.let(commandKeys::contains) == true
             }
         }
+    }
+
+    private fun removeStaleSyntheticThinkingPlaceholders(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val turnsWithAuthoritativeContent = buildSet<String> {
+            items.forEach { item ->
+                val turnId = normalizedIdentifier(item.turnId) ?: return@forEach
+                if (item.speaker == ConversationSpeaker.ASSISTANT) {
+                    add(turnId)
+                    return@forEach
+                }
+                if (
+                    item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind != ConversationItemKind.REASONING
+                ) {
+                    add(turnId)
+                }
+            }
+        }
+        if (turnsWithAuthoritativeContent.isEmpty()) {
+            return items
+        }
+
+        return items.filter { item ->
+            if (!isStaleSyntheticThinkingPlaceholder(item)) {
+                return@filter true
+            }
+            val turnId = normalizedIdentifier(item.turnId)
+            turnId == null || turnId !in turnsWithAuthoritativeContent
+        }
+    }
+
+    private fun isStaleSyntheticThinkingPlaceholder(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (
+            item.speaker != ConversationSpeaker.SYSTEM ||
+            item.kind != ConversationItemKind.REASONING ||
+            item.isStreaming
+        ) {
+            return false
+        }
+        val itemId = normalizedIdentifier(item.itemId) ?: return false
+        if (!itemId.startsWith("rollout-thinking:")) {
+            return false
+        }
+        return normalizedThinkingContent(item.text).isEmpty()
     }
 
     private fun commandActivityKey(text: String): String? {

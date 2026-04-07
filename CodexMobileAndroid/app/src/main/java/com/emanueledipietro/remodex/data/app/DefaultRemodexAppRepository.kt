@@ -22,6 +22,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.threads.shouldRetryAfterThreadMaterializationValue
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
 import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
+import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
@@ -119,6 +120,11 @@ class DefaultRemodexAppRepository(
     private data class LocalOptimisticUserMessage(
         val threadId: String,
         val messageId: String,
+    )
+
+    private data class LocalOptimisticRunningState(
+        val threadId: String,
+        val previousThread: RemodexThreadSummary,
     )
 
     private data class RecoveredThreadContext(
@@ -943,6 +949,71 @@ class DefaultRemodexAppRepository(
         return sessionThread?.messages?.any(RemodexConversationItem::isStreaming) == true
     }
 
+    private fun shouldHydrateAfterForceResume(
+        threadId: String,
+        recoveredThread: RecoveredThreadContext,
+        hadStreamingTimeline: Boolean,
+        didResume: Boolean,
+    ): Boolean {
+        if (!didResume) {
+            return false
+        }
+        if (hadStreamingTimeline || threadHasStreamingTimeline(threadId)) {
+            return false
+        }
+        if (!hasKnownActiveTurnId(threadId)) {
+            return false
+        }
+        val recoveredAfterResume = resolveRecoveredThreadContext(threadId) ?: recoveredThread
+        if (!recoveredAfterResume.requiresLiveResume) {
+            return false
+        }
+        return hasCompletedAssistantMessage(threadId)
+    }
+
+    private fun hasCompletedAssistantMessage(threadId: String): Boolean {
+        val syncSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        if (
+            syncSnapshot != null &&
+            projectThreadTimelineItems(syncSnapshot).any { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                    item.text.isNotBlank() &&
+                    !item.isStreaming
+            }
+        ) {
+            return true
+        }
+        val baseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId }
+        if (
+            baseThread?.messages?.any { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                    item.text.isNotBlank() &&
+                    !item.isStreaming
+            } == true
+        ) {
+            return true
+        }
+        val sessionThread = sessionState.value.threads.firstOrNull { thread -> thread.id == threadId }
+        return sessionThread?.messages?.any { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.text.isNotBlank() &&
+                !item.isStreaming
+        } == true
+    }
+
+    private fun hasKnownActiveTurnId(threadId: String): Boolean {
+        val syncSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        if (!syncSnapshot?.activeTurnId.isNullOrBlank()) {
+            return true
+        }
+        val baseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId }
+        if (!baseThread?.activeTurnId.isNullOrBlank()) {
+            return true
+        }
+        val sessionThread = sessionState.value.threads.firstOrNull { thread -> thread.id == threadId }
+        return !sessionThread?.activeTurnId.isNullOrBlank()
+    }
+
     private suspend fun scheduleReconnectCatchup(threadId: String) {
         reconnectCatchupJobByThread.remove(threadId)?.cancel()
         if (performReconnectCatchupPass(threadId)) {
@@ -1218,10 +1289,23 @@ class DefaultRemodexAppRepository(
             // Running/streaming threads are better refreshed through thread/resume so we do
             // not let repeated full thread/read hydrations flap the visible running UI.
             threadBeforeSync?.let { recoveredThread ->
-                resumeRecoveredThreadIfNeeded(
+                val didResume = resumeRecoveredThreadIfNeeded(
                     recoveredThread = recoveredThread,
                     force = true,
                 )
+                if (
+                    shouldHydrateAfterForceResume(
+                        threadId = normalizedThreadId,
+                        recoveredThread = recoveredThread,
+                        hadStreamingTimeline = hadStreamingTimeline,
+                        didResume = didResume,
+                    )
+                ) {
+                    runHydrationSafely {
+                        hydrationService()?.hydrateThread(normalizedThreadId)
+                    }
+                    refreshBaseThreadsFromSync()
+                }
                 return
             }
         }
@@ -1453,14 +1537,28 @@ class DefaultRemodexAppRepository(
             appendQueuedDraft(threadId = threadId, draft = queuedDraft)
             return
         }
+        val requestedRuntimeConfig = applyPlanningModeOverride(
+            thread.runtimeConfig,
+            planningModeOverride,
+        )
+        val optimisticRunningState = if (!thread.isRunning && hasActiveSecureTransport()) {
+            publishOptimisticRunningState(
+                threadId = threadId,
+                runtimeConfig = requestedRuntimeConfig,
+            )
+        } else {
+            null
+        }
         if (!thread.isRunning) {
             try {
                 thread = resumeThreadBeforeSend(thread = thread)
             } catch (error: Throwable) {
                 if (error is CancellationException) {
+                    restoreOptimisticRunningState(optimisticRunningState)
                     throw error
                 }
                 if (!shouldTreatAsThreadNotFoundValue(error)) {
+                    restoreOptimisticRunningState(optimisticRunningState)
                     throw error
                 }
                 val continuationThreadId = continueMissingThread(thread)
@@ -2439,7 +2537,7 @@ class DefaultRemodexAppRepository(
             // Brand-new local threads can survive a reconnect before their first rollout
             // exists. Keep the send path moving so turn/start can materialize the thread.
             if (shouldRetryAfterThreadMaterializationValue(error)) {
-                return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
+                return thread
             }
             throw error
         }
@@ -2587,6 +2685,79 @@ class DefaultRemodexAppRepository(
             threadId = normalizedThreadId,
             messageId = messageId,
         )
+    }
+
+    private fun publishOptimisticRunningState(
+        threadId: String,
+        runtimeConfig: RemodexRuntimeConfig,
+    ): LocalOptimisticRunningState? {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return null
+        }
+        val previousThread = baseThreadsState.value.firstOrNull { thread ->
+            thread.id == normalizedThreadId
+        } ?: return null
+        if (previousThread.isRunning) {
+            return null
+        }
+        var didUpdateThread = false
+        val updatedThreads = baseThreadsState.value.map { currentThread ->
+            if (currentThread.id != normalizedThreadId) {
+                currentThread
+            } else {
+                didUpdateThread = true
+                currentThread.copy(
+                    isRunning = true,
+                    runtimeConfig = runtimeConfig,
+                )
+            }
+        }
+        if (!didUpdateThread) {
+            return null
+        }
+        refreshThreadsLocally(baseThreads = updatedThreads)
+        return LocalOptimisticRunningState(
+            threadId = normalizedThreadId,
+            previousThread = previousThread,
+        )
+    }
+
+    private fun restoreOptimisticRunningState(
+        state: LocalOptimisticRunningState?,
+    ) {
+        val optimisticState = state ?: return
+        var didRestoreThread = false
+        val restoredThreads = baseThreadsState.value.map { currentThread ->
+            if (currentThread.id != optimisticState.threadId) {
+                currentThread
+            } else if (canRestoreOptimisticRunningState(
+                    current = currentThread,
+                    previous = optimisticState.previousThread,
+                )
+            ) {
+                didRestoreThread = true
+                optimisticState.previousThread
+            } else {
+                currentThread
+            }
+        }
+        if (!didRestoreThread) {
+            return
+        }
+        refreshThreadsLocally(baseThreads = restoredThreads)
+    }
+
+    private fun canRestoreOptimisticRunningState(
+        current: RemodexThreadSummary,
+        previous: RemodexThreadSummary,
+    ): Boolean {
+        return current.isRunning &&
+            current.messages == previous.messages &&
+            current.preview == previous.preview &&
+            current.queuedDraftItems == previous.queuedDraftItems &&
+            current.activeTurnId == previous.activeTurnId &&
+            current.latestTurnTerminalState == previous.latestTurnTerminalState
     }
 
     private suspend fun sendPromptWithLocalOptimistic(

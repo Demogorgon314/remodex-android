@@ -1230,6 +1230,48 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project drops completed rollout thinking placeholder when same turn already has authoritative content`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "Read app/DefaultRemodexAppRepository.kt",
+                    turnId = "turn-1",
+                    itemId = "command-item-1",
+                    orderIndex = 1,
+                ),
+                RemodexConversationItem(
+                    id = "thinking-rollout",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-1",
+                    itemId = "rollout-thinking:thread-1:turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Final answer",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 3,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("command-1", "assistant-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `project removes duplicate assistant echoes when history repeats the same text`() {
         val projected = TurnTimelineReducer.project(
             listOf(
