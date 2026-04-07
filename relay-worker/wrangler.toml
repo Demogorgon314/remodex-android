@@ -1,0 +1,15 @@
+name = "remodex-relay-worker"
+main = "src/index.js"
+compatibility_date = "2026-04-07"
+
+[[durable_objects.bindings]]
+name = "SESSION_RELAY_DO"
+class_name = "SessionRelayDurableObject"
+
+[[durable_objects.bindings]]
+name = "TRUSTED_REGISTRY_DO"
+class_name = "TrustedRegistryDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionRelayDurableObject", "TrustedRegistryDurableObject"]

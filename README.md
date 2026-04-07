@@ -195,6 +195,32 @@ If you want the npm bridge to point at your own setup instead of the package def
 REMODEX_RELAY="ws://localhost:9000/relay" remodex up
 ```
 
+If you want to self-host the experimental Cloudflare Workers relay in this repo, deploy [`relay-worker/`](relay-worker/) and then point `REMODEX_RELAY` at the deployed Worker URL:
+
+```sh
+cd relay-worker
+npm install
+npx wrangler login
+npx wrangler deploy
+
+# Then start the bridge against the deployed Worker
+REMODEX_RELAY="wss://<your-worker>.<your-subdomain>.workers.dev/relay" remodex up
+```
+
+After deploy, verify the Worker before pairing:
+
+```sh
+curl https://<your-worker>.<your-subdomain>.workers.dev/health
+```
+
+Expected response:
+
+```json
+{"ok":true}
+```
+
+The current `relay-worker/` package implements the relay transport and trusted-session resolve path, but it does not expose the optional push-service routes yet.
+
 For self-hosted iPhone usage, prefer a relay URL reachable over Tailscale or another stable private network. Treat plain local `ws://192.168.x.x` pairing as best-effort rather than the recommended production path on iOS.
 
 A common private setup looks like this:
@@ -510,6 +536,9 @@ No. The phone session is live, but the `Codex.app` GUI is not a true live mirror
 
 **Can I self-host the relay?**
 Yes. That is the intended forking path. The transport and push-service code are in [`relay/`](relay/); point `REMODEX_RELAY` at the instance you run.
+
+**Can I deploy the relay on Cloudflare Workers?**
+Yes. The experimental Worker-native implementation lives in [`relay-worker/`](relay-worker/). Deploy it with Wrangler, then start the bridge with `REMODEX_RELAY="wss://<worker-domain>/relay" remodex up`.
 
 **Can I use Tailscale?**
 Yes. It is the recommended private-network option for self-hosting on iPhone. Run your relay somewhere reachable over Tailscale, set `REMODEX_RELAY` to that relay URL, pair once with QR, then let the app reconnect to the trusted Mac through the same relay.
