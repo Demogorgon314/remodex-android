@@ -4484,6 +4484,78 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `create thread preserves preferred project path when thread start omits cwd`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-start-cwd-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/start" to { request ->
+                    assertEquals(
+                        "/tmp/project-start-cwd-fallback",
+                        request.params?.jsonObjectOrNull?.firstString("cwd"),
+                    )
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-start-cwd-fallback"))
+                                put("title", JsonPrimitive("Start fallback target"))
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val created = service.createThread(
+                preferredProjectPath = "/tmp/project-start-cwd-fallback",
+                runtimeDefaults = RemodexRuntimeDefaults(),
+            )
+            advanceUntilIdle()
+
+            assertEquals("/tmp/project-start-cwd-fallback", created?.projectPath)
+            assertEquals(
+                "/tmp/project-start-cwd-fallback",
+                service.threads.value.firstOrNull { snapshot ->
+                    snapshot.id == "thread-start-cwd-fallback"
+                }?.projectPath,
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `service tier retries once and future requests omit unsupported field`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

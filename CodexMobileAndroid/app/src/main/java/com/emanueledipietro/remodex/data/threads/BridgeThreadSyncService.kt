@@ -1106,13 +1106,14 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return null
         }
+        val normalizedPreferredProjectPath = preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)
         val response = sendRequestWithThreadHistoryFallback(
             method = "thread/start",
             accessMode = runtimeDefaults.accessMode,
             includeServiceTier = shouldIncludeServiceTier(runtimeDefaults.serviceTier),
             buildBaseParams = { includeServiceTier, includePersistExtendedHistory ->
                 buildJsonObject {
-                    preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+                    normalizedPreferredProjectPath?.let { put("cwd", JsonPrimitive(it)) }
                     runtimeDefaults.modelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
                     if (includeServiceTier) {
                         runtimeDefaults.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
@@ -1127,11 +1128,17 @@ class BridgeThreadSyncService(
             ?.jsonObjectOrNull
             ?.firstObject("thread")
             ?: return null
-        val snapshot = parseThreadSnapshot(
+        val parsedSnapshot = parseThreadSnapshot(
             threadObject = threadObject,
             syncState = RemodexThreadSyncState.LIVE,
             existing = null,
-        )?.copy(
+        ) ?: return null
+        val snapshot = parsedSnapshot.copy(
+            projectPath = if (parsedSnapshot.projectPath.isBlank() && normalizedPreferredProjectPath != null) {
+                normalizedPreferredProjectPath
+            } else {
+                parsedSnapshot.projectPath
+            },
             runtimeConfig = mergeRuntimeConfig(
                 existing = null,
                 incoming = RemodexRuntimeConfig(
@@ -1141,7 +1148,7 @@ class BridgeThreadSyncService(
                     serviceTier = runtimeDefaults.serviceTier,
                 ),
             ),
-        ) ?: return null
+        )
         backingThreads.value = (backingThreads.value + snapshot)
             .distinctBy(ThreadSyncSnapshot::id)
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
