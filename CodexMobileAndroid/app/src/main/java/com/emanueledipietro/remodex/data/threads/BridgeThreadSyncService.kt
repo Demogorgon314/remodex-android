@@ -1789,7 +1789,7 @@ class BridgeThreadSyncService(
         threadId: String,
         query: String,
     ): List<RemodexFuzzyFileMatch> {
-        val root = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
+        val root = resolvedProjectPath(threadId)
         if (!isConnected() || query.isBlank() || root.isEmpty()) {
             return emptyList()
         }
@@ -1827,7 +1827,7 @@ class BridgeThreadSyncService(
         threadId: String,
         forceReload: Boolean,
     ): List<RemodexSkillMetadata> {
-        val root = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
+        val root = resolvedProjectPath(threadId)
         if (!isConnected() || root.isEmpty()) {
             return emptyList()
         }

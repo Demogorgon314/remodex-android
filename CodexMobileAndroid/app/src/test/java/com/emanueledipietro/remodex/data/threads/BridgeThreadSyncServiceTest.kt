@@ -4556,6 +4556,200 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `fuzzy file search falls back to remembered project path when thread snapshot path is blank`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fuzzy-remembered-project-path",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "fuzzyFileSearch" to { request ->
+                    val roots = request.params?.jsonObjectOrNull?.firstArray("roots").orEmpty()
+                    assertEquals("/tmp/project-remembered-fuzzy", roots.firstOrNull()?.jsonPrimitive?.contentOrNull)
+                    buildJsonObject {
+                        put(
+                            "files",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("root", JsonPrimitive("/tmp/project-remembered-fuzzy"))
+                                        put("path", JsonPrimitive("app/src/ConversationScreen.kt"))
+                                        put("fileName", JsonPrimitive("ConversationScreen.kt"))
+                                        put("score", JsonPrimitive(0.99))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-remembered-fuzzy",
+                        title = "Remembered fuzzy thread",
+                        preview = "",
+                        projectPath = "",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 1L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "rememberProjectPath",
+                "thread-remembered-fuzzy",
+                "/tmp/project-remembered-fuzzy",
+            )
+
+            val matches = service.fuzzyFileSearch(
+                threadId = "thread-remembered-fuzzy",
+                query = "conversation",
+            )
+
+            assertEquals(1, matches.size)
+            assertEquals("/tmp/project-remembered-fuzzy/app/src/ConversationScreen.kt", matches.single().path)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `skills list falls back to remembered project path when thread snapshot path is blank`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-skills-remembered-project-path",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "skills/list" to { request ->
+                    val cwds = request.params?.jsonObjectOrNull?.firstArray("cwds").orEmpty()
+                    assertEquals("/tmp/project-remembered-skills", cwds.firstOrNull()?.jsonPrimitive?.contentOrNull)
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put(
+                                            "skills",
+                                            buildJsonArray {
+                                                add(
+                                                    buildJsonObject {
+                                                        put("name", JsonPrimitive("gsd-debug"))
+                                                        put("description", JsonPrimitive("Systematic debugging"))
+                                                        put("path", JsonPrimitive("/tmp/project-remembered-skills/.codex/skills/gsd-debug/SKILL.md"))
+                                                        put("enabled", JsonPrimitive(true))
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-remembered-skills",
+                        title = "Remembered skills thread",
+                        preview = "",
+                        projectPath = "",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 1L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "rememberProjectPath",
+                "thread-remembered-skills",
+                "/tmp/project-remembered-skills",
+            )
+
+            val skills = service.listSkills(
+                threadId = "thread-remembered-skills",
+                forceReload = false,
+            )
+
+            assertEquals(listOf("gsd-debug"), skills.map { skill -> skill.name })
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `git diff still uses remembered project path after reconnect when new thread is missing from refreshed snapshots`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
