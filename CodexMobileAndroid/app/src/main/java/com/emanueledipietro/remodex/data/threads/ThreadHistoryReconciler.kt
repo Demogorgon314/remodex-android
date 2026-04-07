@@ -292,13 +292,49 @@ internal object ThreadHistoryReconciler {
 
                 ConversationItemKind.TOOL_ACTIVITY -> {
                     val incomingItemId = normalizedIdentifier(historyItem.itemId)
-                    if (incomingItemId != null) {
-                        merged.indexOfLast { candidate ->
+                    val candidateIndices = if (turnId != null) {
+                        merged.indices.filter { index ->
+                            val candidate = merged[index]
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
                                 candidate.kind == ConversationItemKind.TOOL_ACTIVITY &&
-                                normalizedIdentifier(candidate.itemId) == incomingItemId
-                        }.takeIf { it >= 0 }?.let { return it }
+                                candidate.turnId == turnId
+                        }
+                    } else {
+                        emptyList()
                     }
+                    if (incomingItemId != null) {
+                        candidateIndices.lastOrNull { index ->
+                            normalizedIdentifier(merged[index].itemId) == incomingItemId
+                        }?.let { return it }
+                    }
+
+                    if (candidateIndices.size == 1) {
+                        val index = candidateIndices.last()
+                        if (
+                            isProvisionalToolActivityRow(merged[index]) &&
+                            shouldReconcileToolActivityRow(
+                                localItem = merged[index],
+                                historyItem = historyItem,
+                                requiresExactText = false,
+                            )
+                        ) {
+                            return index
+                        }
+                    }
+
+                    if (candidateIndices.size > 1) {
+                        val reconcilableIndices = candidateIndices.filter { index ->
+                            shouldReconcileToolActivityRow(
+                                localItem = merged[index],
+                                historyItem = historyItem,
+                                requiresExactText = true,
+                            )
+                        }
+                        if (reconcilableIndices.size == 1) {
+                            return reconcilableIndices.last()
+                        }
+                    }
+
                     if (turnId != null) {
                         val incomingPreview = normalizedToolActivityPreview(historyItem.text)
                         merged.indexOfLast { candidate ->
@@ -406,7 +442,10 @@ internal object ThreadHistoryReconciler {
             (
                 value.speaker == ConversationSpeaker.SYSTEM &&
                     (
-                        value.kind == ConversationItemKind.TOOL_ACTIVITY ||
+                        (
+                            value.kind == ConversationItemKind.TOOL_ACTIVITY &&
+                                !hasStableToolActivityIdentity(localItemId)
+                            ) ||
                             value.kind == ConversationItemKind.MCP_TOOL_CALL ||
                             value.kind == ConversationItemKind.WEB_SEARCH ||
                             value.kind == ConversationItemKind.IMAGE_VIEW ||
@@ -619,6 +658,69 @@ internal object ThreadHistoryReconciler {
             return null
         }
         return lines.joinToString(separator = "\n").lowercase()
+    }
+
+    private fun shouldReconcileToolActivityRow(
+        localItem: RemodexConversationItem,
+        historyItem: RemodexConversationItem,
+        requiresExactText: Boolean,
+    ): Boolean {
+        val localItemId = normalizedIdentifier(localItem.itemId)
+        val historyItemId = normalizedIdentifier(historyItem.itemId)
+        if (localItemId != null && historyItemId != null && localItemId == historyItemId) {
+            return true
+        }
+
+        val localHasStableIdentity = hasStableToolActivityIdentity(localItemId)
+        val historyHasStableIdentity = hasStableToolActivityIdentity(historyItemId)
+        if (localHasStableIdentity && historyHasStableIdentity) {
+            return false
+        }
+
+        val localLines = normalizedToolActivityLines(localItem.text)
+        val historyLines = normalizedToolActivityLines(historyItem.text)
+        if (localLines.isEmpty() || historyLines.isEmpty()) {
+            return !localHasStableIdentity || !historyHasStableIdentity
+        }
+
+        if (localLines == historyLines) {
+            return true
+        }
+
+        if (requiresExactText) {
+            return false
+        }
+
+        return localLines.hasPrefix(historyLines) || historyLines.hasPrefix(localLines)
+    }
+
+    private fun hasStableToolActivityIdentity(value: String?): Boolean {
+        val normalized = normalizedIdentifier(value) ?: return false
+        return !(normalized.startsWith("turn:") && normalized.contains("|kind:toolactivity"))
+    }
+
+    private fun isProvisionalToolActivityRow(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (hasStableToolActivityIdentity(item.itemId)) {
+            return false
+        }
+        return item.isStreaming || normalizedToolActivityLines(item.text).isEmpty()
+    }
+
+    private fun normalizedToolActivityLines(value: String): List<String> {
+        return normalizedText(value)
+            .split('\n')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .map(String::lowercase)
+    }
+
+    private fun List<String>.hasPrefix(prefix: List<String>): Boolean {
+        if (prefix.size > size) {
+            return false
+        }
+        return subList(0, prefix.size) == prefix
     }
 
     private fun normalizedCommandExecutionPreviewKey(text: String): String? {

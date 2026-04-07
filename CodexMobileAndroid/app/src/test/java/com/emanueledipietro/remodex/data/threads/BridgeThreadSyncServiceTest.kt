@@ -8376,6 +8376,205 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `completed assistant after structured work appends a final assistant segment after the tool rows`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-structured-final-summary",
+                    title = "Structured final summary",
+                    preview = "",
+                    projectPath = "/tmp/project-structured-final-summary",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-structured-final-summary"))
+                put("turnId", JsonPrimitive("turn-structured-final-summary"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-structured-final-summary"))
+                put("turnId", JsonPrimitive("turn-structured-final-summary"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("command-item-final-summary"))
+                        put("type", JsonPrimitive("commandExecution"))
+                        put("status", JsonPrimitive("completed"))
+                        put("command", JsonPrimitive("./gradlew test"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-structured-final-summary"))
+                put("turnId", JsonPrimitive("turn-structured-final-summary"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("type", JsonPrimitive("assistantMessage"))
+                        put("text", JsonPrimitive("Final summary after tools"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-structured-final-summary" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+        val commandItem = projected.single { item ->
+            item.id == "command-item-final-summary" &&
+                item.kind == ConversationItemKind.COMMAND_EXECUTION
+        }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("First streamed answer block", assistantItems[0].text)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("Final summary after tools", assistantItems[1].text)
+        assertFalse(assistantItems[1].isStreaming)
+        assertEquals(
+            listOf(
+                assistantItems[0].id,
+                commandItem.id,
+                assistantItems[1].id,
+            ),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `delayed fallback assistant completion after turn completion still lands after structured work`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-delayed-final-summary",
+                    title = "Delayed final summary",
+                    preview = "",
+                    projectPath = "/tmp/project-delayed-final-summary",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-delayed-final-summary",
+            "turn-delayed-final-summary",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-delayed-final-summary"))
+                put("turnId", JsonPrimitive("turn-delayed-final-summary"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-delayed-final-summary"))
+                put("turnId", JsonPrimitive("turn-delayed-final-summary"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("tool-item-delayed-summary"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("android timeline"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnCompletedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-delayed-final-summary"))
+                put("turnId", JsonPrimitive("turn-delayed-final-summary"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-delayed-final-summary"))
+                put("message", JsonPrimitive("Final summary after tools"))
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-delayed-final-summary" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+        val toolItem = projected.single { item ->
+            item.id == "tool-item-delayed-summary" &&
+                item.kind == ConversationItemKind.WEB_SEARCH
+        }
+
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertEquals(2, assistantItems.size)
+        assertEquals("First streamed answer block", assistantItems[0].text)
+        assertEquals("Final summary after tools", assistantItems[1].text)
+        assertEquals(toolItem.id, projected[1].id)
+        assertEquals("Final summary after tools", projected.last().text)
+    }
+
+    @Test
     fun `hydrate thread clears stale active turn when history shows the turn completed`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -9986,6 +10185,189 @@ class BridgeThreadSyncServiceTest {
             assertFalse(assistant.isStreaming)
             assertFalse(thread.isRunning)
             assertTrue(threadReadCalls >= 2)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `turn completed catchup keeps retrying when initial history only contains the pre tool assistant block`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-delayed-final-summary-catchup",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var threadReadCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-delayed-summary-catchup"))
+                                            put("title", JsonPrimitive("Delayed summary catchup thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-delayed-summary-catchup"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_620))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    threadReadCalls += 1
+                    val items = buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("id", JsonPrimitive("assistant-item-preface"))
+                                put("type", JsonPrimitive("agent_message"))
+                                put("text", JsonPrimitive("Recovered first response"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("id", JsonPrimitive("tool-item-preface"))
+                                put("type", JsonPrimitive("webSearch"))
+                                put("query", JsonPrimitive("android timeline"))
+                            },
+                        )
+                        if (threadReadCalls >= 2) {
+                            add(
+                                buildJsonObject {
+                                    put("id", JsonPrimitive("assistant-item-final"))
+                                    put("type", JsonPrimitive("agent_message"))
+                                    put("text", JsonPrimitive("Recovered final summary after delayed hydration."))
+                                },
+                            )
+                        }
+                    }
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-delayed-summary-catchup"))
+                                put("title", JsonPrimitive("Delayed summary catchup thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-delayed-summary-catchup"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-delayed-summary-catchup"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put("items", items)
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-delayed-summary-catchup",
+                        title = "Delayed summary catchup thread",
+                        preview = "Recovered first response",
+                        projectPath = "/tmp/project-delayed-summary-catchup",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = listOf(
+                            TimelineMutation.Upsert(
+                                RemodexConversationItem(
+                                    id = "assistant-item-preface",
+                                    speaker = ConversationSpeaker.ASSISTANT,
+                                    kind = ConversationItemKind.CHAT,
+                                    text = "Recovered first response",
+                                    turnId = "turn-delayed-summary-catchup",
+                                    itemId = "assistant-item-preface",
+                                    isStreaming = false,
+                                    orderIndex = 0L,
+                                ),
+                            ),
+                            TimelineMutation.Upsert(
+                                RemodexConversationItem(
+                                    id = "tool-item-preface",
+                                    speaker = ConversationSpeaker.SYSTEM,
+                                    kind = ConversationItemKind.WEB_SEARCH,
+                                    text = "Searching android timeline",
+                                    turnId = "turn-delayed-summary-catchup",
+                                    itemId = "tool-item-preface",
+                                    isStreaming = false,
+                                    orderIndex = 1L,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-delayed-summary-catchup",
+                "turn-delayed-summary-catchup",
+            )
+
+            invokePrivateMethod(
+                service,
+                "handleTurnCompletedNotification",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive("thread-delayed-summary-catchup"))
+                    put("turnId", JsonPrimitive("turn-delayed-summary-catchup"))
+                },
+            )
+            advanceUntilIdle()
+            advanceTimeBy(3_100L)
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-delayed-summary-catchup" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            val assistantItems = projected.filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+            assertTrue(threadReadCalls >= 2)
+            assertEquals(
+                listOf(
+                    "Recovered first response",
+                    "Recovered final summary after delayed hydration.",
+                ),
+                assistantItems.map(RemodexConversationItem::text),
+            )
+            assertEquals("Recovered final summary after delayed hydration.", projected.last().text)
+            assertFalse(thread.isRunning)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

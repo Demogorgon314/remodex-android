@@ -1758,48 +1758,51 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
-    fun `optimistic running fallback updates selected thread immediately without adding a user row`() = runTest {
-        val repository = createRepository(scope = backgroundScope)
+    fun `send prompt first running snapshot already includes the pending user message`() = runTest {
+        val syncService = BlockingSendPromptSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
-
-        val originalThread = requireNotNull(repository.session.value.selectedThread) {
-            "Expected thread-notifications to be selected"
+        val snapshots = mutableListOf<RemodexThreadSummary?>()
+        val collectorJob = backgroundScope.launch {
+            repository.session.collect { snapshot ->
+                snapshots += snapshot.selectedThread
+            }
         }
 
-        val optimisticState = invokePrivateMethod<Any?>(
-            target = repository,
-            methodName = "publishOptimisticRunningState",
-            "thread-notifications",
-            originalThread.runtimeConfig.copy(planningMode = RemodexPlanningMode.PLAN),
+        val sendJob = backgroundScope.launch {
+            repository.sendPrompt(
+                threadId = "thread-notifications",
+                prompt = "Keep my message ahead of the busy indicator.",
+                attachments = emptyList(),
+            )
+        }
+        runCurrent()
+
+        val firstRunningSnapshot = snapshots.firstOrNull { thread ->
+            thread?.isRunning == true
+        }
+        assertEquals("thread-notifications", firstRunningSnapshot?.id)
+        assertTrue(firstRunningSnapshot?.messages.orEmpty().any { item ->
+            item.text == "Keep my message ahead of the busy indicator."
+        })
+        assertEquals(
+            "Keep my message ahead of the busy indicator.",
+            firstRunningSnapshot?.messages?.lastOrNull()?.text,
         )
 
-        val selectedThreadWhileOptimistic = repository.session.value.selectedThread
-        assertTrue(optimisticState != null)
-        assertEquals("thread-notifications", selectedThreadWhileOptimistic?.id)
-        assertTrue(selectedThreadWhileOptimistic?.isRunning == true)
-        assertEquals(
-            RemodexPlanningMode.PLAN,
-            selectedThreadWhileOptimistic?.runtimeConfig?.planningMode,
-        )
-        assertEquals(
-            originalThread.messages,
-            selectedThreadWhileOptimistic?.messages,
-        )
-
-        invokePrivateMethod<Unit>(
-            target = repository,
-            methodName = "restoreOptimisticRunningState",
-            optimisticState,
-        )
-
-        val restoredThread = repository.session.value.selectedThread
-        assertEquals(originalThread.isRunning, restoredThread?.isRunning)
-        assertEquals(
-            originalThread.runtimeConfig.planningMode,
-            restoredThread?.runtimeConfig?.planningMode,
-        )
-        assertEquals(originalThread.messages, restoredThread?.messages)
+        syncService.allowSend()
+        advanceUntilIdle()
+        sendJob.join()
+        collectorJob.cancel()
     }
 
     @Test
@@ -2558,6 +2561,75 @@ class DefaultRemodexAppRepositoryTest {
             selectedThread?.messages.orEmpty().any { item ->
                 item.text.contains("Queue after resume detects the remote run.")
             },
+        )
+    }
+
+    @Test
+    fun `send prompt refreshes stale running state before queueing and starts a new turn`() = runTest {
+        val syncService = RunningRefreshBeforeQueueSyncService(clearRunningOnHydrate = true)
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Send after stale running refresh clears busy state.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertEquals("thread-notifications", selectedThread?.id)
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(1, syncService.sendPromptCalls)
+        assertEquals(0, selectedThread?.queuedDrafts)
+        assertTrue(selectedThread?.messages.orEmpty().any { item ->
+            item.text.contains("Send after stale running refresh clears busy state.")
+        })
+    }
+
+    @Test
+    fun `send prompt keeps queueing when running refresh confirms an active turn`() = runTest {
+        val syncService = RunningRefreshBeforeQueueSyncService(clearRunningOnHydrate = false)
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-notifications",
+            prompt = "Queue after running refresh confirms the turn is still active.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertEquals("thread-notifications", selectedThread?.id)
+        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(0, syncService.sendPromptCalls)
+        assertEquals(1, selectedThread?.queuedDrafts)
+        assertEquals(
+            "Queue after running refresh confirms the turn is still active.",
+            selectedThread?.queuedDraftItems?.firstOrNull()?.text,
         )
     }
 
@@ -3597,6 +3669,83 @@ class DefaultRemodexAppRepositoryTest {
 
         override fun isThreadResumedLocally(threadId: String): Boolean {
             return delegate.isThreadResumedLocally(threadId)
+        }
+    }
+
+    private class RunningRefreshBeforeQueueSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+        private val clearRunningOnHydrate: Boolean,
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+        var sendPromptCalls: Int = 0
+            private set
+
+        init {
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = true,
+                            activeTurnId = if (clearRunningOnHydrate) null else "turn-running-confirmed",
+                            latestTurnTerminalState = null,
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        override suspend fun refreshThreads() = Unit
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+            if (threadId != "thread-notifications") {
+                return
+            }
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == threadId) {
+                        snapshot.copy(
+                            isRunning = !clearRunningOnHydrate,
+                            activeTurnId = if (clearRunningOnHydrate) null else "turn-running-confirmed",
+                            latestTurnTerminalState = if (clearRunningOnHydrate) {
+                                com.emanueledipietro.remodex.model.RemodexTurnTerminalState.COMPLETED
+                            } else {
+                                null
+                            },
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            sendPromptCalls += 1
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
         }
     }
 

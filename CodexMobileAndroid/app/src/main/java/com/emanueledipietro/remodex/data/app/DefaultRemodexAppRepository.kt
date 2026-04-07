@@ -122,9 +122,10 @@ class DefaultRemodexAppRepository(
         val messageId: String,
     )
 
-    private data class LocalOptimisticRunningState(
+    private data class LocalPreSendOptimisticState(
         val threadId: String,
         val previousThread: RemodexThreadSummary,
+        val messageId: String?,
     )
 
     private data class RecoveredThreadContext(
@@ -1541,9 +1542,11 @@ class DefaultRemodexAppRepository(
             thread.runtimeConfig,
             planningModeOverride,
         )
-        val optimisticRunningState = if (!thread.isRunning && hasActiveSecureTransport()) {
-            publishOptimisticRunningState(
+        val optimisticPreSendState = if (!thread.isRunning && hasActiveSecureTransport()) {
+            publishPreSendOptimisticState(
                 threadId = threadId,
+                prompt = trimmedPrompt,
+                attachments = attachments,
                 runtimeConfig = requestedRuntimeConfig,
             )
         } else {
@@ -1554,11 +1557,11 @@ class DefaultRemodexAppRepository(
                 thread = resumeThreadBeforeSend(thread = thread)
             } catch (error: Throwable) {
                 if (error is CancellationException) {
-                    restoreOptimisticRunningState(optimisticRunningState)
+                    restorePreSendOptimisticState(optimisticPreSendState)
                     throw error
                 }
                 if (!shouldTreatAsThreadNotFoundValue(error)) {
-                    restoreOptimisticRunningState(optimisticRunningState)
+                    restorePreSendOptimisticState(optimisticPreSendState)
                     throw error
                 }
                 val continuationThreadId = continueMissingThread(thread)
@@ -1580,6 +1583,10 @@ class DefaultRemodexAppRepository(
             }
         }
         if (thread.isRunning) {
+            thread = refreshRunningThreadBeforeQueue(thread = thread)
+        }
+        if (thread.isRunning) {
+            restorePreSendOptimisticState(optimisticPreSendState)
             appendQueuedDraft(threadId = threadId, draft = queuedDraft)
             return
         }
@@ -1593,6 +1600,7 @@ class DefaultRemodexAppRepository(
                     planningModeOverride,
                 ),
                 attachments = attachments,
+                existingOptimisticMessageId = optimisticPreSendState?.messageId,
             )
         } catch (error: Throwable) {
             if (error is CancellationException) {
@@ -2545,6 +2553,25 @@ class DefaultRemodexAppRepository(
         return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
     }
 
+    private suspend fun refreshRunningThreadBeforeQueue(
+        thread: RemodexThreadSummary,
+    ): RemodexThreadSummary {
+        if (!hasActiveSecureTransport()) {
+            return thread
+        }
+        val normalizedThreadId = thread.id.trim()
+        if (normalizedThreadId.isEmpty() || isLocalOnlyEmptyThread(normalizedThreadId)) {
+            return thread
+        }
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(normalizedThreadId)
+        }
+        refreshBaseThreadsFromSync()
+        return sessionState.value.threads.firstOrNull { candidate ->
+            candidate.id == normalizedThreadId
+        } ?: thread
+    }
+
     private suspend fun continueMissingThread(thread: RemodexThreadSummary): String {
         val archivedThreads = baseThreadsState.value.map { existing ->
             if (existing.id == thread.id) {
@@ -2687,10 +2714,12 @@ class DefaultRemodexAppRepository(
         )
     }
 
-    private fun publishOptimisticRunningState(
+    private fun publishPreSendOptimisticState(
         threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
         runtimeConfig: RemodexRuntimeConfig,
-    ): LocalOptimisticRunningState? {
+    ): LocalPreSendOptimisticState? {
         val normalizedThreadId = threadId.trim()
         if (normalizedThreadId.isEmpty()) {
             return null
@@ -2701,39 +2730,34 @@ class DefaultRemodexAppRepository(
         if (previousThread.isRunning) {
             return null
         }
-        var didUpdateThread = false
-        val updatedThreads = baseThreadsState.value.map { currentThread ->
-            if (currentThread.id != normalizedThreadId) {
-                currentThread
-            } else {
-                didUpdateThread = true
-                currentThread.copy(
-                    isRunning = true,
-                    runtimeConfig = runtimeConfig,
-                )
-            }
-        }
-        if (!didUpdateThread) {
+        val optimisticMessage = publishOptimisticPendingUserMessage(
+            threadId = normalizedThreadId,
+            prompt = prompt,
+            attachments = attachments,
+            runtimeConfig = runtimeConfig,
+        )
+        if (optimisticMessage == null) {
             return null
         }
-        refreshThreadsLocally(baseThreads = updatedThreads)
-        return LocalOptimisticRunningState(
+        return LocalPreSendOptimisticState(
             threadId = normalizedThreadId,
             previousThread = previousThread,
+            messageId = optimisticMessage.messageId,
         )
     }
 
-    private fun restoreOptimisticRunningState(
-        state: LocalOptimisticRunningState?,
+    private fun restorePreSendOptimisticState(
+        state: LocalPreSendOptimisticState?,
     ) {
         val optimisticState = state ?: return
         var didRestoreThread = false
         val restoredThreads = baseThreadsState.value.map { currentThread ->
             if (currentThread.id != optimisticState.threadId) {
                 currentThread
-            } else if (canRestoreOptimisticRunningState(
+            } else if (canRestorePreSendOptimisticState(
                     current = currentThread,
                     previous = optimisticState.previousThread,
+                    optimisticMessageId = optimisticState.messageId,
                 )
             ) {
                 didRestoreThread = true
@@ -2748,13 +2772,21 @@ class DefaultRemodexAppRepository(
         refreshThreadsLocally(baseThreads = restoredThreads)
     }
 
-    private fun canRestoreOptimisticRunningState(
+    private fun canRestorePreSendOptimisticState(
         current: RemodexThreadSummary,
         previous: RemodexThreadSummary,
+        optimisticMessageId: String?,
     ): Boolean {
+        val expectedMessages = if (optimisticMessageId != null) {
+            previous.messages + listOfNotNull(
+                current.messages.firstOrNull { message -> message.id == optimisticMessageId },
+            )
+        } else {
+            previous.messages
+        }
         return current.isRunning &&
-            current.messages == previous.messages &&
-            current.preview == previous.preview &&
+            current.messages == expectedMessages &&
+            current.preview == (expectedMessages.lastOrNull()?.text ?: previous.preview) &&
             current.queuedDraftItems == previous.queuedDraftItems &&
             current.activeTurnId == previous.activeTurnId &&
             current.latestTurnTerminalState == previous.latestTurnTerminalState
@@ -2765,8 +2797,14 @@ class DefaultRemodexAppRepository(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        existingOptimisticMessageId: String? = null,
     ) {
-        val optimisticMessage = publishOptimisticPendingUserMessage(
+        val optimisticMessage = existingOptimisticMessageId?.let { messageId ->
+            LocalOptimisticUserMessage(
+                threadId = threadId,
+                messageId = messageId,
+            )
+        } ?: publishOptimisticPendingUserMessage(
             threadId = threadId,
             prompt = prompt,
             attachments = attachments,

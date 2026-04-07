@@ -668,6 +668,58 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items rebinds repeated tool activity history to the provisional row instead of an older stable row`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "tool-stable-old",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.TOOL_ACTIVITY,
+                text = "Searched src/main",
+                turnId = "turn-1",
+                itemId = "tool-item-old",
+                isStreaming = false,
+                orderIndex = 1L,
+            ),
+            RemodexConversationItem(
+                id = "tool-provisional-new",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.TOOL_ACTIVITY,
+                text = "",
+                turnId = "turn-1",
+                itemId = null,
+                isStreaming = true,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "tool-history-new",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.TOOL_ACTIVITY,
+                text = "Searched src/main",
+                turnId = "turn-1",
+                itemId = "tool-item-new",
+                isStreaming = false,
+                orderIndex = 20L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(2, merged.size)
+        assertEquals("tool-item-old", merged[0].itemId)
+        assertEquals("Searched src/main", merged[0].text)
+        assertEquals("tool-provisional-new", merged[1].id)
+        assertEquals("tool-item-new", merged[1].itemId)
+        assertEquals("Searched src/main", merged[1].text)
+    }
+
+    @Test
     fun `merge history items matches plan rows by item id before same turn fallback`() {
         val existing = listOf(
             RemodexConversationItem(

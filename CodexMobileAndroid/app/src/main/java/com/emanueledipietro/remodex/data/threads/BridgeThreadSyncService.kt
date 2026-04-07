@@ -7083,10 +7083,12 @@ class BridgeThreadSyncService(
     ): Boolean {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return false
         val projected = projectedTimelineItems(snapshot)
-        val hasAssistantForTurn = projected.any { item ->
+        val turnItems = projected.filter { item ->
+            turnId == null || item.turnId == turnId
+        }
+        val hasAssistantForTurn = turnItems.any { item ->
             item.speaker == ConversationSpeaker.ASSISTANT &&
-                item.text.isNotBlank() &&
-                (turnId == null || item.turnId == turnId)
+                item.text.isNotBlank()
         }
         val hasCompletedThinkingPlaceholder = projected.any { item ->
             item.speaker == ConversationSpeaker.SYSTEM &&
@@ -7095,7 +7097,55 @@ class BridgeThreadSyncService(
                 (turnId == null || item.turnId == turnId || item.turnId.isNullOrBlank()) &&
                 ThinkingDisclosureParser.normalizedThinkingContent(item.text).isEmpty()
         }
-        return !hasAssistantForTurn || hasCompletedThinkingPlaceholder
+        val hasTrailingStructuredActivityAwaitingAssistant = hasTrailingStructuredActivityAwaitingAssistant(
+            turnItems = turnItems,
+        )
+        return !hasAssistantForTurn ||
+            hasCompletedThinkingPlaceholder ||
+            hasTrailingStructuredActivityAwaitingAssistant
+    }
+
+    private fun hasTrailingStructuredActivityAwaitingAssistant(
+        turnItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+    ): Boolean {
+        if (turnItems.isEmpty()) {
+            return false
+        }
+        val lastAssistantIndex = turnItems.indexOfLast { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT && item.text.isNotBlank()
+        }
+        val lastStructuredActivityIndex = turnItems.indexOfLast(::shouldExpectAssistantFollowupAfterCompletion)
+        if (lastStructuredActivityIndex == -1) {
+            return false
+        }
+        if (lastAssistantIndex == -1) {
+            return true
+        }
+        return lastStructuredActivityIndex > lastAssistantIndex
+    }
+
+    private fun shouldExpectAssistantFollowupAfterCompletion(
+        item: com.emanueledipietro.remodex.model.RemodexConversationItem,
+    ): Boolean {
+        if (item.speaker != ConversationSpeaker.SYSTEM) {
+            return false
+        }
+        return when (item.kind) {
+            ConversationItemKind.TOOL_ACTIVITY,
+            ConversationItemKind.MCP_TOOL_CALL,
+            ConversationItemKind.WEB_SEARCH,
+            ConversationItemKind.IMAGE_VIEW,
+            ConversationItemKind.IMAGE_GENERATION,
+            ConversationItemKind.COMMAND_EXECUTION,
+            ConversationItemKind.CONTEXT_COMPACTION,
+            ConversationItemKind.FILE_CHANGE,
+            ConversationItemKind.SUBAGENT_ACTION,
+            ConversationItemKind.PLAN,
+            ConversationItemKind.PLAN_UPDATE,
+            -> true
+
+            else -> false
+        }
     }
 
     private fun supportsStructuredLifecycleItem(itemType: String): Boolean {
