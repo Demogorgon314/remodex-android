@@ -27,6 +27,7 @@ data class RemodexSessionSnapshot(
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
+    val supportsManagedWorktreeCreation: Boolean = true,
     val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val threads: List<RemodexThreadSummary> = emptyList(),
     val selectedThreadId: String? = null,

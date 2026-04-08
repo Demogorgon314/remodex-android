@@ -66,6 +66,13 @@ interface RemodexAppRepository {
         inheritRuntimeFromThreadId: String? = null,
     )
 
+    suspend fun createWorktreeThread(
+        preferredProjectPath: String,
+        inheritRuntimeFromThreadId: String? = null,
+    ) {
+        createThread(preferredProjectPath = preferredProjectPath, inheritRuntimeFromThreadId = inheritRuntimeFromThreadId)
+    }
+
     suspend fun renameThread(
         threadId: String,
         name: String,

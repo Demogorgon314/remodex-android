@@ -29,6 +29,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -548,27 +550,15 @@ fun RemodexApp(
         AlertDialog(
             onDismissRequest = viewModel::dismissBridgeUpdatePrompt,
             confirmButton = {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    TextButton(onClick = viewModel::dismissBridgeUpdatePrompt) {
-                        Text("Not Now")
-                    }
-                    TextButton(
-                        onClick = {
-                            viewModel.dismissBridgeUpdatePrompt()
-                            viewModel.prepareForManualScan()
-                            isScannerPresented = true
-                        },
-                    ) {
-                        Text("Scan New QR Code")
-                    }
-                    Button(
-                        onClick = viewModel::retryConnectionAfterBridgeUpdate,
-                    ) {
-                        Text("I Updated It")
-                    }
-                }
+                BridgeUpdateDialogActions(
+                    onDismiss = viewModel::dismissBridgeUpdatePrompt,
+                    onOpenScanner = {
+                        viewModel.dismissBridgeUpdatePrompt()
+                        viewModel.prepareForManualScan()
+                        isScannerPresented = true
+                    },
+                    onRetryConnection = viewModel::retryConnectionAfterBridgeUpdate,
+                )
             },
             title = {
                 DesktopHandoffDialogTitle(
@@ -781,6 +771,13 @@ private fun RemodexShell(
                                 }
                             }
                         },
+                        onCreateWorktreeThread = { preferredProjectPath ->
+                            viewModel.createWorktreeThread(preferredProjectPath) { createdThreadId ->
+                                if (createdThreadId != null) {
+                                    onShellRouteChange(ShellRoute.CONTENT)
+                                }
+                            }
+                        },
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
                         onArchiveThread = viewModel::archiveThread,
@@ -898,6 +895,14 @@ private fun RemodexShell(
                         onRetryConnection = viewModel::retryConnection,
                         onCreateThread = { preferredProjectPath ->
                             viewModel.createThread(preferredProjectPath) { createdThreadId ->
+                                if (createdThreadId != null) {
+                                    onShellRouteChange(ShellRoute.CONTENT)
+                                    onSidebarOpenChange(false)
+                                }
+                            }
+                        },
+                        onCreateWorktreeThread = { preferredProjectPath ->
+                            viewModel.createWorktreeThread(preferredProjectPath) { createdThreadId ->
                                 if (createdThreadId != null) {
                                     onShellRouteChange(ShellRoute.CONTENT)
                                     onSidebarOpenChange(false)
@@ -1310,6 +1315,39 @@ private fun MainPane(
                 title = { DesktopHandoffDialogTitle(title = "Couldn't hand off to Mac app") },
                 text = { DesktopHandoffErrorBody(message = message) },
             )
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun BridgeUpdateDialogActions(
+    onDismiss: () -> Unit,
+    onOpenScanner: () -> Unit,
+    onRetryConnection: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text("Not Now")
+            }
+            TextButton(onClick = onOpenScanner) {
+                Text("Scan New QR Code")
+            }
+        }
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onRetryConnection,
+        ) {
+            Text("I Updated It")
         }
     }
 }

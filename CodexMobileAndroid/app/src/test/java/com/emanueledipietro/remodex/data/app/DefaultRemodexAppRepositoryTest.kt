@@ -1688,6 +1688,18 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `create worktree thread starts a new chat in a managed detached worktree`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(scope = backgroundScope, syncService = syncService)
+        advanceUntilIdle()
+
+        repository.createWorktreeThread(preferredProjectPath = "/tmp/local-main")
+        advanceUntilIdle()
+
+        assertEquals("/tmp/local-main/.codex/worktrees/managed", repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
     fun `send prompt starts a local turn immediately when the thread is idle`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")

@@ -192,6 +192,7 @@ class DefaultRemodexAppRepository(
             bridgeProfiles = secureConnectionCoordinator.bridgeProfiles.value.toBridgeProfilePresentations(),
             bridgeUpdatePrompt = threadSyncService.bridgeUpdatePrompt.value,
             supportsThreadFork = threadSyncService.supportsThreadFork.value,
+            supportsManagedWorktreeCreation = threadSyncService.supportsManagedWorktreeCreation.value,
             availableModels = threadSyncService.availableModels.value,
             pendingApprovalRequest = threadSyncService.pendingApprovalRequest.value,
             threads = initialBaseThreads,
@@ -369,13 +370,15 @@ class DefaultRemodexAppRepository(
                         availableModels = availableModels,
                         bridgeUpdatePrompt = null,
                         supportsThreadFork = true,
+                        supportsManagedWorktreeCreation = true,
                         pendingApprovalRequest = null,
                     )
                 },
                 threadSyncService.bridgeUpdatePrompt,
                 threadSyncService.supportsThreadFork,
+                threadSyncService.supportsManagedWorktreeCreation,
                 threadSyncService.pendingApprovalRequest,
-            ) { baseInputs, bridgeUpdatePrompt, supportsThreadFork, pendingApprovalRequest ->
+            ) { baseInputs, bridgeUpdatePrompt, supportsThreadFork, supportsManagedWorktreeCreation, pendingApprovalRequest ->
                 SessionInputs(
                     preferences = baseInputs.preferences,
                     secureConnection = baseInputs.secureConnection,
@@ -384,6 +387,7 @@ class DefaultRemodexAppRepository(
                     availableModels = baseInputs.availableModels,
                     bridgeUpdatePrompt = bridgeUpdatePrompt,
                     supportsThreadFork = supportsThreadFork,
+                    supportsManagedWorktreeCreation = supportsManagedWorktreeCreation,
                     pendingApprovalRequest = pendingApprovalRequest,
                 )
             }.collectLatest { inputs ->
@@ -452,6 +456,7 @@ class DefaultRemodexAppRepository(
                         ),
                         bridgeUpdatePrompt = inputs.bridgeUpdatePrompt,
                         supportsThreadFork = inputs.supportsThreadFork,
+                        supportsManagedWorktreeCreation = inputs.supportsManagedWorktreeCreation,
                         pendingApprovalRequest = inputs.pendingApprovalRequest,
                         threads = threads,
                         selectedThreadId = selectedThreadId,
@@ -1393,6 +1398,21 @@ class DefaultRemodexAppRepository(
         refreshBaseThreadsLocallyFromSnapshots(
             snapshots = listOf(createdThread),
             preferredSelectedThreadIdOverride = createdThread.id,
+        )
+    }
+
+    override suspend fun createWorktreeThread(
+        preferredProjectPath: String,
+        inheritRuntimeFromThreadId: String?,
+    ) {
+        val normalizedProjectPath = preferredProjectPath.trim().takeIf(String::isNotEmpty) ?: return
+        val worktree = threadCommandService.createManagedWorktree(
+            projectPath = normalizedProjectPath,
+            changeTransfer = RemodexGitWorktreeChangeTransferMode.NONE,
+        )
+        createThread(
+            preferredProjectPath = worktree.worktreePath,
+            inheritRuntimeFromThreadId = inheritRuntimeFromThreadId,
         )
     }
 
@@ -3308,6 +3328,7 @@ private data class SessionInputs(
     val availableModels: List<RemodexModelOption>,
     val bridgeUpdatePrompt: com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt?,
     val supportsThreadFork: Boolean,
+    val supportsManagedWorktreeCreation: Boolean,
     val pendingApprovalRequest: com.emanueledipietro.remodex.model.RemodexApprovalRequest?,
 )
 

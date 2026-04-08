@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitManagedWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -64,6 +65,7 @@ class FakeThreadSyncService(
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
+    private val backingSupportsManagedWorktreeCreation = MutableStateFlow(true)
     private val resumedThreadIds = mutableSetOf<String>()
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
@@ -83,6 +85,7 @@ class FakeThreadSyncService(
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
+    override val supportsManagedWorktreeCreation: StateFlow<Boolean> = backingSupportsManagedWorktreeCreation
 
     override fun dismissBridgeUpdatePrompt() {
         backingBridgeUpdatePrompt.value = null
@@ -94,6 +97,10 @@ class FakeThreadSyncService(
 
     fun updateSupportsThreadFork(supports: Boolean) {
         backingSupportsThreadFork.value = supports
+    }
+
+    fun updateSupportsManagedWorktreeCreation(supports: Boolean) {
+        backingSupportsManagedWorktreeCreation.value = supports
     }
 
     fun updatePendingApprovalRequest(request: RemodexApprovalRequest?) {
@@ -782,6 +789,21 @@ class FakeThreadSyncService(
             branch = name,
             worktreePath = worktreePath,
             alreadyExisted = false,
+        )
+    }
+
+    override suspend fun createManagedWorktree(
+        projectPath: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+    ): RemodexGitManagedWorktreeResult {
+        val normalizedProjectPath = projectPath.trim().ifEmpty { "/tmp/remodex" }
+        return RemodexGitManagedWorktreeResult(
+            worktreePath = "$normalizedProjectPath/.codex/worktrees/managed",
+            alreadyExisted = false,
+            baseBranch = baseBranch?.trim()?.takeIf(String::isNotEmpty) ?: "main",
+            headMode = "detached",
+            transferredChanges = changeTransfer == RemodexGitWorktreeChangeTransferMode.MOVE,
         )
     }
 

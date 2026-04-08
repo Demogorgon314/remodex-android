@@ -19,6 +19,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitManagedWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -107,6 +108,7 @@ interface ThreadSyncService {
     val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?>
     val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?>
     val supportsThreadFork: StateFlow<Boolean>
+    val supportsManagedWorktreeCreation: StateFlow<Boolean>
 
     fun dismissBridgeUpdatePrompt()
 }
@@ -221,6 +223,14 @@ interface ThreadCommandService {
         baseBranch: String?,
         changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.COPY,
     ): RemodexGitWorktreeResult
+
+    suspend fun createManagedWorktree(
+        projectPath: String,
+        baseBranch: String? = null,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode = RemodexGitWorktreeChangeTransferMode.NONE,
+    ): RemodexGitManagedWorktreeResult {
+        throw UnsupportedOperationException("Managed worktree creation is not available.")
+    }
 
     suspend fun commitGitChanges(
         threadId: String,

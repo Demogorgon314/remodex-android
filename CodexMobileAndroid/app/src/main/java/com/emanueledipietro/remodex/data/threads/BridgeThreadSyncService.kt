@@ -45,6 +45,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexGitManagedWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -660,6 +661,7 @@ class BridgeThreadSyncService(
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
+    private val backingSupportsManagedWorktreeCreation = MutableStateFlow(true)
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private val completedReviewSummaryTurnIds = mutableSetOf<String>()
@@ -686,6 +688,8 @@ class BridgeThreadSyncService(
     private var hasPresentedServiceTierBridgeUpdatePrompt = false
     private var supportsThreadForkCapability = true
     private var hasPresentedThreadForkBridgeUpdatePrompt = false
+    private var supportsManagedWorktreeCreationCapability = true
+    private var hasPresentedManagedWorktreeBridgeUpdatePrompt = false
     private var supportsTurnCollaborationMode = true
     private var supportsPersistExtendedHistory = true
 
@@ -702,6 +706,7 @@ class BridgeThreadSyncService(
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
+    override val supportsManagedWorktreeCreation: StateFlow<Boolean> = backingSupportsManagedWorktreeCreation
 
     override fun dismissBridgeUpdatePrompt() {
         backingBridgeUpdatePrompt.value = null
@@ -721,10 +726,13 @@ class BridgeThreadSyncService(
                         hasPresentedServiceTierBridgeUpdatePrompt = false
                         supportsThreadForkCapability = true
                         hasPresentedThreadForkBridgeUpdatePrompt = false
+                        supportsManagedWorktreeCreationCapability = true
+                        hasPresentedManagedWorktreeBridgeUpdatePrompt = false
                         supportsTurnCollaborationMode = true
                         supportsPersistExtendedHistory = true
                         backingBridgeUpdatePrompt.value = null
                         backingSupportsThreadFork.value = true
+                        backingSupportsManagedWorktreeCreation.value = true
                         if (!initializeSession()) {
                             return@collectLatest
                         }
@@ -737,10 +745,13 @@ class BridgeThreadSyncService(
                     hasPresentedServiceTierBridgeUpdatePrompt = false
                     supportsThreadForkCapability = true
                     hasPresentedThreadForkBridgeUpdatePrompt = false
+                    supportsManagedWorktreeCreationCapability = true
+                    hasPresentedManagedWorktreeBridgeUpdatePrompt = false
                     supportsTurnCollaborationMode = true
                     supportsPersistExtendedHistory = true
                     backingBridgeUpdatePrompt.value = null
                     backingSupportsThreadFork.value = true
+                    backingSupportsManagedWorktreeCreation.value = true
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
                     assistantResponseTraceByThread.clear()
@@ -1994,6 +2005,28 @@ class BridgeThreadSyncService(
         )
     }
 
+    override suspend fun createManagedWorktree(
+        projectPath: String,
+        baseBranch: String?,
+        changeTransfer: RemodexGitWorktreeChangeTransferMode,
+    ): RemodexGitManagedWorktreeResult {
+        val resultObject = runGitRequestForProjectPath(
+            projectPath = projectPath,
+            method = "git/createManagedWorktree",
+            params = buildJsonObject {
+                baseBranch?.trim()?.takeIf(String::isNotEmpty)?.let { put("baseBranch", JsonPrimitive(it)) }
+                put("changeTransfer", JsonPrimitive(changeTransfer.name.lowercase(Locale.ROOT)))
+            },
+        ).result?.jsonObjectOrNull ?: throw IllegalStateException("git/createManagedWorktree response missing result.")
+        return RemodexGitManagedWorktreeResult(
+            worktreePath = resultObject.firstString("worktreePath").orEmpty(),
+            alreadyExisted = resultObject.firstBoolean("alreadyExisted") ?: false,
+            baseBranch = resultObject.firstString("baseBranch").orEmpty(),
+            headMode = resultObject.firstString("headMode").orEmpty(),
+            transferredChanges = resultObject.firstBoolean("transferredChanges") ?: false,
+        )
+    }
+
     override suspend fun commitGitChanges(
         threadId: String,
         message: String?,
@@ -2604,13 +2637,29 @@ class BridgeThreadSyncService(
         params: JsonObject = buildJsonObject {},
     ): RpcMessage {
         val projectPath = resolvedProjectPath(threadId)
-        require(projectPath.isNotEmpty()) { "Missing local working directory for $method." }
+        return runGitRequestForProjectPath(
+            projectPath = projectPath,
+            method = method,
+            params = params,
+        )
+    }
+
+    private suspend fun runGitRequestForProjectPath(
+        projectPath: String,
+        method: String,
+        params: JsonObject = buildJsonObject {},
+    ): RpcMessage {
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty)
+            ?: throw IllegalStateException("The selected local folder is not available on this Mac.")
         return try {
             secureConnectionCoordinator.sendRequest(
                 method = method,
-                params = JsonObject(params + ("cwd" to JsonPrimitive(projectPath))),
+                params = JsonObject(params + ("cwd" to JsonPrimitive(normalizedProjectPath))),
             )
         } catch (error: Throwable) {
+            if (method == "git/createManagedWorktree" && consumeUnsupportedManagedWorktreeCreation(error)) {
+                throw IllegalStateException(managedWorktreeBridgeUpdatePrompt().message, error)
+            }
             throw mappedGitRequestError(error)
         }
     }
@@ -3005,6 +3054,44 @@ class BridgeThreadSyncService(
         backingBridgeUpdatePrompt.value = threadForkBridgeUpdatePrompt()
     }
 
+    private fun consumeUnsupportedManagedWorktreeCreation(error: Throwable): Boolean {
+        if (!shouldTreatAsUnsupportedManagedWorktreeCreation(error)) {
+            return false
+        }
+        markManagedWorktreeUnsupportedForCurrentBridge()
+        return true
+    }
+
+    private fun shouldTreatAsUnsupportedManagedWorktreeCreation(error: Throwable): Boolean {
+        val rpcError = error as? RpcError ?: return false
+        if (rpcError.code == -32601) {
+            return true
+        }
+        val message = rpcError.message.lowercase(Locale.ROOT)
+        val mentionsUnsupportedMethod = message.contains("method not found")
+            || message.contains("unknown method")
+            || message.contains("unknown git method")
+            || message.contains("not implemented")
+            || message.contains("does not support")
+        val mentionsManagedWorktree = message.contains("git/createmanagedworktree")
+            || message.contains("create managed worktree")
+            || message.contains("managed worktree")
+        if (rpcError.code != -32600 && rpcError.code != -32602 && rpcError.code != -32000) {
+            return mentionsUnsupportedMethod && mentionsManagedWorktree
+        }
+        return mentionsUnsupportedMethod && mentionsManagedWorktree
+    }
+
+    private fun markManagedWorktreeUnsupportedForCurrentBridge() {
+        supportsManagedWorktreeCreationCapability = false
+        backingSupportsManagedWorktreeCreation.value = false
+        if (hasPresentedManagedWorktreeBridgeUpdatePrompt) {
+            return
+        }
+        hasPresentedManagedWorktreeBridgeUpdatePrompt = true
+        backingBridgeUpdatePrompt.value = managedWorktreeBridgeUpdatePrompt()
+    }
+
     private fun serviceTierBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
             title = "Update Remodex on your Mac to use Speed controls",
@@ -3017,6 +3104,14 @@ class BridgeThreadSyncService(
         return RemodexBridgeUpdatePrompt(
             title = "Update Remodex on your Mac to use /fork",
             message = "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+            command = remodexBridgeUpdateCommand,
+        )
+    }
+
+    private fun managedWorktreeBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
+        return RemodexBridgeUpdatePrompt(
+            title = "Update Remodex on your Mac to use worktree chats",
+            message = "This Mac bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
             command = remodexBridgeUpdateCommand,
         )
     }

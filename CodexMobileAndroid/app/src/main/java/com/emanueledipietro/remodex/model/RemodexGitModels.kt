@@ -58,9 +58,18 @@ data class RemodexGitWorktreeResult(
     val alreadyExisted: Boolean,
 )
 
+data class RemodexGitManagedWorktreeResult(
+    val worktreePath: String,
+    val alreadyExisted: Boolean,
+    val baseBranch: String,
+    val headMode: String,
+    val transferredChanges: Boolean,
+)
+
 enum class RemodexGitWorktreeChangeTransferMode {
     MOVE,
     COPY,
+    NONE,
 }
 
 data class RemodexGitRemoteUrl(

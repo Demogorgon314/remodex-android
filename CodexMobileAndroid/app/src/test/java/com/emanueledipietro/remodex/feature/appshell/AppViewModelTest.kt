@@ -1988,6 +1988,96 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `create worktree thread creates a managed worktree and selects the created thread`() = runTest {
+        val existingThread = threadSummary(id = "thread-1", title = "Existing thread", projectPath = "/tmp/remodex")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(existingThread),
+                selectedThreadId = existingThread.id,
+                selectedThreadSnapshot = existingThread,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        var createdThreadId: String? = null
+
+        viewModel.createWorktreeThread("/tmp/remodex") { createdThreadId = it }
+        advanceUntilIdle()
+
+        assertEquals(listOf("/tmp/remodex" to null), repository.createWorktreeThreadRequests)
+        assertEquals("thread-created", createdThreadId)
+        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
+        assertEquals(
+            "/tmp/remodex/.codex/worktrees/managed",
+            viewModel.uiState.value.selectedThread?.projectPath,
+        )
+    }
+
+    @Test
+    fun `create worktree thread shows a failure banner when managed worktree creation fails`() = runTest {
+        val existingThread = threadSummary(id = "thread-1", title = "Existing thread", projectPath = "/tmp/remodex")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(existingThread),
+                selectedThreadId = existingThread.id,
+                selectedThreadSnapshot = existingThread,
+            )
+            createWorktreeThreadError = IllegalStateException("Base branch is required.")
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.createWorktreeThread("/tmp/remodex")
+        advanceUntilIdle()
+
+        assertEquals("Base branch is required.", viewModel.uiState.value.transientBanner)
+        assertEquals("thread-1", viewModel.uiState.value.selectedThread?.id)
+    }
+
+    @Test
+    fun `create worktree thread short circuits when bridge lacks managed worktree support`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                supportsManagedWorktreeCreation = false,
+                bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
+                    title = "Update Remodex on your Mac to use worktree chats",
+                    message = "This Mac bridge does not support managed worktree chat creation yet.",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.createWorktreeThread("/tmp/remodex")
+        advanceUntilIdle()
+
+        assertTrue(repository.createWorktreeThreadRequests.isEmpty())
+        assertEquals(
+            "This Mac bridge does not support managed worktree chat creation yet.",
+            viewModel.uiState.value.transientBanner,
+        )
+    }
+
+    @Test
     fun `send clears composer immediately and restores full state on failure`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -3639,6 +3729,7 @@ class AppViewModelTest {
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
         val codeReviewRequests = mutableListOf<Pair<String, RemodexCodeReviewRequest>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
+        val createWorktreeThreadRequests = mutableListOf<Pair<String, String?>>()
         val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitWorktreeRequests = mutableListOf<GitWorktreeRequest>()
@@ -3674,6 +3765,7 @@ class AppViewModelTest {
         var pairWithQrPayloadDelayMs = 0L
         var createThreadDelayMs = 0L
         var createThreadError: Throwable? = null
+        var createWorktreeThreadError: Throwable? = null
         var sendPromptError: Throwable? = null
         var sendQueuedDraftError: Throwable? = null
         var compactThreadError: Throwable? = null
@@ -3812,6 +3904,18 @@ class AppViewModelTest {
                 } else {
                     snapshot.value.selectedThreadSnapshot
                 },
+            )
+        }
+
+        override suspend fun createWorktreeThread(
+            preferredProjectPath: String,
+            inheritRuntimeFromThreadId: String?,
+        ) {
+            createWorktreeThreadRequests += preferredProjectPath to inheritRuntimeFromThreadId
+            createWorktreeThreadError?.let { throw it }
+            createThread(
+                preferredProjectPath = "$preferredProjectPath/.codex/worktrees/managed",
+                inheritRuntimeFromThreadId = inheritRuntimeFromThreadId,
             )
         }
 

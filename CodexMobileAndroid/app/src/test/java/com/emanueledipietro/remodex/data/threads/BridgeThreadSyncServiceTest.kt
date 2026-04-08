@@ -38,6 +38,7 @@ import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
@@ -4687,6 +4688,77 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `create managed worktree uses the provided project path and returns detached metadata`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-managed-worktree-create",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "git/createManagedWorktree" to { request ->
+                    assertEquals(
+                        "/tmp/project-managed-worktree",
+                        request.params?.jsonObjectOrNull?.firstString("cwd"),
+                    )
+                    assertEquals(
+                        "none",
+                        request.params?.jsonObjectOrNull?.firstString("changeTransfer"),
+                    )
+                    buildJsonObject {
+                        put(
+                            "worktreePath",
+                            JsonPrimitive("/tmp/project-managed-worktree/.codex/worktrees/managed"),
+                        )
+                        put("alreadyExisted", JsonPrimitive(false))
+                        put("baseBranch", JsonPrimitive("main"))
+                        put("headMode", JsonPrimitive("detached"))
+                        put("transferredChanges", JsonPrimitive(false))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            val result = service.createManagedWorktree(
+                projectPath = "/tmp/project-managed-worktree",
+                changeTransfer = RemodexGitWorktreeChangeTransferMode.NONE,
+            )
+
+            assertEquals(
+                "/tmp/project-managed-worktree/.codex/worktrees/managed",
+                result.worktreePath,
+            )
+            assertEquals("main", result.baseBranch)
+            assertEquals("detached", result.headMode)
+            assertFalse(result.transferredChanges)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `fuzzy file search falls back to remembered project path when thread snapshot path is blank`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -5282,6 +5354,64 @@ class BridgeThreadSyncServiceTest {
             assertEquals(setOf("threadId", "persistExtendedHistory", "approvalPolicy"), capturedForkParamKeys.last())
             assertTrue(service.supportsThreadFork.value)
             assertNull(service.bridgeUpdatePrompt.value)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `create managed worktree unsupported emits upgrade prompt and disables capability`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-managed-worktree-unsupported",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "git/createManagedWorktree" to {
+                    throw RpcError(code = -32000, message = "Unknown git method: git/createManagedWorktree")
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            runCatching {
+                service.createManagedWorktree(projectPath = "/tmp/project-managed-worktree")
+            }.onSuccess {
+                fail("Expected git/createManagedWorktree to fail")
+            }
+
+            assertFalse(service.supportsManagedWorktreeCreation.value)
+            assertEquals(
+                "Update Remodex on your Mac to use worktree chats",
+                service.bridgeUpdatePrompt.value?.title,
+            )
+            assertEquals(
+                "This Mac bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
+                service.bridgeUpdatePrompt.value?.message,
+            )
+            assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

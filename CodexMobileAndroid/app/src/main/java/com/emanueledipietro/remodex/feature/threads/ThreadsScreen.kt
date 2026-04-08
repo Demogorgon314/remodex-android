@@ -110,6 +110,7 @@ fun ThreadsScreen(
     onRefreshThreads: () -> Unit,
     onRetryConnection: () -> Unit,
     onCreateThread: (String?) -> Unit,
+    onCreateWorktreeThread: (String) -> Unit,
     onSetProjectGroupCollapsed: (String, Boolean) -> Unit,
     onRenameThread: (String, String) -> Unit,
     onArchiveThread: (String) -> Unit,
@@ -329,6 +330,7 @@ fun ThreadsScreen(
             projectGroups = newChatProjectGroups,
             canCreateThread = uiState.canCreateThread,
             isCreatingThread = uiState.isCreatingThread,
+            supportsManagedWorktreeCreation = uiState.supportsManagedWorktreeCreation,
             onDismiss = { isNewChatSheetPresented = false },
             onCreateThread = { projectPath ->
                 if (!uiState.canCreateThread || uiState.isCreatingThread) {
@@ -336,6 +338,13 @@ fun ThreadsScreen(
                 }
                 isNewChatSheetPresented = false
                 onCreateThread(projectPath)
+            },
+            onCreateWorktreeThread = { projectPath ->
+                if (!uiState.canCreateThread || uiState.isCreatingThread) {
+                    return@SidebarNewChatSheet
+                }
+                isNewChatSheetPresented = false
+                onCreateWorktreeThread(projectPath)
             },
         )
     }
@@ -478,8 +487,10 @@ private fun SidebarNewChatSheet(
     projectGroups: List<SidebarThreadGroup>,
     canCreateThread: Boolean,
     isCreatingThread: Boolean,
+    supportsManagedWorktreeCreation: Boolean,
     onDismiss: () -> Unit,
     onCreateThread: (String?) -> Unit,
+    onCreateWorktreeThread: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
 
@@ -595,6 +606,41 @@ private fun SidebarNewChatSheet(
                                     }
                                 }
                             }
+
+                            if (supportsManagedWorktreeCreation) {
+                                item {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        Text(
+                                            text = "Worktree",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = chrome.titleText,
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(26.dp),
+                                            color = chrome.panelSurface,
+                                        ) {
+                                            Column {
+                                                projectGroups.forEachIndexed { index, group ->
+                                                    SidebarNewChatWorktreeProjectRow(
+                                                        label = group.label,
+                                                        enabled = canCreateThread && !isCreatingThread,
+                                                        onClick = { group.projectPath?.let(onCreateWorktreeThread) },
+                                                    )
+                                                    if (index < projectGroups.lastIndex) {
+                                                        HorizontalDivider(
+                                                            color = chrome.subtleBorder,
+                                                            modifier = Modifier.padding(horizontal = 18.dp),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         item {
@@ -606,7 +652,7 @@ private fun SidebarNewChatSheet(
 
                         item {
                             Text(
-                                text = "Chats started in a project stay scoped to that working directory. If you pick Cloud, the chat is global.",
+                                text = "Chats started in a project stay scoped to that working directory. Worktree chats start in a managed detached worktree. If you pick Cloud, the chat is global.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = chrome.secondaryText,
                             )
@@ -648,6 +694,49 @@ private fun SidebarNewChatProjectRow(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+@Composable
+private fun SidebarNewChatWorktreeProjectRow(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.4f)
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SidebarSymbolIcon(
+            symbolName = "arrow.triangle.branch",
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = "Start a new chat in a managed detached worktree from the repo default branch.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = chrome.secondaryText,
+            )
+        }
     }
 }
 

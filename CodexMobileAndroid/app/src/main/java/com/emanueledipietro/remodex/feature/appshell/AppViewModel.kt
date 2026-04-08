@@ -155,6 +155,7 @@ data class AppUiState(
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
+    val supportsManagedWorktreeCreation: Boolean = true,
     val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val isCreatingThread: Boolean = false,
     val isCreatingGitWorktree: Boolean = false,
@@ -605,6 +606,7 @@ class AppViewModel(
                 bridgeProfiles = snapshot.bridgeProfiles,
                 bridgeUpdatePrompt = snapshot.bridgeUpdatePrompt,
                 supportsThreadFork = snapshot.supportsThreadFork,
+                supportsManagedWorktreeCreation = snapshot.supportsManagedWorktreeCreation,
                 pendingApprovalRequest = selectedThread?.let { thread ->
                     snapshot.pendingApprovalRequest?.takeIf { request ->
                         request.threadId.isNullOrBlank() || request.threadId == thread.id
@@ -960,13 +962,50 @@ class AppViewModel(
         if (isCreatingThreadState.value || !uiState.value.canCreateThread) {
             return
         }
+        launchThreadCreation(
+            onCreated = onCreated,
+            failureMessage = "Could not create chat.",
+        ) {
+            repository.createThread(preferredProjectPath)
+        }
+    }
+
+    fun createWorktreeThread(
+        preferredProjectPath: String,
+        onCreated: ((String?) -> Unit)? = null,
+    ) {
+        val normalizedProjectPath = preferredProjectPath.trim().takeIf(String::isNotEmpty) ?: return
+        if (isCreatingThreadState.value || !uiState.value.canCreateThread) {
+            return
+        }
+        if (!uiState.value.supportsManagedWorktreeCreation) {
+            presentTransientBanner(
+                uiState.value.bridgeUpdatePrompt?.message
+                    ?: "Update Remodex on your Mac to use worktree chats.",
+            )
+            onCreated?.invoke(null)
+            return
+        }
+        launchThreadCreation(
+            onCreated = onCreated,
+            failureMessage = "Could not create worktree chat.",
+        ) {
+            repository.createWorktreeThread(normalizedProjectPath)
+        }
+    }
+
+    private fun launchThreadCreation(
+        onCreated: ((String?) -> Unit)? = null,
+        failureMessage: String,
+        create: suspend () -> Unit,
+    ) {
         viewModelScope.launch {
             isCreatingThreadState.value = true
             try {
                 runCatching {
                     val previousThreadIds = repository.session.value.threads
                         .mapTo(mutableSetOf(), RemodexThreadSummary::id)
-                    repository.createThread(preferredProjectPath)
+                    create()
                     val createdThreadId = resolveCreatedThreadId(previousThreadIds)
                     if (createdThreadId != null && repository.session.value.selectedThread?.id != createdThreadId) {
                         repository.selectThread(createdThreadId)
@@ -981,6 +1020,7 @@ class AppViewModel(
                     if (error is CancellationException) {
                         throw error
                     }
+                    presentTransientBanner(error.message ?: failureMessage)
                     onCreated?.invoke(null)
                 }
             } finally {
