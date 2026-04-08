@@ -301,6 +301,7 @@ async function gitBranches(cwd) {
     localCheckoutPath,
     current,
     default: defaultBranch,
+    defaultBranch,
   };
 }
 
@@ -402,7 +403,7 @@ async function gitCreateWorktree(cwd, params) {
   const repoRoot = await resolveRepoRoot(cwd);
   const status = await gitStatus(cwd);
   const projectRelativePath = resolveProjectRelativePath(cwd, repoRoot);
-  const baseBranch = resolveBaseBranchName(params.baseBranch, branchResult.defaultBranch);
+  const baseBranch = resolveBaseBranchName(params.baseBranch, branchResult.defaultBranch || branchResult.default);
   const changeTransfer = resolveWorktreeChangeTransfer(params.changeTransfer);
   if (!baseBranch) {
     throw gitError("missing_base_branch", "Base branch is required.");
@@ -511,7 +512,7 @@ async function gitCreateManagedWorktree(cwd, params) {
   const repoRoot = await resolveRepoRoot(cwd);
   const status = await gitStatus(cwd);
   const projectRelativePath = resolveProjectRelativePath(cwd, repoRoot);
-  const baseBranch = resolveBaseBranchName(params.baseBranch, branchResult.defaultBranch);
+  const baseBranch = resolveBaseBranchName(params.baseBranch, branchResult.defaultBranch || branchResult.default);
   const changeTransfer = resolveWorktreeChangeTransfer(params.changeTransfer);
   if (!baseBranch) {
     throw gitError("missing_base_branch", "Base branch is required.");

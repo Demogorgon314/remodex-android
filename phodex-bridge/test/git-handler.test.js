@@ -298,6 +298,7 @@ test("gitBranches preserves the repo default branch even when it is not checked 
     const result = await __test.gitBranches(repoDir);
 
     assert.equal(result.default, "main");
+    assert.equal(result.defaultBranch, "main");
     assert.ok(!result.branches.includes("main"));
     assert.ok(result.branches.includes("remodex/topic"));
   } finally {
@@ -399,6 +400,34 @@ test("gitCreateManagedWorktree creates a detached managed worktree under CODEX_H
     assert.ok(result.worktreePath.startsWith(managedWorktreesRoot));
     assert.equal(path.basename(result.worktreePath), "phodex-bridge");
     assert.equal(git(result.worktreePath, "rev-parse", "--abbrev-ref", "HEAD"), "HEAD");
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("gitCreateManagedWorktree falls back to the detected default branch when baseBranch is omitted", async () => {
+  const repoDir = makeTempRepo();
+  const projectDir = path.join(repoDir, "phodex-bridge");
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-codex-home-"));
+  const previousCodexHome = process.env.CODEX_HOME;
+
+  process.env.CODEX_HOME = codexHome;
+
+  try {
+    git(repoDir, "branch", "-m", "android");
+
+    const result = await __test.gitCreateManagedWorktree(projectDir, {});
+
+    assert.equal(result.alreadyExisted, false);
+    assert.equal(result.baseBranch, "android");
+    assert.equal(result.headMode, "detached");
+    assert.equal(git(result.worktreePath, "rev-parse", "--short", "HEAD"), git(repoDir, "rev-parse", "--short", "android"));
   } finally {
     if (previousCodexHome === undefined) {
       delete process.env.CODEX_HOME;
