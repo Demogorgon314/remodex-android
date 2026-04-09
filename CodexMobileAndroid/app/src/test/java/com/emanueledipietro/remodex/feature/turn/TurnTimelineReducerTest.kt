@@ -1300,6 +1300,68 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project keeps distinct stable assistant items with the same text when neither is a review summary`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-item-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "Same text",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-item-2",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "Same text",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-2",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-item-1", "assistant-item-2"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project removes duplicate review summary echo when review turn emits the same stable assistant text twice`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "review-summary-assistant",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "No discrete regressions found.",
+                    turnId = "turn-review-1",
+                    itemId = "turn-review-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "review-rollout-assistant",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "No discrete regressions found.",
+                    turnId = "turn-review-1",
+                    itemId = "review_rollout_assistant",
+                    orderIndex = 6,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("review-summary-assistant"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `project removes superseded file change rows once a finalized snapshot arrives`() {
         val projected = TurnTimelineReducer.project(
             listOf(

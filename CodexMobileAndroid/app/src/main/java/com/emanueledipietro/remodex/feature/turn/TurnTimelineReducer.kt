@@ -1043,6 +1043,22 @@ object TurnTimelineReducer {
                 val hasStableIdentity = dedupeScope != null
                 val turnTextKey = "$turnId|$normalizedText"
                 val previous = seenTurnText[turnTextKey]
+                if (previous != null && shouldDeduplicateReviewSummaryEcho(previous.item, item)) {
+                    seenKeys += key
+                    val preferred = preferredAssistantDuplicate(previous.item, item)
+                    val retained = if (preferred.id == item.id) {
+                        result[previous.resultIndex] = item
+                        item
+                    } else {
+                        previous.item
+                    }
+                    seenTurnText[turnTextKey] = AssistantTurnTextObservation(
+                        item = retained,
+                        resultIndex = previous.resultIndex,
+                        hasStableIdentity = normalizedIdentifier(retained.itemId) != null,
+                    )
+                    return@forEach
+                }
                 if (
                     previous != null &&
                     kotlin.math.abs(item.orderIndex - previous.orderIndex) <= 2L &&
@@ -1053,7 +1069,8 @@ object TurnTimelineReducer {
 
                 seenKeys += key
                 seenTurnText[turnTextKey] = AssistantTurnTextObservation(
-                    orderIndex = item.orderIndex,
+                    item = item,
+                    resultIndex = result.size,
                     hasStableIdentity = hasStableIdentity,
                 )
                 result += item
@@ -1069,6 +1086,47 @@ object TurnTimelineReducer {
         }
 
         return result
+    }
+
+    private fun shouldDeduplicateReviewSummaryEcho(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): Boolean {
+        return isReviewSummaryAssistantItem(previous) || isReviewSummaryAssistantItem(incoming)
+    }
+
+    private fun preferredAssistantDuplicate(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): RemodexConversationItem {
+        val previousIsReviewSummary = isReviewSummaryAssistantItem(previous)
+        val incomingIsReviewSummary = isReviewSummaryAssistantItem(incoming)
+        if (previousIsReviewSummary != incomingIsReviewSummary) {
+            return if (incomingIsReviewSummary) incoming else previous
+        }
+        if (previous.isStreaming != incoming.isStreaming) {
+            return if (incoming.isStreaming) previous else incoming
+        }
+        if (previous.orderIndex != incoming.orderIndex) {
+            return if (incoming.orderIndex >= previous.orderIndex) incoming else previous
+        }
+        return if (incoming.text.length >= previous.text.length) incoming else previous
+    }
+
+    private fun isReviewSummaryAssistantItem(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (
+            item.speaker != ConversationSpeaker.ASSISTANT ||
+            item.kind != ConversationItemKind.CHAT
+        ) {
+            return false
+        }
+        // Review turns emit both ExitedReviewMode and a final assistant message.
+        // The structured review summary uses the turn id as its item id.
+        val turnId = normalizedIdentifier(item.turnId) ?: return false
+        val itemId = normalizedIdentifier(item.itemId) ?: return false
+        return turnId == itemId
     }
 
     private fun matchesStreamingMessageTarget(
@@ -1435,9 +1493,13 @@ object TurnTimelineReducer {
     }
 
     private data class AssistantTurnTextObservation(
-        val orderIndex: Long,
+        val item: RemodexConversationItem,
+        val resultIndex: Int,
         val hasStableIdentity: Boolean,
-    )
+    ) {
+        val orderIndex: Long
+            get() = item.orderIndex
+    }
 
     private data class FileChangeDedupSignature(
         val turnId: String?,
