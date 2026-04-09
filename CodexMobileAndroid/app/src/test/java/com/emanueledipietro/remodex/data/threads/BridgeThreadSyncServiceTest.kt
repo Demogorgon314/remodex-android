@@ -177,6 +177,49 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `assistant streaming text buffer preserves newer local text when external reconciliation is shorter`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer-shorter-reconcile",
+            "assistant-buffer-shorter-reconcile",
+            "",
+            "Recovered partial prefix plus newer local tail",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantStreamingTextDelta",
+            "thread-buffer-shorter-reconcile",
+            "assistant-buffer-shorter-reconcile",
+            "Recovered partial prefix",
+            " and final suffix",
+        )
+        val reconciled = invokePrivateMethod(
+            service,
+            "snapshotAssistantStreamingText",
+            "thread-buffer-shorter-reconcile",
+            "assistant-buffer-shorter-reconcile",
+            "Recovered partial prefix",
+        ) as String
+
+        assertEquals(
+            "Recovered partial prefix plus newer local tail and final suffix",
+            reconciled,
+        )
+    }
+
+    @Test
     fun `history file change summary separates metadata only rows from displayable rows`() {
         val displayableFileChange = RemodexConversationItem(
             id = "file-change-displayable",
@@ -1768,6 +1811,7 @@ class BridgeThreadSyncServiceTest {
                 put("text", JsonPrimitive("Recovered partial prefix"))
             },
             true,
+            "turn-completion-no-shrink",
         )
 
         val thread = service.threads.value.first { it.id == "thread-completion-no-shrink" }
@@ -1922,6 +1966,7 @@ class BridgeThreadSyncServiceTest {
             },
             "reasoning",
             true,
+            "turn-reasoning-completion-no-shrink",
         )
 
         val thread = service.threads.value.first { it.id == "thread-reasoning-completion-no-shrink" }
@@ -3874,6 +3919,171 @@ class BridgeThreadSyncServiceTest {
             assertTrue(thread.isRunning)
             assertTrue(items.any { it.text == "Local reconnect note" })
             assertTrue(items.any { it.text == "Recovered assistant output after explicit resume." })
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `resume thread shorter history does not rewind local assistant buffer before completion`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-running-short-history-resume",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/resume" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-running-short-history-resume"))
+                                put("title", JsonPrimitive("Short history resume"))
+                                put("cwd", JsonPrimitive("/tmp/project-running-short-history-resume"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-running-short-history-resume"))
+                                                put("status", JsonPrimitive("running"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-running-short-history-resume"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Recovered partial prefix"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        val threadId = "thread-running-short-history-resume"
+        val turnId = "turn-running-short-history-resume"
+        val itemId = "assistant-item-running-short-history-resume"
+        val messageId = "assistant-$itemId"
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = threadId,
+                    title = "Short history resume",
+                    preview = "Recovered partial prefix plus newer local tail",
+                    projectPath = "/tmp/project-running-short-history-resume",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = messageId,
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "",
+                                turnId = turnId,
+                                itemId = itemId,
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            threadId,
+            turnId,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            invokePrivateMethod(
+                service,
+                "appendAssistantDelta",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                    put("turnId", JsonPrimitive(turnId))
+                    put("delta", JsonPrimitive("Recovered partial prefix plus newer local tail"))
+                    put(
+                        "item",
+                        buildJsonObject {
+                            put("id", JsonPrimitive(itemId))
+                            put("type", JsonPrimitive("assistantMessage"))
+                        },
+                    )
+                },
+            )
+
+            service.resumeThread(threadId)
+            advanceUntilIdle()
+
+            invokePrivateMethod(
+                service,
+                "appendAssistantDelta",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                    put("turnId", JsonPrimitive(turnId))
+                    put("delta", JsonPrimitive(" and final suffix"))
+                    put(
+                        "item",
+                        buildJsonObject {
+                            put("id", JsonPrimitive(itemId))
+                            put("type", JsonPrimitive("assistantMessage"))
+                        },
+                    )
+                },
+            )
+            invokePrivateMethod(
+                service,
+                "completeStreamingItemsForThread",
+                threadId,
+                turnId,
+            )
+
+            val thread = service.threads.value.first { it.id == threadId }
+            val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+                .single { item -> item.id == messageId }
+
+            assertFalse(assistant.isStreaming)
+            assertEquals(
+                "Recovered partial prefix plus newer local tail and final suffix",
+                assistant.text,
+            )
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
@@ -6376,6 +6586,7 @@ class BridgeThreadSyncServiceTest {
             },
             "plan",
             true,
+            "turn-plan-complete",
         )
 
         val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
@@ -8958,6 +9169,183 @@ class BridgeThreadSyncServiceTest {
         assertEquals("Final summary after tools", assistantItems[1].text)
         assertEquals(toolItem.id, projected[1].id)
         assertEquals("Final summary after tools", projected.last().text)
+    }
+
+    @Test
+    fun `late completed items reuse the completed turn so hydrate does not duplicate them`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-late-completed-hydrate-dedupe",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val threadId = "thread-late-completed-hydrate-dedupe"
+        val turnId = "turn-late-completed-hydrate-dedupe"
+        val toolText = "Read threads/BridgeThreadSyncService.kt"
+        val assistantText = "I already have enough context."
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive(threadId))
+                                put("title", JsonPrimitive("Late completed hydrate dedupe"))
+                                put("cwd", JsonPrimitive("/tmp/project-late-completed-hydrate-dedupe"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive(turnId))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("type", JsonPrimitive("toolCall"))
+                                                                put("message", JsonPrimitive(toolText))
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive(assistantText))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = threadId,
+                        title = "Late completed hydrate dedupe",
+                        preview = assistantText,
+                        projectPath = "/tmp/project-late-completed-hydrate-dedupe",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setLatestTurnTerminalState",
+                threadId,
+                RemodexTurnTerminalState.COMPLETED,
+                turnId,
+            )
+            invokePrivateMethod(
+                service,
+                "clearThreadRunningState",
+                threadId,
+            )
+
+            invokePrivateMethod(
+                service,
+                "handleItemLifecycle",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                    put("id", JsonPrimitive(turnId))
+                    put(
+                        "event",
+                        buildJsonObject {
+                            put("type", JsonPrimitive("item_completed"))
+                        },
+                    )
+                    put(
+                        "item",
+                        buildJsonObject {
+                            put("type", JsonPrimitive("toolCall"))
+                            put("message", JsonPrimitive(toolText))
+                        },
+                    )
+                },
+                true,
+            )
+            invokePrivateMethod(
+                service,
+                "handleItemLifecycle",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                    put("message", JsonPrimitive(assistantText))
+                },
+                true,
+            )
+
+            val localProjected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == threadId }.timelineMutations,
+            )
+            val localToolRows = localProjected.filter { item ->
+                item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind == ConversationItemKind.TOOL_ACTIVITY
+            }
+            val localAssistantRows = localProjected.filter { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT
+            }
+
+            assertEquals(1, localToolRows.size)
+            assertEquals(1, localAssistantRows.size)
+            assertEquals(turnId, localToolRows.single().turnId)
+            assertEquals(turnId, localAssistantRows.single().turnId)
+
+            service.hydrateThread(threadId)
+            advanceUntilIdle()
+
+            val hydratedProjected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == threadId }.timelineMutations,
+            )
+            val hydratedToolRows = hydratedProjected.filter { item ->
+                item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind == ConversationItemKind.TOOL_ACTIVITY
+            }
+            val hydratedAssistantRows = hydratedProjected.filter { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT
+            }
+
+            assertEquals(listOf(toolText), hydratedToolRows.map(RemodexConversationItem::text))
+            assertEquals(listOf(assistantText), hydratedAssistantRows.map(RemodexConversationItem::text))
+            assertEquals(listOf(turnId), hydratedToolRows.map(RemodexConversationItem::turnId))
+            assertEquals(listOf(turnId), hydratedAssistantRows.map(RemodexConversationItem::turnId))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
     }
 
     @Test

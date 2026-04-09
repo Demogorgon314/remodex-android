@@ -4511,20 +4511,21 @@ class BridgeThreadSyncService(
     ) {
         val eventObject = envelopeEventObject(paramsObject)
         val itemObject = extractIncomingItemObject(paramsObject, eventObject)
-        val turnId = extractAssistantTurnId(paramsObject, eventObject)
+        val extractedTurnId = extractAssistantTurnId(paramsObject, eventObject)
             ?: extractTurnId(paramsObject)
             ?: extractTurnIdForTurnLifecycleEvent(paramsObject)
-        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = extractedTurnId)
         if (itemObject == null) {
             if (threadId != null && reviewDebugThreadIds.contains(threadId)) {
                 emitReviewDebugLog(
-                    "stage=itemLifecycleSkip threadId=$threadId turnId=${turnId.orEmpty()} reason=noItemObject completed=$isCompleted payload=${sanitizeReviewDebugJson((eventObject ?: paramsObject).toString())}",
+                    "stage=itemLifecycleSkip threadId=$threadId turnId=${extractedTurnId.orEmpty()} reason=noItemObject completed=$isCompleted payload=${sanitizeReviewDebugJson((eventObject ?: paramsObject).toString())}",
                 )
             }
             if (isCompleted) {
                 handleCompletedAssistantMessageFallback(
                     paramsObject = paramsObject,
                     eventObject = eventObject,
+                    extractedTurnId = extractedTurnId,
                 )
             }
             return
@@ -4533,7 +4534,7 @@ class BridgeThreadSyncService(
         if (itemType.isEmpty()) {
             if (threadId != null && reviewDebugThreadIds.contains(threadId)) {
                 emitReviewDebugLog(
-                    "stage=itemLifecycleSkip threadId=$threadId turnId=${turnId.orEmpty()} reason=emptyItemType completed=$isCompleted payload=${sanitizeReviewDebugJson(itemObject.toString())}",
+                    "stage=itemLifecycleSkip threadId=$threadId turnId=${extractedTurnId.orEmpty()} reason=emptyItemType completed=$isCompleted payload=${sanitizeReviewDebugJson(itemObject.toString())}",
                 )
             }
             return
@@ -4550,19 +4551,20 @@ class BridgeThreadSyncService(
         if (isAssistantHistoryItem(itemType, itemObject)) {
             if (threadId != null && reviewDebugThreadIds.contains(threadId)) {
                 emitReviewDebugLog(
-                    "stage=itemLifecycleDispatch threadId=$threadId turnId=${turnId.orEmpty()} itemType=$itemType branch=assistant completed=$isCompleted itemId=${extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject).orEmpty()}",
+                    "stage=itemLifecycleDispatch threadId=$threadId turnId=${extractedTurnId.orEmpty()} itemType=$itemType branch=assistant completed=$isCompleted itemId=${extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject).orEmpty()}",
                 )
             }
             handleAssistantLifecycle(
                 paramsObject = paramsObject,
                 itemObject = itemObject,
                 isCompleted = isCompleted,
+                extractedTurnId = extractedTurnId,
             )
             return
         }
         if (threadId != null && reviewDebugThreadIds.contains(threadId)) {
             emitReviewDebugLog(
-                "stage=itemLifecycleDispatch threadId=$threadId turnId=${turnId.orEmpty()} itemType=$itemType branch=structured completed=$isCompleted itemId=${extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject).orEmpty()}",
+                "stage=itemLifecycleDispatch threadId=$threadId turnId=${extractedTurnId.orEmpty()} itemType=$itemType branch=structured completed=$isCompleted itemId=${extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject).orEmpty()}",
             )
         }
         val handled = handleStructuredItemLifecycle(
@@ -4570,10 +4572,11 @@ class BridgeThreadSyncService(
             paramsObject = paramsObject,
             itemType = itemType,
             isCompleted = isCompleted,
+            extractedTurnId = extractedTurnId,
         )
         if (threadId != null && reviewDebugThreadIds.contains(threadId)) {
             emitReviewDebugLog(
-                "stage=itemLifecycleHandled threadId=$threadId turnId=${turnId.orEmpty()} itemType=$itemType completed=$isCompleted handled=$handled",
+                "stage=itemLifecycleHandled threadId=$threadId turnId=${extractedTurnId.orEmpty()} itemType=$itemType completed=$isCompleted handled=$handled",
             )
         }
     }
@@ -4581,6 +4584,7 @@ class BridgeThreadSyncService(
     private fun handleCompletedAssistantMessageFallback(
         paramsObject: JsonObject,
         eventObject: JsonObject?,
+        extractedTurnId: String?,
     ) {
         val text = completedAssistantFallbackTextValue(
             paramsObject = paramsObject,
@@ -4589,12 +4593,15 @@ class BridgeThreadSyncService(
         if (text.isBlank()) {
             return
         }
-        val turnId = extractAssistantTurnId(paramsObject, eventObject)
-        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
-        if (shouldSuppressAssistantCompletion(threadId = threadId, turnId = turnId, itemId = null, text = text)) {
+        val threadId = resolveThreadId(paramsObject, turnIdHint = extractedTurnId) ?: return
+        val resolvedTurnId = resolveLifecycleTurnId(
+            threadId = threadId,
+            extractedTurnId = extractedTurnId,
+            isCompleted = true,
+        )
+        if (shouldSuppressAssistantCompletion(threadId = threadId, turnId = resolvedTurnId, itemId = null, text = text)) {
             return
         }
-        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
         if (hasCompletedReviewSummaryTurn(turnId = resolvedTurnId)) {
             if (threadId in reviewDebugThreadIds) {
                 emitReviewDebugLog(
@@ -4613,11 +4620,26 @@ class BridgeThreadSyncService(
             threadIdByTurnId[resolvedTurnId] = threadId
         }
         val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject)
-        val preferredMessageId = streamingMessageId(
-            itemId = itemId,
-            turnId = resolvedTurnId,
-            fallbackPrefix = "assistant",
-        )
+        val preferredMessageId = if (
+            resolvedTurnId != null &&
+            shouldAppendLateAssistantCompletionAsNewSegment(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+            )
+        ) {
+            nextAssistantSegmentMessageId(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+            )
+        } else {
+            streamingMessageId(
+                itemId = itemId,
+                turnId = resolvedTurnId,
+                fallbackPrefix = "assistant",
+            )
+        }
         val existingItem = reusableAssistantCompletionItem(
             threadId = threadId,
             turnId = resolvedTurnId,
@@ -4669,11 +4691,15 @@ class BridgeThreadSyncService(
         paramsObject: JsonObject,
         itemObject: JsonObject,
         isCompleted: Boolean,
+        extractedTurnId: String?,
     ) {
         val eventObject = envelopeEventObject(paramsObject)
-        val turnId = extractAssistantTurnId(paramsObject, eventObject)
-        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
-        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        val threadId = resolveThreadId(paramsObject, turnIdHint = extractedTurnId) ?: return
+        val resolvedTurnId = resolveLifecycleTurnId(
+            threadId = threadId,
+            extractedTurnId = extractedTurnId,
+            isCompleted = isCompleted,
+        )
         val normalizedItemType = normalizeItemType(itemObject.firstString("type").orEmpty())
         val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
         val debugBody = if (isCompleted) {
@@ -4928,14 +4954,18 @@ class BridgeThreadSyncService(
         paramsObject: JsonObject,
         itemType: String,
         isCompleted: Boolean,
+        extractedTurnId: String?,
     ): Boolean {
         if (!supportsStructuredLifecycleItem(itemType)) {
             return false
         }
         val eventObject = envelopeEventObject(paramsObject)
-        val turnId = extractTurnId(paramsObject)
-        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return true
-        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        val threadId = resolveThreadId(paramsObject, turnIdHint = extractedTurnId) ?: return true
+        val resolvedTurnId = resolveLifecycleTurnId(
+            threadId = threadId,
+            extractedTurnId = extractedTurnId,
+            isCompleted = isCompleted,
+        )
         val debugEnabled = reviewDebugThreadIds.contains(threadId)
         if (itemType == "enteredreviewmode" || itemType == "exitedreviewmode") {
             logReviewDebug(
@@ -5131,6 +5161,19 @@ class BridgeThreadSyncService(
             isRunning = !isCompleted || threadHasKnownRunningState(threadId),
         )
         return true
+    }
+
+    private fun resolveLifecycleTurnId(
+        threadId: String,
+        extractedTurnId: String?,
+        isCompleted: Boolean,
+    ): String? {
+        extractedTurnId?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        activeTurnIdByThread[threadId]?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        if (!isCompleted || latestTurnTerminalStateByThread[threadId] != RemodexTurnTerminalState.COMPLETED) {
+            return null
+        }
+        return latestTerminalTurnIdByThread[threadId]?.trim()?.takeIf(String::isNotEmpty)
     }
 
     private fun upsertPlanMessage(
@@ -5739,11 +5782,15 @@ class BridgeThreadSyncService(
     ): Boolean {
         val eventObject = envelopeEventObject(paramsObject)
         val itemObject = extractIncomingItemObject(paramsObject, eventObject) ?: (eventObject ?: paramsObject)
+        val extractedTurnId = extractAssistantTurnId(paramsObject, eventObject)
+            ?: extractTurnId(paramsObject)
+            ?: extractTurnIdForTurnLifecycleEvent(paramsObject)
         return handleStructuredItemLifecycle(
             itemObject = itemObject,
             paramsObject = paramsObject,
             itemType = itemType,
             isCompleted = isCompleted,
+            extractedTurnId = extractedTurnId,
         )
     }
 
@@ -6060,21 +6107,37 @@ class BridgeThreadSyncService(
             messageId = messageId,
         )
         val buffer = assistantStreamingTextBuffers[key]
-            ?.takeIf { existingBuffer -> existingBuffer.syncedText == existingText }
             ?: AssistantStreamingTextBuffer(initialText = existingText).also { nextBuffer ->
                 assistantStreamingTextBuffers[key] = nextBuffer
             }
         if (buffer.syncedText != existingText) {
-            buffer.handle.syncTo(existingText)
-            buffer.syncedText = existingText
-            buffer.version += 1L
-            buffer.appendedDelta = null
-            publishAssistantStreamingTextState(
-                messageId = messageId,
-                state = buffer.asState(),
+            val currentVisibleText = buffer.handle.snapshot()
+            val reconciledText = reconcileAssistantStreamingBufferText(
+                currentVisibleText = currentVisibleText,
+                incomingText = existingText,
             )
+            buffer.syncedText = existingText
+            if (reconciledText != currentVisibleText) {
+                buffer.handle.syncTo(reconciledText)
+                buffer.version += 1L
+                buffer.appendedDelta = null
+                publishAssistantStreamingTextState(
+                    messageId = messageId,
+                    state = buffer.asState(),
+                )
+            }
         }
         return buffer
+    }
+
+    private fun reconcileAssistantStreamingBufferText(
+        currentVisibleText: String,
+        incomingText: String,
+    ): String {
+        return ThreadHistoryReconciler.mergeStreamingSnapshotText(
+            existingText = currentVisibleText,
+            incomingText = incomingText,
+        )
     }
 
     private fun snapshotAssistantStreamingText(
@@ -6656,6 +6719,28 @@ class BridgeThreadSyncService(
         }
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId }
         return snapshot?.let(::nextOrderIndex) ?: 0L
+    }
+
+    private fun shouldAppendLateAssistantCompletionAsNewSegment(
+        threadId: String,
+        turnId: String,
+        itemId: String?,
+    ): Boolean {
+        if (!itemId.isNullOrBlank()) {
+            return false
+        }
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return false
+        val turnItems = projectedTimelineItems(snapshot).filter { candidate ->
+            candidate.turnId == turnId
+        }
+        if (turnItems.none { candidate ->
+                candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                    candidate.kind == ConversationItemKind.CHAT
+            }
+        ) {
+            return false
+        }
+        return hasTrailingStructuredActivityAwaitingAssistant(turnItems = turnItems)
     }
 
     private fun completeAssistantStreamingItemsForTurn(
