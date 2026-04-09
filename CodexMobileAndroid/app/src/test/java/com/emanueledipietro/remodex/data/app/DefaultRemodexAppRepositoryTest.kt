@@ -1870,6 +1870,45 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `persisted associated managed worktree path restores thread without timeline hint`() = runTest {
+        val worktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
+        val preferencesRepository = TestAppPreferencesRepository(
+            initialPreferences = AppPreferences(
+                associatedManagedWorktreePathsByThread = mapOf(
+                    "legacy-worktree-thread" to worktreePath,
+                ),
+            ),
+        )
+        val cacheStore = InMemoryThreadCacheStore(
+            initialThreads = listOf(
+                CachedThreadRecord(
+                    id = "legacy-worktree-thread",
+                    title = "Conversation",
+                    preview = "Worktree chat",
+                    projectPath = "/Users/wangkai/Developer/github/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1_000L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineItems = emptyList(),
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+            syncService = FakeThreadSyncService(initialThreads = emptyList()),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            worktreePath,
+            repository.session.value.threads.firstOrNull()?.projectPath,
+        )
+    }
+
+    @Test
     fun `send prompt starts a local turn immediately when the thread is idle`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-notifications")
@@ -3069,13 +3108,17 @@ class DefaultRemodexAppRepositoryTest {
         )
     }
 
-    private class TestAppPreferencesRepository : AppPreferencesRepository {
-        private val backingState = MutableStateFlow(AppPreferences())
+    private class TestAppPreferencesRepository(
+        initialPreferences: AppPreferences = AppPreferences(),
+    ) : AppPreferencesRepository {
+        private val backingState = MutableStateFlow(initialPreferences)
         val preferencesState: MutableStateFlow<AppPreferences> = backingState
 
         override val preferences: Flow<AppPreferences> = backingState
 
         override fun setActiveBridgeProfileId(profileId: String?) = Unit
+
+        override fun peekPreferences(): AppPreferences = backingState.value
 
         override suspend fun setOnboardingCompleted(completed: Boolean) {
             backingState.value = backingState.value.copy(onboardingCompleted = completed)
@@ -3112,6 +3155,23 @@ class DefaultRemodexAppRepositoryTest {
                 }
             }
             backingState.value = backingState.value.copy(deletedThreadIds = updatedDeletedThreadIds)
+        }
+
+        override suspend fun setAssociatedManagedWorktreePath(
+            threadId: String,
+            projectPath: String?,
+        ) {
+            val updatedPaths = backingState.value.associatedManagedWorktreePathsByThread.toMutableMap().apply {
+                val normalizedProjectPath = projectPath?.trim().orEmpty()
+                if (normalizedProjectPath.isEmpty()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = normalizedProjectPath
+                }
+            }
+            backingState.value = backingState.value.copy(
+                associatedManagedWorktreePathsByThread = updatedPaths,
+            )
         }
 
         override suspend fun setQueuedDrafts(

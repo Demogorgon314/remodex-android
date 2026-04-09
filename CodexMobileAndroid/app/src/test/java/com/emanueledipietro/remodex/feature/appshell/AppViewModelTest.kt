@@ -1673,6 +1673,60 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `completed context compaction queues usage refresh while one is already in progress`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            refreshUsageStatusDelayMs = 1_000L
+        }
+        val streamingThread = threadSummary(
+            id = "thread-1",
+            title = "Compact thread",
+            messages = listOf(
+                contextCompactionMessage(
+                    id = "compaction-1",
+                    threadId = "thread-1",
+                    isStreaming = true,
+                    text = "Compacting context...",
+                ),
+            ),
+        )
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(streamingThread),
+            selectedThreadId = "thread-1",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        repository.refreshUsageStatusRequests.clear()
+
+        viewModel.refreshUsageStatus()
+        runCurrent()
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                streamingThread.copy(
+                    isRunning = false,
+                    messages = listOf(
+                        contextCompactionMessage(
+                            id = "compaction-1",
+                            threadId = "thread-1",
+                            isStreaming = false,
+                            text = "Context compacted",
+                        ),
+                    ),
+                ),
+            ),
+            selectedThreadId = "thread-1",
+        )
+        runCurrent()
+
+        assertEquals(listOf("thread-1"), repository.refreshUsageStatusRequests)
+
+        advanceTimeBy(1_000L)
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1", "thread-1"), repository.refreshUsageStatusRequests)
+    }
+
+    @Test
     fun `slash code review selection matches ios behavior`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -3790,6 +3844,7 @@ class AppViewModelTest {
         var dismissBridgeUpdatePromptCalls = 0
         var onRetryConnection: (suspend TestRemodexAppRepository.() -> Unit)? = null
         var refreshDelayMs = 1_000L
+        var refreshUsageStatusDelayMs = 0L
         var hydrateDelayMs = 0L
         var activeThreadSyncDelayMs = 0L
         var sendPromptDelayMs = 0L
@@ -4166,6 +4221,9 @@ class AppViewModelTest {
 
         override suspend fun refreshUsageStatus(threadId: String?) {
             refreshUsageStatusRequests += threadId
+            if (refreshUsageStatusDelayMs > 0L) {
+                delay(refreshUsageStatusDelayMs)
+            }
         }
 
         override suspend fun fuzzyFileSearch(

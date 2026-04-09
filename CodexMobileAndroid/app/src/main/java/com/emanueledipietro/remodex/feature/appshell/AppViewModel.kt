@@ -413,6 +413,8 @@ class AppViewModel(
     private var pendingGitBranchOperation: PendingGitBranchOperation? = null
     private var pendingCheckedOutElsewhereThreadId: String? = null
     private var pendingDesktopHandoffThreadId: String? = null
+    private var pendingUsageRefreshRequested = false
+    private var pendingUsageRefreshThreadId: String? = null
     private var gitStateRefreshJob: Job? = null
     private var suppressAutoReconnectUntilManualConnect = false
     internal var autoReconnectAttemptLimitOverride: Int? = null
@@ -3384,13 +3386,25 @@ class AppViewModel(
     }
 
     private fun refreshUsageStatus(threadId: String?) {
+        val normalizedThreadId = threadId?.trim()?.takeIf(String::isNotEmpty)
         if (isRefreshingUsageState.value) {
+            pendingUsageRefreshRequested = true
+            pendingUsageRefreshThreadId = normalizedThreadId
             return
         }
         viewModelScope.launch {
             isRefreshingUsageState.value = true
             try {
-                repository.refreshUsageStatus(threadId)
+                var requestedThreadId = normalizedThreadId
+                while (true) {
+                    repository.refreshUsageStatus(requestedThreadId)
+                    if (!pendingUsageRefreshRequested) {
+                        break
+                    }
+                    pendingUsageRefreshRequested = false
+                    requestedThreadId = pendingUsageRefreshThreadId
+                    pendingUsageRefreshThreadId = null
+                }
             } finally {
                 isRefreshingUsageState.value = false
             }

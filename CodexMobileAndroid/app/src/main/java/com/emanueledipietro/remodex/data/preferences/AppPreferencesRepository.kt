@@ -14,6 +14,8 @@ interface AppPreferencesRepository {
 
     fun setActiveBridgeProfileId(profileId: String?)
 
+    fun peekPreferences(): AppPreferences = AppPreferences()
+
     suspend fun setOnboardingCompleted(completed: Boolean)
 
     suspend fun setSelectedThreadId(threadId: String?)
@@ -26,6 +28,11 @@ interface AppPreferencesRepository {
     suspend fun setThreadDeleted(
         threadId: String,
         deleted: Boolean,
+    )
+
+    suspend fun setAssociatedManagedWorktreePath(
+        threadId: String,
+        projectPath: String?,
     )
 
     suspend fun setQueuedDrafts(

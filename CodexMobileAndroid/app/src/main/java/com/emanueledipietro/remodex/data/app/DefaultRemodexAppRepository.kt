@@ -164,11 +164,13 @@ class DefaultRemodexAppRepository(
     private var activeBridgeProfileId: String? = secureConnectionCoordinator.bridgeProfiles.value.activeProfileId
     private var suppressBridgeScopedThreadsUntilNextSync = false
     private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
+    private val initialPreferences = appPreferencesRepository.peekPreferences()
     private val initialBaseThreads = run {
         threadCacheStore.setActiveProfileId(activeBridgeProfileId)
         val cachedThreads = threadCacheStore.peekThreads()
             .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
             .map(CachedThreadRecord::toBaseThreadSummary)
+            .map { thread -> thread.applyAssociatedManagedWorktreePreference(initialPreferences) }
         val cachedThreadsById = cachedThreads.associateBy(RemodexThreadSummary::id)
         val syncedThreads = threadSyncService.threads.value
             .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
@@ -196,7 +198,7 @@ class DefaultRemodexAppRepository(
     private var activeThreadSyncRefreshSuppressionCount: Int = 0
     private var lastActiveThreadSyncInputs: ActiveThreadSyncInputs? = null
     private val baseThreadsState = MutableStateFlow(initialBaseThreads)
-    private val preferencesState = MutableStateFlow(AppPreferences())
+    private val preferencesState = MutableStateFlow(initialPreferences)
     private val selectedThreadDetailState = MutableStateFlow(
         SelectedThreadDetailState(
             threadId = initialSelectedThread?.id,
@@ -1412,6 +1414,10 @@ class DefaultRemodexAppRepository(
             preferredProjectPath = preferredProjectPath,
             runtimeDefaults = runtimeDefaults,
         ) ?: return
+        persistAssociatedManagedWorktreePathForThread(
+            threadId = createdThread.id,
+            projectPath = createdThread.projectPath,
+        )
         inheritRuntimeFromThreadId?.let { sourceThreadId ->
             inheritRuntimeOverride(
                 sourceThreadId = sourceThreadId,
@@ -1539,6 +1545,7 @@ class DefaultRemodexAppRepository(
             notificationRegistration = sessionState.value.notificationRegistration,
         )
         setThreadDeletedLocally(threadId = threadId, deleted = true)
+        persistAssociatedManagedWorktreePathForThread(threadId = threadId, projectPath = null)
         threadCommandService.deleteThread(threadId)
     }
 
@@ -1582,6 +1589,7 @@ class DefaultRemodexAppRepository(
         )
         removedThreadIds.forEach { removedThreadId ->
             setThreadDeletedLocally(threadId = removedThreadId, deleted = true)
+            persistAssociatedManagedWorktreePathForThread(threadId = removedThreadId, projectPath = null)
         }
     }
 
@@ -2385,6 +2393,10 @@ class DefaultRemodexAppRepository(
         // Brand-new local threads already carry the desired cwd for the first turn, but
         // the bridge cannot always resume them until a rollout exists.
         if (thread.messages.isEmpty() && resumeService.isThreadResumedLocally(threadId)) {
+            persistAssociatedManagedWorktreePathForThread(
+                threadId = threadId,
+                projectPath = normalizedProjectPath,
+            )
             return
         }
 
@@ -2403,9 +2415,17 @@ class DefaultRemodexAppRepository(
                 projectPath = previousProjectPath,
             )
             refreshBaseThreadsFromSync()
+            persistAssociatedManagedWorktreePathForThread(
+                threadId = threadId,
+                projectPath = previousProjectPath,
+            )
             throw error
         }
         refreshBaseThreadsFromSync()
+        persistAssociatedManagedWorktreePathForThread(
+            threadId = threadId,
+            projectPath = normalizedProjectPath,
+        )
     }
 
     override suspend fun loadGitRemoteUrl(threadId: String): RemodexGitRemoteUrl {
@@ -3038,6 +3058,7 @@ class DefaultRemodexAppRepository(
     ) {
         val publishGeneration = nextThreadListPublishGeneration()
         baseThreadsState.value = baseThreads
+        syncAssociatedManagedWorktreePaths(baseThreads)
         val resolvedAvailableModels = resolveAvailableModels(baseThreads)
         val currentSessionSnapshot = sessionState.value
         val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
@@ -3086,6 +3107,37 @@ class DefaultRemodexAppRepository(
                 availableModels = resolvedAvailableModels,
                 secureConnection = sessionState.value.secureConnection,
                 notificationRegistration = sessionState.value.notificationRegistration,
+            )
+        }
+    }
+
+    private fun syncAssociatedManagedWorktreePaths(
+        baseThreads: List<RemodexThreadSummary>,
+    ) {
+        val currentAssociatedPaths = preferencesState.value.associatedManagedWorktreePathsByThread
+        baseThreads.forEach { thread ->
+            val normalizedManagedWorktreePath = thread.projectPath
+                .trim()
+                .takeIf(String::isNotEmpty)
+                ?.takeIf(::isCodexManagedWorktreeProject)
+            val currentAssociatedPath = currentAssociatedPaths[thread.id]
+            if (currentAssociatedPath != normalizedManagedWorktreePath) {
+                persistAssociatedManagedWorktreePathForThread(
+                    threadId = thread.id,
+                    projectPath = normalizedManagedWorktreePath,
+                )
+            }
+        }
+    }
+
+    private fun persistAssociatedManagedWorktreePathForThread(
+        threadId: String,
+        projectPath: String?,
+    ) {
+        repositoryScope.launch {
+            appPreferencesRepository.setAssociatedManagedWorktreePath(
+                threadId = threadId,
+                projectPath = projectPath,
             )
         }
     }
@@ -3296,7 +3348,9 @@ class DefaultRemodexAppRepository(
                 mergedById[localThread.id] = localThread
             }
         }
-        return mergedById.values.toList()
+        return mergedById.values
+            .map { thread -> thread.applyAssociatedManagedWorktreePreference(preferencesState.value) }
+            .toList()
     }
 
     private fun logRecovery(message: String) {
@@ -3475,11 +3529,28 @@ private fun materializeThreads(
     return baseThreads
         .filterNot { thread -> thread.id in preferences.deletedThreadIds }
         .map { thread ->
-            thread.materialize(
+            thread
+                .applyAssociatedManagedWorktreePreference(preferences)
+                .materialize(
                 preferences = preferences,
                 availableModels = availableModels,
             )
         }
+}
+
+private fun RemodexThreadSummary.applyAssociatedManagedWorktreePreference(
+    preferences: AppPreferences,
+): RemodexThreadSummary {
+    val associatedProjectPath = preferences.associatedManagedWorktreePathsByThread[id]
+    val preferredProjectPath = preferredManagedWorktreePath(
+        primaryProjectPath = projectPath,
+        fallbackProjectPath = associatedProjectPath,
+    )
+    return if (preferredProjectPath == projectPath) {
+        this
+    } else {
+        copy(projectPath = preferredProjectPath)
+    }
 }
 
 private fun RemodexThreadSummary.materialize(

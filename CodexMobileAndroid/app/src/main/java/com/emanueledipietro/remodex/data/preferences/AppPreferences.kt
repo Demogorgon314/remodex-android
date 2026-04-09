@@ -11,6 +11,7 @@ data class AppPreferences(
     val selectedThreadId: String? = null,
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val deletedThreadIds: Set<String> = emptySet(),
+    val associatedManagedWorktreePathsByThread: Map<String, String> = emptyMap(),
     val queuedDraftsByThread: Map<String, List<RemodexQueuedDraft>> = emptyMap(),
     val runtimeOverridesByThread: Map<String, RemodexRuntimeOverrides> = emptyMap(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),

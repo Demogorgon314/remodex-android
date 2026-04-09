@@ -14,7 +14,9 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -27,6 +29,8 @@ private val CollapsedProjectGroupIdsJsonKey = stringPreferencesKey("collapsed_pr
 private val CollapsedProjectGroupIdsByProfileJsonKey = stringPreferencesKey("collapsed_project_group_ids_by_profile_json")
 private val DeletedThreadIdsJsonKey = stringPreferencesKey("deleted_thread_ids_json")
 private val DeletedThreadIdsByProfileJsonKey = stringPreferencesKey("deleted_thread_ids_by_profile_json")
+private val AssociatedManagedWorktreePathsByProfileJsonKey =
+    stringPreferencesKey("associated_managed_worktree_paths_by_profile_json")
 private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
 private val QueuedDraftsByProfileJsonKey = stringPreferencesKey("queued_drafts_by_profile_json")
 private val RuntimeOverridesJsonKey = stringPreferencesKey("runtime_overrides_json")
@@ -49,94 +53,21 @@ class DataStoreAppPreferencesRepository(
 
     override val preferences: Flow<AppPreferences> =
         combine(context.remodexDataStore.data, activeBridgeProfileId) { preferences, profileId ->
-            val normalizedProfileId = normalizeProfileId(profileId)
-            val selectedThreadId = profileValue(
-                rawValue = preferences[SelectedThreadIdsJsonKey],
-                profileId = normalizedProfileId,
-                fallback = { preferences[SelectedThreadIdKey] },
-            ) { raw ->
-                json.decodeFromString<ProfileStringEnvelope>(raw).profiles
-            }
-            val deletedThreadIds = profileMapValue(
-                rawValue = preferences[DeletedThreadIdsByProfileJsonKey],
-                profileId = normalizedProfileId,
-                fallback = {
-                    preferences[DeletedThreadIdsJsonKey]
-                        ?.let { raw -> json.decodeFromString<DeletedThreadIdsEnvelope>(raw).threadIds }
-                        ?.toSet()
-                        ?: emptySet()
-                },
-            ) { raw ->
-                json.decodeFromString<ProfileStringListEnvelope>(raw).profiles
-            }.toSet()
-            val collapsedProjectGroupIds = profileMapValue(
-                rawValue = preferences[CollapsedProjectGroupIdsByProfileJsonKey],
-                profileId = normalizedProfileId,
-                fallback = {
-                    preferences[CollapsedProjectGroupIdsJsonKey]
-                        ?.let { raw -> json.decodeFromString<CollapsedProjectGroupIdsEnvelope>(raw).groupIds }
-                        ?.toSet()
-                        ?: emptySet()
-                },
-            ) { raw ->
-                json.decodeFromString<ProfileStringListEnvelope>(raw).profiles
-            }.toSet()
-            val queuedDrafts = profileNestedMapValue(
-                rawValue = preferences[QueuedDraftsByProfileJsonKey],
-                profileId = normalizedProfileId,
-                fallback = {
-                    preferences[QueuedDraftsJsonKey]
-                        ?.let { raw -> json.decodeFromString<QueuedDraftsEnvelope>(raw).threads }
-                        ?: emptyMap()
-                },
-            ) { raw ->
-                json.decodeFromString<ProfileQueuedDraftsEnvelope>(raw).profiles
-            }
-            val runtimeOverrides = profileNestedMapValue(
-                rawValue = preferences[RuntimeOverridesByProfileJsonKey],
-                profileId = normalizedProfileId,
-                fallback = {
-                    preferences[RuntimeOverridesJsonKey]
-                        ?.let { raw -> json.decodeFromString<RuntimeOverridesEnvelope>(raw).threads }
-                        ?: emptyMap()
-                },
-            ) { raw ->
-                json.decodeFromString<ProfileRuntimeOverridesEnvelope>(raw).profiles
-            }
-            val runtimeDefaults = profileValue(
-                rawValue = preferences[RuntimeDefaultsByProfileJsonKey],
-                profileId = normalizedProfileId,
-                fallback = {
-                    preferences[RuntimeDefaultsJsonKey]
-                        ?.let { raw -> json.decodeFromString<RemodexRuntimeDefaults>(raw) }
-                        ?: RemodexRuntimeDefaults()
-                },
-            ) { raw ->
-                json.decodeFromString<ProfileRuntimeDefaultsEnvelope>(raw).profiles
-            } ?: RemodexRuntimeDefaults()
-            val macNicknames = preferences[MacNicknamesJsonKey]
-                ?.let { raw -> json.decodeFromString<MacNicknamesEnvelope>(raw).nicknames }
-                ?: emptyMap()
-            AppPreferences(
-                onboardingCompleted = preferences[OnboardingCompletedKey] ?: false,
-                selectedThreadId = selectedThreadId,
-                collapsedProjectGroupIds = collapsedProjectGroupIds,
-                deletedThreadIds = deletedThreadIds,
-                queuedDraftsByThread = queuedDrafts,
-                runtimeOverridesByThread = runtimeOverrides,
-                runtimeDefaults = runtimeDefaults,
-                appearanceMode = preferences[AppearanceModeKey]
-                    ?.let(RemodexAppearanceMode::valueOf)
-                    ?: RemodexAppearanceMode.SYSTEM,
-                appFontStyle = preferences[AppFontStyleKey]
-                    ?.let(RemodexAppFontStyle::valueOf)
-                    ?: RemodexAppFontStyle.SYSTEM,
-                macNicknamesByDeviceId = macNicknames,
+            decodePreferences(
+                preferences = preferences,
+                profileId = profileId,
             )
         }
 
     override fun setActiveBridgeProfileId(profileId: String?) {
         activeBridgeProfileId.value = normalizeProfileId(profileId)
+    }
+
+    override fun peekPreferences(): AppPreferences = runBlocking {
+        decodePreferences(
+            preferences = context.remodexDataStore.data.map { it }.first(),
+            profileId = activeBridgeProfileId.value,
+        )
     }
 
     override suspend fun setOnboardingCompleted(completed: Boolean) {
@@ -209,6 +140,37 @@ class DataStoreAppPreferencesRepository(
                 profileId = activeBridgeProfileId.value,
                 values = current,
             )
+        }
+    }
+
+    override suspend fun setAssociatedManagedWorktreePath(
+        threadId: String,
+        projectPath: String?,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val profileId = normalizeProfileId(activeBridgeProfileId.value) ?: return@edit
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                return@edit
+            }
+            val current = preferences[AssociatedManagedWorktreePathsByProfileJsonKey]
+                ?.let { raw -> json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles }
+                ?.toMutableMap()
+                ?: mutableMapOf()
+            val perProfile = current[profileId]?.toMutableMap() ?: mutableMapOf()
+            val normalizedProjectPath = projectPath?.trim().orEmpty()
+            if (normalizedProjectPath.isEmpty()) {
+                perProfile.remove(normalizedThreadId)
+            } else {
+                perProfile[normalizedThreadId] = normalizedProjectPath
+            }
+            if (perProfile.isEmpty()) {
+                current.remove(profileId)
+            } else {
+                current[profileId] = perProfile
+            }
+            preferences[AssociatedManagedWorktreePathsByProfileJsonKey] =
+                json.encodeToString(ProfileStringMapEnvelope(current))
         }
     }
 
@@ -311,6 +273,104 @@ class DataStoreAppPreferencesRepository(
 
     private fun normalizeProfileId(profileId: String?): String? {
         return profileId?.trim()?.takeIf(String::isNotBlank)
+    }
+
+    private fun decodePreferences(
+        preferences: androidx.datastore.preferences.core.Preferences,
+        profileId: String?,
+    ): AppPreferences {
+        val normalizedProfileId = normalizeProfileId(profileId)
+        val selectedThreadId = profileValue(
+            rawValue = preferences[SelectedThreadIdsJsonKey],
+            profileId = normalizedProfileId,
+            fallback = { preferences[SelectedThreadIdKey] },
+        ) { raw ->
+            json.decodeFromString<ProfileStringEnvelope>(raw).profiles
+        }
+        val deletedThreadIds = profileMapValue(
+            rawValue = preferences[DeletedThreadIdsByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = {
+                preferences[DeletedThreadIdsJsonKey]
+                    ?.let { raw -> json.decodeFromString<DeletedThreadIdsEnvelope>(raw).threadIds }
+                    ?.toSet()
+                    ?: emptySet()
+            },
+        ) { raw ->
+            json.decodeFromString<ProfileStringListEnvelope>(raw).profiles
+        }.toSet()
+        val associatedManagedWorktreePaths = profileNestedMapValue(
+            rawValue = preferences[AssociatedManagedWorktreePathsByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = { emptyMap() },
+        ) { raw ->
+            json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles
+        }
+        val collapsedProjectGroupIds = profileMapValue(
+            rawValue = preferences[CollapsedProjectGroupIdsByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = {
+                preferences[CollapsedProjectGroupIdsJsonKey]
+                    ?.let { raw -> json.decodeFromString<CollapsedProjectGroupIdsEnvelope>(raw).groupIds }
+                    ?.toSet()
+                    ?: emptySet()
+            },
+        ) { raw ->
+            json.decodeFromString<ProfileStringListEnvelope>(raw).profiles
+        }.toSet()
+        val queuedDrafts = profileNestedMapValue(
+            rawValue = preferences[QueuedDraftsByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = {
+                preferences[QueuedDraftsJsonKey]
+                    ?.let { raw -> json.decodeFromString<QueuedDraftsEnvelope>(raw).threads }
+                    ?: emptyMap()
+            },
+        ) { raw ->
+            json.decodeFromString<ProfileQueuedDraftsEnvelope>(raw).profiles
+        }
+        val runtimeOverrides = profileNestedMapValue(
+            rawValue = preferences[RuntimeOverridesByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = {
+                preferences[RuntimeOverridesJsonKey]
+                    ?.let { raw -> json.decodeFromString<RuntimeOverridesEnvelope>(raw).threads }
+                    ?: emptyMap()
+            },
+        ) { raw ->
+            json.decodeFromString<ProfileRuntimeOverridesEnvelope>(raw).profiles
+        }
+        val runtimeDefaults = profileValue(
+            rawValue = preferences[RuntimeDefaultsByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = {
+                preferences[RuntimeDefaultsJsonKey]
+                    ?.let { raw -> json.decodeFromString<RemodexRuntimeDefaults>(raw) }
+                    ?: RemodexRuntimeDefaults()
+            },
+        ) { raw ->
+            json.decodeFromString<ProfileRuntimeDefaultsEnvelope>(raw).profiles
+        } ?: RemodexRuntimeDefaults()
+        val macNicknames = preferences[MacNicknamesJsonKey]
+            ?.let { raw -> json.decodeFromString<MacNicknamesEnvelope>(raw).nicknames }
+            ?: emptyMap()
+        return AppPreferences(
+            onboardingCompleted = preferences[OnboardingCompletedKey] ?: false,
+            selectedThreadId = selectedThreadId,
+            collapsedProjectGroupIds = collapsedProjectGroupIds,
+            deletedThreadIds = deletedThreadIds,
+            associatedManagedWorktreePathsByThread = associatedManagedWorktreePaths,
+            queuedDraftsByThread = queuedDrafts,
+            runtimeOverridesByThread = runtimeOverrides,
+            runtimeDefaults = runtimeDefaults,
+            appearanceMode = preferences[AppearanceModeKey]
+                ?.let(RemodexAppearanceMode::valueOf)
+                ?: RemodexAppearanceMode.SYSTEM,
+            appFontStyle = preferences[AppFontStyleKey]
+                ?.let(RemodexAppFontStyle::valueOf)
+                ?: RemodexAppFontStyle.SYSTEM,
+            macNicknamesByDeviceId = macNicknames,
+        )
     }
 
     private fun mutateProfileStringEnvelope(
@@ -427,6 +487,11 @@ private data class RuntimeOverridesEnvelope(
 @Serializable
 private data class ProfileStringEnvelope(
     val profiles: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+private data class ProfileStringMapEnvelope(
+    val profiles: Map<String, Map<String, String>> = emptyMap(),
 )
 
 @Serializable
