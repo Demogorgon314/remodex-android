@@ -3440,6 +3440,7 @@ class BridgeThreadSyncService(
         if (threadId != null && turnId != null) {
             setActiveTurnId(threadId = threadId, turnId = turnId)
             confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
+            beginAssistantMessage(threadId = threadId, turnId = turnId)
         } else if (threadId != null) {
             markThreadAsRunningFallback(threadId)
         }
@@ -3460,6 +3461,7 @@ class BridgeThreadSyncService(
         )
         if (turnId != null) {
             threadIdByTurnId[turnId] = threadId
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
         }
         setLatestTurnTerminalState(
             threadId = threadId,

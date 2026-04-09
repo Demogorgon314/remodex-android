@@ -747,6 +747,65 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `turn completed confirms pending user message when turn started was missed`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-complete-confirms-user",
+                    title = "Turn completion confirm",
+                    preview = "Hello",
+                    projectPath = "/tmp/project-complete-confirms-user",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-complete-confirm",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Hello",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnCompletedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-complete-confirms-user"))
+                put("turnId", JsonPrimitive("turn-complete-confirms-user"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-complete-confirms-user" }
+        val items = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val userItem = items.single { it.speaker == ConversationSpeaker.USER }
+
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, userItem.deliveryState)
+        assertEquals("turn-complete-confirms-user", userItem.turnId)
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+    }
+
+    @Test
     fun `thread token usage updated publishes context window usage`() {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -1320,6 +1379,68 @@ class BridgeThreadSyncServiceTest {
         assertTrue(thread.isRunning)
         assertNull(thread.activeTurnId)
         assertNull(thread.latestTurnTerminalState)
+    }
+
+    @Test
+    fun `turn started with turn id confirms pending user and seeds assistant placeholder`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turn-start-with-id",
+                    title = "Turn start with id",
+                    preview = "Hello",
+                    projectPath = "/tmp/project-turn-start-with-id",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    latestTurnTerminalState = null,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-turn-start",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Hello",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnStartedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turn-start-with-id"))
+                put("turnId", JsonPrimitive("turn-turn-start-with-id"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turn-start-with-id" }
+        val items = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val userItem = items.single { it.speaker == ConversationSpeaker.USER }
+        val assistantItem = items.single { it.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertTrue(thread.isRunning)
+        assertEquals("turn-turn-start-with-id", thread.activeTurnId)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, userItem.deliveryState)
+        assertEquals("turn-turn-start-with-id", userItem.turnId)
+        assertTrue(assistantItem.isStreaming)
+        assertEquals("turn-turn-start-with-id", assistantItem.turnId)
     }
 
     @Test
