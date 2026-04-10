@@ -168,6 +168,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
@@ -1556,6 +1557,24 @@ fun ConversationScreen(
         selectConversationMarkdownPrewarmRequests(timelineItems)
     }
     val showsEmptyTimelineState = timelineItems.isEmpty()
+    val composerHasForegroundContent = remember(
+        uiState.composer.draftText,
+        uiState.composer.attachments,
+        uiState.composer.mentionedFiles,
+        uiState.composer.mentionedSkills,
+        uiState.composer.reviewSelection,
+        uiState.composer.isSubagentsSelectionArmed,
+        thread.runtimeConfig.planningMode,
+    ) {
+        uiState.composer.draftText.isNotBlank() ||
+            uiState.composer.attachments.isNotEmpty() ||
+            uiState.composer.mentionedFiles.isNotEmpty() ||
+            uiState.composer.mentionedSkills.isNotEmpty() ||
+            uiState.composer.reviewSelection != null ||
+            uiState.composer.isSubagentsSelectionArmed ||
+            thread.runtimeConfig.planningMode == RemodexPlanningMode.PLAN
+    }
+    val shouldBiasWelcomeTowardTop = composerHasForegroundContent || imeBottomPx > 0
     val showsTimelineLoadingState =
         showsEmptyTimelineState &&
             emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome &&
@@ -1967,6 +1986,7 @@ fun ConversationScreen(
                 emptyTimelineStatePresentation = emptyTimelineStatePresentation,
                 showsTimelineLoadingState = showsTimelineLoadingState,
                 shouldShowScrollToLatestButton = shouldShowScrollToLatestButton,
+                biasWelcomeTowardTop = shouldBiasWelcomeTowardTop,
                 bottomAnchorIndex = bottomAnchorIndex,
                 autocompleteVisible = autocompleteVisible,
                 onLoadEarlierMessages = handleLoadEarlierMessages,
@@ -2119,6 +2139,7 @@ private fun ConversationTimelinePane(
     emptyTimelineStatePresentation: ConversationTimelineEmptyStatePresentation,
     showsTimelineLoadingState: Boolean,
     shouldShowScrollToLatestButton: Boolean,
+    biasWelcomeTowardTop: Boolean,
     bottomAnchorIndex: Int,
     autocompleteVisible: Boolean,
     onLoadEarlierMessages: () -> Unit,
@@ -2148,20 +2169,15 @@ private fun ConversationTimelinePane(
 
             if (showsEmptyTimelineState) {
                 if (emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome) {
-                    Column(
+                    AdaptiveWelcomeTimelineState(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
                             .padding(horizontal = 16.dp)
                             .verticalScroll(rememberScrollState()),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        ConversationTimelineEmptyState(
-                            presentation = emptyTimelineStatePresentation,
-                            isLoading = showsTimelineLoadingState,
-                            modifier = Modifier.padding(top = 24.dp, bottom = 24.dp),
-                        )
-                    }
+                        isLoading = showsTimelineLoadingState,
+                        biasTowardTop = biasWelcomeTowardTop,
+                    )
                 } else {
                     Box(
                         modifier = Modifier
@@ -2242,6 +2258,40 @@ private fun ConversationTimelinePane(
                     ),
             )
         }
+    }
+}
+
+@Composable
+private fun AdaptiveWelcomeTimelineState(
+    isLoading: Boolean,
+    biasTowardTop: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    var containerHeightPx by remember { mutableStateOf(0) }
+    var welcomeHeightPx by remember { mutableStateOf(0) }
+    val minimumTopPadding = 24.dp
+    val compactTopPaddingCap = 120.dp
+    val welcomeTopPadding = remember(containerHeightPx, welcomeHeightPx, density, biasTowardTop) {
+        val centeredHeightPx = ((containerHeightPx - welcomeHeightPx) / 2).coerceAtLeast(0)
+        val centeredPadding = with(density) { centeredHeightPx.toDp() }
+        if (biasTowardTop) {
+            centeredPadding.coerceIn(minimumTopPadding, compactTopPaddingCap)
+        } else {
+            centeredPadding.coerceAtLeast(minimumTopPadding)
+        }
+    }
+
+    Column(
+        modifier = modifier.onSizeChanged { containerHeightPx = it.height },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(modifier = Modifier.height(welcomeTopPadding))
+        ThreadWelcomeTimelineState(
+            isLoading = isLoading,
+            modifier = Modifier.onSizeChanged { welcomeHeightPx = it.height },
+        )
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
