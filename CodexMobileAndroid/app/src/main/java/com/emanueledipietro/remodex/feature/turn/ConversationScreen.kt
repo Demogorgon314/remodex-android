@@ -2147,17 +2147,34 @@ private fun ConversationTimelinePane(
             )
 
             if (showsEmptyTimelineState) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    ConversationTimelineEmptyState(
-                        presentation = emptyTimelineStatePresentation,
-                        isLoading = showsTimelineLoadingState,
-                    )
+                if (emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 16.dp)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        ConversationTimelineEmptyState(
+                            presentation = emptyTimelineStatePresentation,
+                            isLoading = showsTimelineLoadingState,
+                            modifier = Modifier.padding(top = 24.dp, bottom = 24.dp),
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        ConversationTimelineEmptyState(
+                            presentation = emptyTimelineStatePresentation,
+                            isLoading = showsTimelineLoadingState,
+                        )
+                    }
                 }
             } else {
                 LazyColumn(
