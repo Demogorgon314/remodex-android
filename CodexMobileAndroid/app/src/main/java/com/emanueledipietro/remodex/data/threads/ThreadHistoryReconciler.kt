@@ -231,7 +231,8 @@ internal object ThreadHistoryReconciler {
                         )
                 }.takeIf { it >= 0 }?.let { return it }
             }
-            merged.indexOfLast { candidate ->
+            val fallbackCandidateIndices = merged.indices.filter { index ->
+                val candidate = merged[index]
                 candidate.speaker == ConversationSpeaker.USER &&
                     candidate.deliveryState != RemodexMessageDeliveryState.FAILED &&
                     userHistoryTextCompatible(
@@ -240,7 +241,10 @@ internal object ThreadHistoryReconciler {
                     ) &&
                     attachmentSignature(candidate.attachments) == attachmentSignature(historyItem.attachments) &&
                     (candidate.turnId == null || candidate.turnId == turnId)
-            }.takeIf { it >= 0 }?.let { return it }
+            }
+            if (fallbackCandidateIndices.size == 1) {
+                return fallbackCandidateIndices.single()
+            }
         }
 
         if (historyItem.speaker == ConversationSpeaker.SYSTEM) {
@@ -393,7 +397,8 @@ internal object ThreadHistoryReconciler {
             ?.let { return it }
 
         if (historyItem.speaker == ConversationSpeaker.USER) {
-            merged.indexOfLast { candidate ->
+            val pendingCandidateIndices = merged.indices.filter { index ->
+                val candidate = merged[index]
                 candidate.speaker == ConversationSpeaker.USER &&
                     candidate.deliveryState == RemodexMessageDeliveryState.PENDING &&
                     normalizedText(candidate.text) == normalizedText(historyItem.text) &&
@@ -401,7 +406,10 @@ internal object ThreadHistoryReconciler {
                         localAttachments = candidate.attachments,
                         serverAttachments = historyItem.attachments,
                     )
-            }.takeIf { it >= 0 }?.let { return it }
+            }
+            if (pendingCandidateIndices.size == 1) {
+                return pendingCandidateIndices.single()
+            }
         }
 
         return MatchNotFound

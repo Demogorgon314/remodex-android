@@ -475,6 +475,146 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items does not guess between two identical pending user rows`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local-1",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                deliveryState = RemodexMessageDeliveryState.PENDING,
+                orderIndex = 20L,
+            ),
+            RemodexConversationItem(
+                id = "user-local-2",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                deliveryState = RemodexMessageDeliveryState.PENDING,
+                orderIndex = 21L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                turnId = "turn-1",
+                itemId = "user-item-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(3, merged.size)
+        assertEquals(2, merged.count { it.deliveryState == RemodexMessageDeliveryState.PENDING })
+        assertEquals(1, merged.count { it.deliveryState == RemodexMessageDeliveryState.CONFIRMED })
+        assertEquals(
+            listOf("turn-1"),
+            merged.mapNotNull(RemodexConversationItem::turnId),
+        )
+    }
+
+    @Test
+    fun `merge history items keep repeated confirmed prompts on distinct turns`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-turn-1",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                orderIndex = 10L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-turn-2",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                turnId = "turn-2",
+                itemId = "user-item-2",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                orderIndex = 20L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(2, merged.size)
+        assertEquals(
+            listOf("turn-1", "turn-2"),
+            merged.mapNotNull(RemodexConversationItem::turnId),
+        )
+    }
+
+    @Test
+    fun `merge history items keep same text user rows when attachments differ`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                deliveryState = RemodexMessageDeliveryState.PENDING,
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "attachment-local",
+                        uriString = "file:///tmp/app-1.png",
+                        displayName = "app-1.png",
+                    ),
+                ),
+                orderIndex = 20L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "Fix this",
+                turnId = "turn-1",
+                itemId = "user-item-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "attachment-history",
+                        uriString = "file:///tmp/app-2.png",
+                        displayName = "app-2.png",
+                    ),
+                ),
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(2, merged.size)
+        assertEquals(1, merged.count { it.deliveryState == RemodexMessageDeliveryState.PENDING })
+        assertEquals(1, merged.count { it.deliveryState == RemodexMessageDeliveryState.CONFIRMED })
+    }
+
+    @Test
     fun `merge history items preserves local structured user input response when history lacks it`() {
         val existing = listOf(
             RemodexConversationItem(
