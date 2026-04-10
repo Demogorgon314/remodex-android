@@ -82,6 +82,22 @@ private fun JsonObject.firstBooleanValue(vararg keys: String): Boolean? {
 @OptIn(ExperimentalCoroutinesApi::class)
 class BridgeThreadSyncServiceTest {
     @Test
+    fun `review debug payload summary redacts secrets and caps length`() {
+        val rawPayload = buildString {
+            append("{\"sessionId\":\"secret-session\",\"ciphertext\":\"abcdef\",\"body\":\"")
+            repeat(800) { append('x') }
+            append("\"}")
+        }
+
+        val summarized = summarizeReviewDebugPayload(rawPayload, maxLength = 128)
+
+        assertTrue(summarized.contains("\"sessionId\":\"<redacted>\""))
+        assertTrue(summarized.contains("\"ciphertext\":\"<redacted>\""))
+        assertTrue(summarized.endsWith("…"))
+        assertTrue(summarized.length <= 129)
+    }
+
+    @Test
     fun `streaming text delta filter keeps whitespace only chunks`() {
         assertTrue(shouldIgnoreStreamingTextDelta(""))
         assertFalse(shouldIgnoreStreamingTextDelta(" "))

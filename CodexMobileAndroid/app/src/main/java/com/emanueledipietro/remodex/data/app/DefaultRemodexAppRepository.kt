@@ -2628,7 +2628,13 @@ class DefaultRemodexAppRepository(
                 return@synchronized cachedProjection.projectedItems
             }
 
-            val projectedItems = TurnTimelineReducer.project(rawTimelineItems)
+            val projectedItems = cachedProjection?.let { cached ->
+                TurnTimelineReducer.applyProjectedListFastPath(
+                    previousTimelineItems = cached.timelineItems,
+                    nextTimelineItems = rawTimelineItems,
+                    previousProjectedItems = cached.projectedItems,
+                )
+            } ?: TurnTimelineReducer.project(rawTimelineItems)
             timelineProjectionCacheByThread[snapshot.id] = ThreadTimelineProjectionCache(
                 timelineItems = rawTimelineItems,
                 projectedItems = projectedItems,

@@ -976,7 +976,13 @@ class BridgeThreadSyncService(
         if (cached != null && cached.timelineItems == timelineItems) {
             return cached
         }
-        val projectedItems = TurnTimelineReducer.project(timelineItems)
+        val projectedItems = cached?.let { existing ->
+            TurnTimelineReducer.applyProjectedListFastPath(
+                previousTimelineItems = existing.timelineItems,
+                nextTimelineItems = timelineItems,
+                previousProjectedItems = existing.projectedItems,
+            )
+        } ?: TurnTimelineReducer.project(timelineItems)
         return ThreadTimelineCache(
             timelineItems = timelineItems,
             projectedItems = projectedItems,
@@ -11051,7 +11057,7 @@ class BridgeThreadSyncService(
         }
         val eventObject = envelopeEventObject(paramsObject)
         val itemObject = extractIncomingItemObject(paramsObject, eventObject)
-        val rawPayload = sanitizeReviewDebugJson(
+        val rawPayload = summarizeReviewDebugPayload(
             (itemObject ?: eventObject ?: paramsObject).toString(),
         )
         val summary = buildString {
@@ -11141,6 +11147,17 @@ internal fun sanitizeReviewDebugJson(raw: String): String {
         .replace(Regex("\"ciphertext\"\\s*:\\s*\"[^\"]*\""), "\"ciphertext\":\"<redacted>\"")
         .replace(Regex("\"tag\"\\s*:\\s*\"[^\"]*\""), "\"tag\":\"<redacted>\"")
         .replace(Regex("\"macSignature\"\\s*:\\s*\"[^\"]*\""), "\"macSignature\":\"<redacted>\"")
+}
+
+internal fun summarizeReviewDebugPayload(
+    raw: String,
+    maxLength: Int = 512,
+): String {
+    val sanitized = sanitizeReviewDebugJson(raw)
+    if (sanitized.length <= maxLength) {
+        return sanitized
+    }
+    return sanitized.take(maxLength) + "…"
 }
 
 internal fun isAssistantLifecycleItemValue(

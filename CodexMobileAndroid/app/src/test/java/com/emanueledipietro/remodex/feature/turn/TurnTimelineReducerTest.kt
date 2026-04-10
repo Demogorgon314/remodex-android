@@ -502,6 +502,87 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `projected list fast path updates assistant text-only replacements`() {
+        val user = RemodexConversationItem(
+            id = "user-1",
+            speaker = ConversationSpeaker.USER,
+            text = "Ship it",
+            orderIndex = 0,
+        )
+        val assistant = RemodexConversationItem(
+            id = "assistant-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "First chunk",
+            turnId = "turn-1",
+            itemId = "assistant-item",
+            isStreaming = true,
+            orderIndex = 1,
+        )
+
+        val previousTimeline = listOf(user, assistant)
+        val previousProjected = listOf(user, assistant)
+        val nextTimeline = listOf(
+            user,
+            assistant.copy(
+                text = "First chunkSecond chunk",
+                isStreaming = false,
+            ),
+        )
+
+        val nextProjected = TurnTimelineReducer.applyProjectedListFastPath(
+            previousTimelineItems = previousTimeline,
+            nextTimelineItems = nextTimeline,
+            previousProjectedItems = previousProjected,
+        )
+
+        assertNotNull(nextProjected)
+        assertTrue(nextProjected!![0] === user)
+        assertEquals("First chunkSecond chunk", nextProjected[1].text)
+        assertFalse(nextProjected[1].isStreaming)
+    }
+
+    @Test
+    fun `projected list fast path falls back when assistant reorder can affect turn layout`() {
+        val reasoning = RemodexConversationItem(
+            id = "reasoning-1",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.REASONING,
+            text = "Thinking",
+            turnId = "turn-1",
+            orderIndex = 0,
+        )
+        val assistant = RemodexConversationItem(
+            id = "assistant-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "First chunk",
+            turnId = "turn-1",
+            itemId = "assistant-item",
+            isStreaming = true,
+            orderIndex = 1,
+        )
+
+        val previousTimeline = listOf(reasoning, assistant)
+        val previousProjected = TurnTimelineReducer.project(previousTimeline)
+        val nextTimeline = listOf(
+            reasoning,
+            assistant.copy(
+                text = "First chunkSecond chunk",
+                orderIndex = 2,
+            ),
+        )
+
+        val nextProjected = TurnTimelineReducer.applyProjectedListFastPath(
+            previousTimelineItems = previousTimeline,
+            nextTimelineItems = nextTimeline,
+            previousProjectedItems = previousProjected,
+        )
+
+        assertEquals(null, nextProjected)
+    }
+
+    @Test
     fun `activity lines become dedicated tool activity rows while reasoning stays separate`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(

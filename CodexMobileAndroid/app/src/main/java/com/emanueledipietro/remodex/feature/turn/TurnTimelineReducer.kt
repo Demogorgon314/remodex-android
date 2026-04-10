@@ -134,6 +134,46 @@ object TurnTimelineReducer {
         }
     }
 
+    internal fun applyProjectedListFastPath(
+        previousTimelineItems: List<RemodexConversationItem>,
+        nextTimelineItems: List<RemodexConversationItem>,
+        previousProjectedItems: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem>? {
+        if (previousTimelineItems.size != nextTimelineItems.size) {
+            return null
+        }
+        var changedIndex = -1
+        previousTimelineItems.indices.forEach { index ->
+            if (previousTimelineItems[index] != nextTimelineItems[index]) {
+                if (changedIndex != -1) {
+                    return null
+                }
+                changedIndex = index
+            }
+        }
+        if (changedIndex == -1) {
+            return previousProjectedItems
+        }
+
+        val previousItem = previousTimelineItems[changedIndex]
+        val nextItem = nextTimelineItems[changedIndex]
+        if (
+            previousItem.id != nextItem.id ||
+            previousItem.speaker != ConversationSpeaker.ASSISTANT ||
+            previousItem.kind != ConversationItemKind.CHAT ||
+            nextItem.speaker != ConversationSpeaker.ASSISTANT ||
+            nextItem.kind != ConversationItemKind.CHAT ||
+            previousItem.orderIndex != nextItem.orderIndex
+        ) {
+            return null
+        }
+
+        return applyProjectedFastPath(
+            items = previousProjectedItems,
+            mutation = TimelineMutation.Upsert(nextItem),
+        )
+    }
+
     private fun applyProjectedUpsertFastPath(
         items: List<RemodexConversationItem>,
         item: RemodexConversationItem,
